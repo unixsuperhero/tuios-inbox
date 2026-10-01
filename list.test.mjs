@@ -22,6 +22,9 @@ const fields = [
 ];
 const ids = query => applyQuery(rows, fields, { search: '', filters: [], sort: null, ...query }).map(row => row.id).join('');
 const filter = (key, op, value) => ids({ filters: [{ key, op, value }] });
+// An instant as the datetime-local value (local time, minute precision) the picker would produce for it.
+const local = iso => { const d = new Date(iso); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 16); };
+const between = (from, to, key = 'updated') => ids({ filters: [{ key, op: 'between', ...(from && { from: local(from) }), ...(to && { to: local(to) }) }] });
 
 test('an empty query returns every row in input order, as a new array', () => {
   const out = applyQuery(rows, fields, { search: '', filters: [], sort: null });
@@ -63,11 +66,50 @@ test('bool: compares Boolean(value) against true / false', () => {
   expect(filter('unread', 'has_not')).toBe('bce');
 });
 
-test('date: only has / has no; is / is not are ignored', () => {
+test('date: has / has no; is / is not are ignored', () => {
   expect(filter('updated', 'has')).toBe('abd');
   expect(filter('updated', 'has_not')).toBe('ce');
   expect(filter('updated', 'is', '2026-03-01T10:00:00Z')).toBe('abcde');
   expect(filter('updated', 'is_not', '2026-03-01T10:00:00Z')).toBe('abcde');
+});
+
+test('date: between with both bounds, either one alone, inclusive edges', () => {
+  expect(between('2026-01-15T00:00:00Z', '2026-02-15T00:00:00Z')).toBe('d');
+  expect(between('2026-01-15T00:00:00Z')).toBe('ad');
+  expect(between(null, '2026-02-15T00:00:00Z')).toBe('bd');
+  expect(between('2026-01-01T10:00:00Z', '2026-03-01T10:00:00Z')).toBe('abd');   // b and a sit exactly on the bounds
+  expect(between('2026-02-01T10:00:00Z', '2026-02-01T10:00:00Z')).toBe('d');
+  expect(between('2026-02-01T10:00:00Z')).toBe('ad');
+  expect(between(null, '2026-02-01T10:00:00Z')).toBe('bd');
+  expect(between('2026-02-01T10:01:00Z')).toBe('a');                             // one minute past d
+  expect(between(null, '2026-02-01T09:59:00Z')).toBe('b');
+  expect(between('2026-02-15T00:00:00Z', '2026-01-15T00:00:00Z')).toBe('');      // inverted range matches nothing
+});
+
+test('date: between leaves out absent and unparseable dates; bounds are local time', () => {
+  expect(between('2000-01-01T00:00:00Z')).toBe('abd');
+  expect(between(null, '2100-01-01T00:00:00Z')).toBe('abd');
+  const odd = [{ id: 'x', updated: 'not a date' }, { id: 'y', updated: undefined }, { id: 'z', updated: '2026-10-01T07:11:32.988Z' }];
+  const got = (from, to) => applyQuery(odd, fields, { filters: [{ key: 'updated', op: 'between', from, to }] }).map(row => row.id).join('');
+  expect(got('2000-01-01T00:00')).toBe('z');
+  expect(got(local('2026-10-01T07:11:00Z'), local('2026-10-01T07:12:00Z'))).toBe('z');
+  expect(got(undefined, local('2026-10-01T07:11:00Z'))).toBe('z');                // "to 07:11" covers 07:11:32
+  expect(got(undefined, local('2026-10-01T07:10:00Z'))).toBe('');
+  const d = new Date(2026, 1, 1, 12, 30);                                         // local wall-clock time
+  expect(applyQuery([{ id: 'w', updated: d.toISOString() }], fields, { filters: [{ key: 'updated', op: 'between', from: '2026-02-01T12:30', to: '2026-02-01T12:30' }] }).length).toBe(1);
+});
+
+test('date: between combines with other filters; without a usable bound, or on a non-date field, it is ignored', () => {
+  expect(ids({ filters: [{ key: 'updated', op: 'between', from: local('2026-01-15T00:00:00Z') }, { key: 'status', op: 'is', value: 'done' }] })).toBe('a');
+  expect(ids({ filters: [{ key: 'task', op: 'has_not' }, { key: 'updated', op: 'between', to: local('2026-02-15T00:00:00Z') }] })).toBe('b');
+  expect(ids({ search: 'login', filters: [{ key: 'updated', op: 'between', to: local('2026-02-15T00:00:00Z') }] })).toBe('');
+  expect(ids({ filters: [{ key: 'updated', op: 'between', from: local('2026-01-15T00:00:00Z') }], sort: { key: 'updated', dir: 'asc' } })).toBe('da');
+  expect(ids({ filters: [{ key: 'updated', op: 'between' }] })).toBe('abcde');
+  expect(ids({ filters: [{ key: 'updated', op: 'between', from: '', to: '' }] })).toBe('abcde');
+  expect(ids({ filters: [{ key: 'updated', op: 'between', from: 'garbage' }] })).toBe('abcde');
+  expect(between('2026-01-15T00:00:00Z', '2026-02-15T00:00:00Z', 'count')).toBe('abcde');
+  expect(between('2026-01-15T00:00:00Z', null, 'title')).toBe('abcde');
+  expect(between('2026-01-15T00:00:00Z', null, 'secret')).toBe('abcde');
 });
 
 test('filters are ANDed; unknown, unfilterable and malformed ones are ignored', () => {

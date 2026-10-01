@@ -7,13 +7,14 @@
 .list-toolbar select,.list-toolbar input:not([type=checkbox]),.list-bulk select{width:auto;height:32px;padding:0 10px;font-size:12px}
 .list-toolbar button,.list-bulk button{height:32px;padding:0 11px;font-size:11px;white-space:nowrap}
 .list-search{flex:1 1 150px;min-width:120px;max-width:300px}
-.list-filter{display:flex;align-items:center;gap:6px;min-width:0}
+.list-filter{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
 .list-filter select{max-width:170px}
 .list-filter input.list-value{width:130px}
 .list-tail{display:flex;align-items:center;gap:10px;margin-left:auto}
-.list-sorter{display:flex;align-items:center;gap:7px}
-.list-sorter,.list-count,.list-selected{font-size:10px;font-weight:400;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);white-space:nowrap}
+.list-sorter,.list-range{display:flex;align-items:center;gap:7px}
+.list-sorter,.list-range,.list-count,.list-selected{font-size:10px;font-weight:400;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);white-space:nowrap}
 .list-sorter select{max-width:170px;letter-spacing:0;text-transform:none;color:var(--ink)}
+.list-range input{padding:0 8px;letter-spacing:0;text-transform:none}
 .list-count{min-width:62px;text-align:right}
 .list-chips{order:1;flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px}
 .list-toolbar .chip{height:auto;padding:5px 9px;background:#edf0e4;overflow-wrap:anywhere;white-space:normal;text-align:left}
@@ -49,7 +50,9 @@
 
 @media(max-width:760px){
   .list-search{max-width:none}
-  .list-filter{flex-wrap:wrap}
+  /* The date pickers and Add get a line of their own, so Add is never stranded alone on the next one. */
+  .list-filter:has(.list-range:not([hidden]))::after{content:'';order:1;flex-basis:100%}
+  .list-range,.list-add{order:2}
   .item>summary{padding:13px 12px}
   .item.is-unread>summary{padding-left:10px}
   .list-toolbar{padding-left:13px}

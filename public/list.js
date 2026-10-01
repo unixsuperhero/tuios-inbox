@@ -1,7 +1,8 @@
 // Generic list engine: search, filters, sort, multi-select with bulk actions, accordion rows.
 // Rows are patched in place, so a background refresh never collapses, scrolls, or retypes anything.
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-const OPS = { is: 'is', is_not: 'is not', has: 'has', has_not: 'has no' };
+const OPS = { is: 'is', is_not: 'is not', has: 'has', has_not: 'has no', between: 'between' };
+const when = value => new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const absent = value => value == null || value === '' || value === false || value === 0;
 const read = (field, row) => field.get ? field.get(row) : row[field.key];
 const listed = field => field?.type === 'enum' || field?.type === 'bool';
@@ -13,7 +14,7 @@ const labels = (field, rows) => new Map(field.type === 'enum' ? choices(field, r
 /** Pure. No DOM. Returns a new array. */
 export function applyQuery(rows, fields, query) {
   const byKey = new Map(fields.map(f => [f.key, f])), tests = [];
-  for (const { key, op, value } of query.filters || []) {
+  for (const { key, op, value, from, to } of query.filters || []) {
     const f = byKey.get(key), not = op === 'is_not' || op === 'has_not', want = String(value ?? '');
     if (!f?.filter) continue;
     if (op === 'has' || op === 'has_not') tests.push(row => absent(read(f, row)) === not);
@@ -21,6 +22,13 @@ export function applyQuery(rows, fields, query) {
       const v = read(f, row);
       return (f.type === 'text' ? String(v ?? '').toLowerCase().includes(want.toLowerCase()) : String(f.type === 'bool' ? Boolean(v) : v ?? '') === want) !== not;
     });
+    else if (op === 'between' && f.type === 'date') {
+      // Bounds are datetime-local values (local time, to the minute), inclusive; a missing one leaves that side open.
+      // "To 07:11" covers that whole minute, since a row stamped 07:11:32 is displayed as 07:11.
+      const lo = from ? new Date(from).getTime() : NaN, hi = to ? new Date(to).getTime() + 59999 : NaN;
+      if (Number.isNaN(lo) && Number.isNaN(hi)) continue;
+      tests.push(row => { const v = read(f, row), t = absent(v) ? NaN : new Date(v).getTime(); return !Number.isNaN(t) && !(t < lo) && !(t > hi); });
+    }
   }
   const needle = String(query.search || '').trim().toLowerCase();
   if (needle) {
@@ -58,6 +66,8 @@ export function createList(root, config) {
       <select class="list-op" aria-label="Filter operator" hidden></select>
       <select class="list-value" aria-label="Filter value" hidden></select>
       <input class="list-value" aria-label="Filter value" placeholder="value" hidden>
+      <label class="list-range" hidden>From <input type="datetime-local" class="list-from"></label>
+      <label class="list-range" hidden>To <input type="datetime-local" class="list-to"></label>
       <button type="button" class="list-add" hidden>Add</button>
     </span>
     <span class="list-chips" hidden></span>
@@ -70,7 +80,7 @@ export function createList(root, config) {
     ? `<select data-action="${esc(a.id)}" aria-label="${esc(a.label)}"></select>`
     : `<button type="button" data-action="${esc(a.id)}"${a.danger ? ' class="danger"' : ''}>${esc(a.label)}</button>`).join('')}</div><div class="list-rows"></div><div class="list-empty" hidden>${config.empty ?? 'Nothing matches.'}</div></div>`;
   const $ = selector => root.querySelector(selector), wrap = root.firstElementChild;
-  const all = $('.list-select-all'), search = $('.list-search'), fieldSel = $('.list-field'), opSel = $('.list-op'), valSel = $('select.list-value'), valText = $('input.list-value'), add = $('.list-add'),
+  const all = $('.list-select-all'), search = $('.list-search'), fieldSel = $('.list-field'), opSel = $('.list-op'), valSel = $('select.list-value'), valText = $('input.list-value'), fromIn = $('.list-from'), toIn = $('.list-to'), add = $('.list-add'),
     chips = $('.list-chips'), sortSel = $('.list-sort'), dirBtn = $('.list-dir'), count = $('.list-count'), bulk = $('.list-bulk'), box = $('.list-rows'), empty = $('.list-empty');
 
   // Replace a part's HTML only when it changed, and never under the user's focus.
@@ -81,7 +91,9 @@ export function createList(root, config) {
     chips.hidden = !query.filters.length;
     const html = query.filters.map((x, i) => {
       const f = field(x.key), label = f?.label ?? x.key, value = (listed(f) && choices(f, rows).find(o => o.value === x.value)?.label) || x.value;
-      const text = x.op === 'has' || x.op === 'has_not' ? `${OPS[x.op]} ${label}` : `${label} ${OPS[x.op] ?? x.op} ${value}`;
+      const text = x.op === 'has' || x.op === 'has_not' ? `${OPS[x.op]} ${label}`
+        : x.op === 'between' ? `${label} ${x.from && x.to ? `from ${when(x.from)} to ${when(x.to)}` : x.from ? `after ${when(x.from)}` : `before ${when(x.to)}`}`
+        : `${label} ${OPS[x.op] ?? x.op} ${value}`;
       return `<button type="button" class="chip" data-chip="${i}" aria-label="Remove filter: ${esc(text)}">${esc(text)} <span aria-hidden="true">×</span></button>`;
     }).join('');
     if (chips.listHtml !== html) {
@@ -158,12 +170,13 @@ export function createList(root, config) {
   function builder(fresh) {
     const f = field(fieldSel.value);
     if (fresh && f) {
-      opSel.innerHTML = (f.type === 'date' ? ['has', 'has_not'] : Object.keys(OPS)).map(op => option({ value: op, label: OPS[op] })).join('');
+      opSel.innerHTML = (f.type === 'date' ? ['between', 'has', 'has_not'] : ['is', 'is_not', 'has', 'has_not']).map(op => option({ value: op, label: OPS[op] })).join('');
       valSel.innerHTML = listed(f) ? choices(f, rows).map(option).join('') : '';
-      valText.value = ''; valText.type = f.type === 'number' ? 'number' : 'text';
+      valText.value = fromIn.value = toIn.value = ''; valText.type = f.type === 'number' ? 'number' : 'text';
     }
     const valued = f && (opSel.value === 'is' || opSel.value === 'is_not');
     opSel.hidden = add.hidden = !f; valSel.hidden = !valued || !listed(f); valText.hidden = !valued || listed(f);
+    fromIn.parentElement.hidden = toIn.parentElement.hidden = !f || opSel.value !== 'between';
   }
 
   function addFilter() {
@@ -171,8 +184,17 @@ export function createList(root, config) {
     if (!f) return;
     const value = valued ? (valSel.hidden ? valText.value.trim() : valSel.value) : undefined;
     if (value === '') return valText.focus();
+    const next = valued ? { key: f.key, op, value } : { key: f.key, op };
+    if (op === 'between') {
+      // A half-typed date reads as '' and would silently become an open end, so the browser points at it instead.
+      const partial = [fromIn, toIn].find(el => el.validity.badInput);
+      if (partial) return partial.reportValidity();
+      if (!fromIn.value && !toIn.value) return fromIn.focus();
+      if (fromIn.value) next.from = fromIn.value;
+      if (toIn.value) next.to = toIn.value;
+    }
     fieldSel.value = ''; builder(); fieldSel.focus();
-    if (!query.filters.some(x => x.key === f.key && x.op === op && x.value === value)) api.setQuery({ filters: [...query.filters, valued ? { key: f.key, op, value } : { key: f.key, op }] });
+    if (!query.filters.some(x => x.key === f.key && x.op === op && x.value === value && x.from === next.from && x.to === next.to)) api.setQuery({ filters: [...query.filters, next] });
   }
 
   async function run(control) {
@@ -214,7 +236,7 @@ export function createList(root, config) {
     else if (t.dataset.action && t.parentElement === bulk) run(t);
   });
   wrap.addEventListener('input', e => { if (e.target === search) api.setQuery({ search: search.value }); });
-  wrap.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target === valText) addFilter(); });
+  wrap.addEventListener('keydown', e => { if (e.key === 'Enter' && [valText, fromIn, toIn].includes(e.target)) addFilter(); });
 
   const api = {
     setRows(next) {
