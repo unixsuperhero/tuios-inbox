@@ -18,15 +18,42 @@ CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, session TEXT NOT NULL, pane_id TEXT NOT NULL, pane_name TEXT NOT NULL, harness TEXT NOT NULL, prompt TEXT NOT NULL, response TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL, unread INTEGER NOT NULL DEFAULT 0, started TEXT NOT NULL, finished TEXT);
+CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, session TEXT NOT NULL, name TEXT NOT NULL, harness TEXT NOT NULL, kind TEXT NOT NULL, task_id TEXT REFERENCES tasks(id), state TEXT NOT NULL, seen TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id);
 `);
 const now = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
 const all = (sql, ...args) => db.query(sql).all(...args);
 const one = (sql, ...args) => db.query(sql).get(...args);
 const run = (sql, ...args) => db.query(sql).run(...args);
-for (const [key, name, executable, protocol] of [['codex', 'Codex · structured', 'codex', 'codex'], ['claude', 'Claude Code', 'claude', ''], ['omp', 'oh-my-pi', 'omp', ''], ['opencode', 'OpenCode · ACP', 'opencode', 'acp']]) {
+if (!one('SELECT 1 FROM profiles')) for (const [key, name, executable, protocol] of [['codex', 'Codex · structured', 'codex', 'codex'], ['claude', 'Claude Code', 'claude', ''], ['omp', 'oh-my-pi', 'omp', ''], ['opencode', 'OpenCode · ACP', 'opencode', 'acp']]) {
   run('INSERT OR IGNORE INTO profiles VALUES (?,?,?,?,?,?)', key, name, executable, JSON.stringify(key === 'opencode' ? ['acp'] : []), protocol, '{}');
 }
+// One row per TUIOS pane seen anywhere. A sighting fills in what it knows and never blanks the rest.
+function seeAgent(key, { session, name, harness, kind = 'agent', state, task = null, seen } = {}) {
+  run(`INSERT INTO agents VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET session=COALESCE(NULLIF(excluded.session,''),session), name=COALESCE(NULLIF(excluded.name,''),name), harness=COALESCE(NULLIF(excluded.harness,''),harness),
+    kind=CASE WHEN excluded.kind='agent' THEN 'agent' ELSE kind END, task_id=COALESCE(excluded.task_id,task_id), state=COALESCE(NULLIF(excluded.state,''),state), seen=MAX(seen,excluded.seen)`,
+    // Claude Code and oh-my-pi ("π ⠧ Title") prefix their window title with a status glyph that changes constantly.
+    key, session || '', (name || '').replace(/^(?:π\s+)?[^\p{L}\p{N}]+/u, ''), harness || '', kind, task, state || '', seen || now());
+}
+// The task a pane's new turns and commands inherit.
+function agentTask(key) { return one('SELECT task_id FROM agents WHERE id=?', key || '')?.task_id ?? null; }
+if (!all("SELECT name FROM pragma_table_info('turns')").some(c => c.name === 'archived')) db.transaction(() => db.exec('ALTER TABLE turns ADD COLUMN task_id TEXT REFERENCES tasks(id); ALTER TABLE turns ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;'))();
+// Runs once: a later start must not re-archive a snapshot the user moved back, or reassign an item they moved.
+if (!one("SELECT 1 FROM settings WHERE key='migrated_items'")) db.transaction(() => {
+  const hookValue = name => `(SELECT json_extract(meta,'$.values.${name}') FROM messages WHERE thread_id=threads.id ORDER BY rowid LIMIT 1)`;
+  // Commands are read on arrival from now on, so the old ones are too.
+  run(`UPDATE threads SET kind='command', unread=0, pane_id=COALESCE(pane_id,${hookValue('TUIOS_WINDOW_ID')}) WHERE kind='hook' AND ${hookValue('TUIOS_EVENT')}='after-command-finished'`);
+  run("UPDATE messages SET status=CASE WHEN json_extract(meta,'$.values.TUIOS_EXIT_CODE')='0' THEN 'complete' ELSE 'failed' END WHERE status='snapshot' AND thread_id IN (SELECT id FROM threads WHERE kind='command')");
+  // What is still a hook thread is a raw agent snapshot; turns replace those.
+  run("UPDATE threads SET archived=1 WHERE kind='hook'");
+  for (const t of all('SELECT pane_id,session,pane_name,harness,state,MAX(started) AS seen FROM turns GROUP BY pane_id')) seeAgent(t.pane_id, { session: t.session, name: t.pane_name, harness: t.harness, state: t.state, seen: t.seen });
+  for (const p of all('SELECT panes.*,tasks.session,tasks.created FROM panes JOIN tasks ON tasks.id=panes.task_id')) seeAgent(p.id, { session: p.session, name: p.name, kind: p.kind, state: p.state, task: p.task_id, seen: p.created });
+  for (const c of all(`SELECT pane_id,${hookValue('TUIOS_SESSION_ID')} AS session,MAX(updated) AS seen FROM threads WHERE kind='command' AND pane_id IS NOT NULL GROUP BY pane_id`)) seeAgent(c.pane_id, { session: c.session, kind: 'shell', seen: c.seen });
+  run('UPDATE turns SET task_id=(SELECT task_id FROM agents WHERE id=turns.pane_id) WHERE task_id IS NULL');
+  run("UPDATE threads SET task_id=(SELECT task_id FROM agents WHERE id=threads.pane_id) WHERE task_id IS NULL AND kind='command'");
+  run("INSERT INTO settings VALUES ('migrated_items','1')");
+})();
 const tuios = process.env.TUIOS_BIN || '/opt/homebrew/bin/tuios';
 const active = new Map();
 let lastError = '', boot = '', eventProcess;
@@ -53,6 +80,21 @@ async function directory(value) { const p = resolve(required(value, 'Directory')
 function taskFor(key) { const t = one('SELECT * FROM tasks WHERE id=?', key); if (!t) throw new Error('Task not found'); return t; }
 function paneFor(key) { const p = one('SELECT * FROM panes WHERE id=?', key); if (!p) throw new Error('Pane not found'); return p; }
 function threadFor(key) { const t = one('SELECT * FROM threads WHERE id=?', key); if (!t) throw new Error('Thread not found'); return t; }
+function idList(ids) { if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(x => typeof x !== 'string')) throw new Error('ids must be a list of 1 to 1000 ids'); return [...new Set(ids)]; }
+// One user edit applied to turns and threads alike; an unknown id or task changes nothing.
+function updateItems(ids, set = {}) {
+  const fields = [], args = [];
+  for (const key of ['unread', 'archived']) if (set[key] !== undefined) { fields.push(`${key}=?`); args.push(Number(Boolean(set[key]))); }
+  if (set.task_id !== undefined) { fields.push('task_id=?'); args.push(set.task_id === null ? null : taskFor(set.task_id).id); }
+  if (!fields.length) return 0;
+  db.transaction(() => {
+    for (const key of ids) {
+      const [, type, rowId] = /^(turn|thread):(.+)$/.exec(key) || [];
+      if (!type || !run(`UPDATE ${type}s SET ${fields.join(',')} WHERE id=?`, ...args, rowId).changes) throw new Error(`Item not found: ${key}`);
+    }
+  })();
+  changed(); return ids.length;
+}
 function completionKey(bootId, pane, commandSeq, stateAt) {
   if (!bootId || (!commandSeq && !stateAt)) return null;
   return `completion:${bootId}:${pane}:${commandSeq ? `command:${commandSeq}` : `agent:${stateAt}`}`;
@@ -82,6 +124,7 @@ async function newShell(t, name) {
   const paneId = result.window_id || result.id;
   if (!paneId) throw new Error(`Missing window id: ${JSON.stringify(result)}`);
   run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'shell', null, 'idle', '');
+  seeAgent(paneId, { session: t.session, name, kind: 'shell', state: 'idle', task: t.id });
   await cli(['send-text', '-s', t.session, '-w', paneId, `source '${root.replaceAll("'", "'\\''")}/scripts/shell.zsh'\n`], 15000, false);
   changed(); return paneFor(paneId);
 }
@@ -121,7 +164,8 @@ async function importMail(session) {
       }
     }
     const t = p ? taskFor(p.task_id) : one('SELECT * FROM tasks WHERE session=?', session);
-    const tid = thread(t?.id || null, p?.id || null, m.subject || 'Agent correspondence', 'mail', `mail-thread:${boot}:${session}:${m.thread_id || m.thread || m.id}`);
+    const a = !p && (one('SELECT * FROM agents WHERE id=?', m.from || '') || one('SELECT * FROM agents WHERE id=?', m.to || ''));
+    const tid = thread(t?.id || a?.task_id || null, p?.id || a?.id || null, m.subject || 'Agent correspondence', 'mail', `mail-thread:${boot}:${session}:${m.thread_id || m.thread || m.id}`);
     db.transaction(() => { run('INSERT INTO events VALUES (?,?)', key, JSON.stringify(m)); message(tid, m.verified_human ? 'human' : 'agent', m.body || m.text || JSON.stringify(m), 'complete', { ...m, session, boot_id: boot, untrusted: !m.verified_human }); })();
   }
 }
@@ -138,7 +182,8 @@ async function turnState(e) {
   if (!['working', 'needs_input'].includes(e.state) || Date.now() - e.time / 1e6 > 60000) return;
   let agent; try { agent = (await cli(['list-agents', '-s', e.session])).agents?.find(a => a.window_id === e.window); } catch {}
   const sent = active.has(e.window) && one("SELECT body FROM messages WHERE thread_id=? AND role='human' ORDER BY rowid DESC LIMIT 1", active.get(e.window));
-  run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,0,?,NULL)', id(), e.session, e.window, agent?.name || '', agent?.harness_id || '', sent?.body || agent?.meta?.prompt || '', '', '', e.state, new Date(e.time / 1e6).toISOString());
+  seeAgent(e.window, { session: e.session, name: agent?.name, harness: agent?.harness_id });
+  run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,0,?,NULL,?,0)', id(), e.session, e.window, agent?.name || '', agent?.harness_id || '', sent?.body || agent?.meta?.prompt || '', '', '', e.state, new Date(e.time / 1e6).toISOString(), agentTask(e.window));
 }
 function completeTurn(t, eventId) {
   const key = `turn:${eventId}`;
@@ -147,7 +192,7 @@ function completeTurn(t, eventId) {
   db.transaction(() => {
     run('INSERT INTO events VALUES (?,?)', key, '{}');
     if (open) run('UPDATE turns SET pane_name=?,harness=?,prompt=?,response=?,source=?,state=?,unread=1,finished=? WHERE id=?', t.name, t.harness, t.prompt || open.prompt, t.response, t.source, t.state, t.at, open.id);
-    else run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,1,?,?)', id(), t.session, t.pane, t.name, t.harness, t.prompt, t.response, t.source, t.state, t.at, t.at);
+    else run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?,0)', id(), t.session, t.pane, t.name, t.harness, t.prompt, t.response, t.source, t.state, t.at, t.at, agentTask(t.pane));
   })();
   changed();
 }
@@ -161,18 +206,16 @@ async function handleEvent(e) {
   }
   if (!e.session) return;
   if (e.type === 'agent-message') await importMail(e.session);
-  if (e.type === 'agent-state' && e.window && typeof e.state === 'string') await turnState(e);
+  if (e.type === 'agent-state' && e.window && typeof e.state === 'string') {
+    seeAgent(e.window, { session: e.session, state: e.state, seen: e.time ? new Date(e.time / 1e6).toISOString() : now() });
+    await turnState(e);
+  }
   const p = e.window && one('SELECT * FROM panes WHERE id=?', e.window);
   if (p && e.type === 'agent-state') {
     const state = e.state || e.agent_state?.state || e.agent_state || 'unknown';
     if (typeof state === 'string') run('UPDATE panes SET state=? WHERE id=?', state, p.id);
-    if (!active.has(p.id) && ['done', 'needs_input', 'errored'].includes(state)) {
-      const tid = thread(p.task_id, p.id, `${p.name}: ${state}`, 'agent');
-      let capture = ''; try { capture = await cli(['capture-pane', '-s', e.session, '-w', p.id, '--scrollback', '--lines', '2000'], 15000, false); } catch (err) { capture = err.message; }
-      message(tid, 'agent', capture || e.message || state, 'snapshot', { ...e, note: 'Terminal snapshot, not a parsed final answer' });
-    }
   }
-  if (p && ['window-exit', 'window-closed'].includes(e.type)) run('UPDATE panes SET state=? WHERE id=?', 'closed', p.id);
+  if (e.window && ['window-exit', 'window-closed'].includes(e.type)) { run('UPDATE panes SET state=? WHERE id=?', 'closed', e.window); run('UPDATE agents SET state=? WHERE id=?', 'closed', e.window); }
   if (e.boot_id && e.seq) run('INSERT OR REPLACE INTO settings VALUES (?,?)', 'cursor', JSON.stringify({ boot_id: e.boot_id, seq: e.seq }));
   changed();
 }
@@ -213,7 +256,8 @@ async function drainHooks() {
   try {
     for (const file of await readdir(spool)) {
       if (!file.endsWith('.json')) continue;
-      const path = join(spool, file), e = await Bun.file(path).json(), v = e.values;
+      const path = join(spool, file), e = await Bun.file(path).json(), v = e.values, command = v.TUIOS_EVENT === 'after-command-finished';
+      if (v.TUIOS_WINDOW_ID) seeAgent(v.TUIOS_WINDOW_ID, { session: v.TUIOS_SESSION_ID || e.turn?.session, name: e.turn?.name || v.TUIOS_WINDOW_NAME, harness: e.turn?.harness || v.TUIOS_AGENT_HARNESS, kind: command ? 'shell' : 'agent', state: v.TUIOS_AGENT_STATE, seen: e.time });
       if (e.turn) completeTurn(e.turn, e.id);
       const completedKey = completionKey(e.bootId, v.TUIOS_WINDOW_ID, e.captureMeta?.command_seq, e.agent?.agent_state_at);
       if (completedKey && one('SELECT id FROM events WHERE id=?', completedKey)) { await unlink(path); continue; }
@@ -226,9 +270,11 @@ async function drainHooks() {
           const body = e.capture || v.TUIOS_AGENT_MESSAGE || 'Event received; no terminal output was available.';
           db.transaction(() => {
             if (recover) finish(previous.id, body, 'snapshot', { hook: e, recovered: true });
-            else {
-              const tid = thread(p?.task_id || null, p?.id || null, v.TUIOS_EVENT === 'after-command-finished' ? v.TUIOS_COMMAND || 'Command finished' : `${v.TUIOS_WINDOW_NAME || 'Agent'}: ${v.TUIOS_AGENT_STATE}`, 'hook');
-              message(tid, 'system', body, 'snapshot', e);
+            else if (command) {
+              const tid = thread(agentTask(v.TUIOS_WINDOW_ID), v.TUIOS_WINDOW_ID || null, v.TUIOS_COMMAND || 'Command finished', 'command');
+              message(tid, 'system', body, v.TUIOS_EXIT_CODE === '0' ? 'complete' : 'failed', e);
+              // Whoever ran the command already saw it.
+              run('UPDATE threads SET unread=0 WHERE id=?', tid);
             }
             run('INSERT INTO events VALUES (?,?)', e.id, JSON.stringify(e));
           })();
@@ -248,7 +294,43 @@ const response = (value, status = 200) => Response.json(value, { status, headers
 async function api(req, url) {
   const parts = url.pathname.split('/').filter(Boolean), method = req.method;
   const body = method === 'POST' || method === 'PATCH' ? await req.json() : {};
-  if (url.pathname === '/api/state') return response({ tasks: all('SELECT * FROM tasks ORDER BY created DESC'), panes: all('SELECT * FROM panes'), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), threads: all('SELECT * FROM threads ORDER BY updated DESC'), turns: all('SELECT id,pane_name,harness,substr(prompt,1,400) AS prompt,state,unread,started,finished FROM turns ORDER BY started DESC LIMIT 200'), lastError, boot, dataDir });
+  if (url.pathname === '/api/state') return response({ tasks: all('SELECT * FROM tasks ORDER BY created DESC'), panes: all('SELECT * FROM panes'), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), agents: all('SELECT * FROM agents ORDER BY seen DESC'), items: all(`
+    SELECT 'turn:'||t.id AS id, 'turn' AS type, substr(t.prompt,1,400) AS title, t.pane_id AS agent_id, COALESCE(a.name,t.pane_name) AS agent_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, t.task_id, t.state AS status, t.unread, t.archived, t.started AS created, COALESCE(t.finished,t.started) AS updated FROM turns t LEFT JOIN agents a ON a.id=t.pane_id
+    UNION ALL SELECT 'thread:'||t.id, CASE WHEN t.kind IN ('agent','shell') THEN 'dispatch' WHEN t.kind='hook' THEN 'snapshot' ELSE t.kind END, t.subject, t.pane_id, COALESCE(a.name,''), COALESCE(a.harness,''), t.task_id, COALESCE((SELECT status FROM messages WHERE thread_id=t.id ORDER BY rowid DESC LIMIT 1),''), t.unread, t.archived, t.created, t.updated FROM threads t LEFT JOIN agents a ON a.id=t.pane_id
+    ORDER BY updated DESC LIMIT 2000`), lastError, boot, dataDir });
+  if (url.pathname === '/api/items/update' && method === 'POST') return response({ ok: true, updated: updateItems(idList(body.ids), body.set) });
+  if (url.pathname === '/api/tasks/update' && method === 'POST') {
+    const ids = idList(body.ids), status = body.set?.status;
+    if (!['open', 'active', 'done'].includes(status)) throw new Error('Unknown task status');
+    db.transaction(() => { for (const key of ids) if (!run('UPDATE tasks SET status=? WHERE id=?', status, key).changes) throw new Error('Task not found'); })();
+    changed(); return response({ ok: true, updated: ids.length });
+  }
+  if (url.pathname === '/api/agents/update' && method === 'POST') {
+    const ids = idList(body.ids), task = body.set?.task_id === null ? null : taskFor(body.set?.task_id).id;
+    db.transaction(() => {
+      for (const key of ids) {
+        const a = one('SELECT task_id FROM agents WHERE id=?', key); if (!a) throw new Error('Agent not found');
+        // The pane's items follow it, except those the user moved to some other task.
+        for (const table of ['turns', 'threads']) run(`UPDATE ${table} SET task_id=? WHERE pane_id=? AND (task_id IS NULL OR task_id IS ?)`, task, key, a.task_id);
+        run('UPDATE agents SET task_id=? WHERE id=?', task, key);
+      }
+    })();
+    changed(); return response({ ok: true, updated: ids.length });
+  }
+  if (url.pathname === '/api/profiles/delete' && method === 'POST') {
+    const ids = idList(body.ids);
+    db.transaction(() => { for (const key of ids) if (!run('DELETE FROM profiles WHERE id=?', key).changes) throw new Error('Profile not found'); })();
+    changed(); return response({ ok: true, deleted: ids.length });
+  }
+  if (url.pathname === '/api/pick-directory' && method === 'POST') {
+    let path = null;
+    try {
+      const child = Bun.spawn(['/usr/bin/osascript', '-e', 'POSIX path of (choose folder)'], { stdout: 'pipe', stderr: 'ignore' });
+      const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      if (!code) path = text.trim() || null;
+    } catch {}
+    return response({ path });
+  }
   if (url.pathname === '/api/profiles' && method === 'POST') {
     const key = body.id || id(); const name = required(body.name, 'Name', 120), executable = required(body.executable, 'Executable', 500);
     if (!Array.isArray(body.args) || body.args.some(x => typeof x !== 'string')) throw new Error('Arguments must be a JSON array of strings');
@@ -283,6 +365,7 @@ async function api(req, url) {
           const paneId = r.window_id || r.id || r.window;
           if (!paneId) throw new Error(JSON.stringify(r));
           run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'agent', profile.id, r.outcome === 'window_closed' ? 'closed' : r.ready === false ? 'needs_input' : 'idle', r.agent_session_id || '');
+          seeAgent(paneId, { session: t.session, name, task: t.id });
           run('UPDATE threads SET pane_id=? WHERE id=?', paneId, tid);
           finish(mid, r.ready === false ? `Agent needs attention: ${JSON.stringify(r)}` : `${name} is ready. Compose a prompt to begin.`, r.ready === false ? 'blocked' : 'complete', r);
         } catch (e) { finish(mid, e.message, 'failed'); }
@@ -299,7 +382,7 @@ async function api(req, url) {
   if (parts[1] === 'threads' && parts[2]) {
     const t = threadFor(parts[2]);
     if (parts.length === 3 && method === 'GET') return response({ ...t, messages: all('SELECT * FROM messages WHERE thread_id=? ORDER BY rowid', t.id).map(m => ({ ...m, meta: JSON.parse(m.meta) })) });
-    if (parts.length === 3 && method === 'PATCH') { run('UPDATE threads SET unread=?,archived=? WHERE id=?', body.unread === undefined ? t.unread : Number(Boolean(body.unread)), body.archived === undefined ? t.archived : Number(Boolean(body.archived)), t.id); changed(); return response({ ok: true }); }
+    if (parts.length === 3 && method === 'PATCH') { updateItems([`thread:${t.id}`], body); return response({ ok: true }); }
     if (parts[3] === 'reply' && method === 'POST') {
       if (t.kind === 'mail') {
         const last = one('SELECT meta FROM messages WHERE thread_id=? ORDER BY rowid DESC LIMIT 1', t.id);
@@ -312,14 +395,14 @@ async function api(req, url) {
         return response(result);
       }
       const p = paneFor(body.paneId || t.pane_id), task = taskFor(p.task_id), text = required(body.body, 'Reply');
-      if (t.task_id && p.task_id !== t.task_id) throw new Error('Pane belongs to another task');
+      if (p.id !== t.pane_id && t.task_id && p.task_id !== t.task_id) throw new Error('Pane belongs to another task');
       if (active.has(p.id)) throw new Error('Pane is busy with an app request');
       message(t.id, 'human', text); background(execute(task, p, text, t.id)); return response({ ok: true }, 202);
     }
   }
   if (parts[1] === 'turns' && parts[2]) {
     const t = one('SELECT * FROM turns WHERE id=?', parts[2]); if (!t) throw new Error('Turn not found');
-    if (method === 'PATCH') { run('UPDATE turns SET unread=? WHERE id=?', Number(Boolean(body.unread)), t.id); changed(); return response({ ...t, unread: Number(Boolean(body.unread)) }); }
+    if (method === 'PATCH') { updateItems([`turn:${t.id}`], body); return response(one('SELECT * FROM turns WHERE id=?', t.id)); }
     return response(t);
   }
   if (parts[1] === 'panes' && parts[2]) {
@@ -361,7 +444,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port, idleTimeout: 0, maxReque
       return new Response(new ReadableStream({ start(c) { controller = c; listeners.add(c); c.enqueue('data: connected\n\n'); }, cancel() { listeners.delete(controller); } }), { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } });
     }
     if (url.pathname.startsWith('/api/')) return await api(req, url);
-    const files = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css' };
+    const files = { '/': 'index.html', '/app.js': 'app.js', '/pages.js': 'pages.js', '/list.js': 'list.js', '/style.css': 'style.css', '/list.css': 'list.css' };
     if (!files[url.pathname]) return new Response('Not found', { status: 404 });
     return new Response(Bun.file(join(root, 'public', files[url.pathname])), { headers: { 'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' } });
   } catch (e) { return response({ error: e.message }, 400); }
