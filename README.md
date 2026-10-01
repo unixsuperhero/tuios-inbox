@@ -73,16 +73,29 @@ Agent notifications are enabled for done, needs_input, and errored, including fo
 
 Hooks load when the daemon starts. `tuios config apply` does not reload them. `tuios kill-server` ends all daemon sessions and their programs, so restart only at a safe point. Inspect actual hook runs and errors with `tuios list-hooks --json`.
 
-Refresh after a TUIOS upgrade:
+Native setup is managed by `~/bin/h-tuios`, independently of this app:
 
 ```sh
-bun run refresh-skills
-tuios integration install --all
-tuios integration status
-tuios doctor agents
+h tuios setup --dry-run       # preview skill links, startup rules, and native hooks
+h tuios setup                # detected harnesses; preserves unrelated instructions
+h tuios setup codex omp      # select harnesses
+h tuios status
+h tuios integrations-status
+h tuios doctor
+h tuios help                 # full command list
 ```
 
-The refresh script regenerates `skills/tuios/SKILL.md` from **`tuios --skill all`** and links it into installed local skill roots for shared agents, Claude Code, Codex, Gemini, Cursor, OpenCode, Pi, oh-my-pi, Grok, and Hermes. It refuses to overwrite an unrelated skill. Gemini shares the `.agents/skills` directory here. A harness may need to restart before it discovers the refreshed skill. Antigravity uses the Gemini configuration here.
+`h tuios skills-refresh` regenerates the complete reference from **`tuios --skill all`** under `~/.local/share/h-tuios/skills/tuios`. It links supported local skill roots there and migrates this app's earlier links without overwriting unrelated skills. `bun run refresh-skills` delegates to that command; the web backend is not needed.
+
+`bootstrap-install` adds a marked block to supported global instruction files. It tells newly started agents to inspect their TUIOS environment, read the native core and mail skills, and check their own unread mail at turn start and before finishing. Existing instruction text, symlinks, and hardlinks are preserved; first edits save `.h-tuios.bak` backups. `bootstrap-remove` removes only the marked block. `uninstall` also removes this tool's skill links, but leaves native state hooks and the shared reference intact.
+
+`targets` prints destinations and identifies harnesses needing manual startup rules; `instructions` prints the rule text. `bootstrap` prints pane identity and live core/mail skills inside TUIOS and is silent outside it. `mail` reads only the session/pane supplied by TUIOS's environment and refuses to fall back to the focused pane.
+
+For this installed Cursor CLI, use `h tuios bootstrap-project /path/to/project`; `--remove` removes that project's managed block. Its older build does not support a global `sessionStart` context hook. Hermes setup edits only an existing `SOUL.md`, avoiding replacement of its default persona; the current Hermes launcher points to a missing executable. Gemini's configuration exists but its executable is not on PATH. These limitations are distinct from native hook installation status.
+
+OpenCode keeps its existing Claude global fallback, and omp keeps its existing shared `.agents/AGENTS.md` fallback rather than creating native files that hide inherited rules. Custom provider/profile settings can change which instructions a harness loads.
+
+Restart agent sessions after changing global instructions. These are model instructions, not an idle-agent scheduler or a guarantee that every model obeys them. No daemon restart, automatic reply loop, approval bypass, or MCP permission change is performed. Path overrides supported by the native harnesses are honored where mapped; with `PI_CODING_AGENT_DIR` set, select Pi or omp explicitly rather than installing both into the same directory.
 
 The native installer preserves unrelated settings and writes `.tuios.bak` backups. This machine's current integrations are Claude Code, Codex, Gemini CLI, OpenCode, Antigravity, Cursor Agent, Grok, Hermes, Pi, and oh-my-pi. Antigravity, Grok, and Hermes report conversation identity; their state detection relies on screen rules. Unsupported or never-run harnesses are not fabricated as installed.
 
