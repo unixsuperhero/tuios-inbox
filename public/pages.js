@@ -89,13 +89,15 @@ const statuses = ['open', 'active', 'done'].map(s => ({ value: s, label: s }));
 const basename = path => path.split('/').filter(Boolean).pop() || path;
 function taskDetail(t) {
   const { panes, agents } = store.state, mine = panes.filter(p => p.task_id === t.id);
+  // Compose and mail go to panes this task opened; say so instead of leaving a dead button.
+  const needsPane = mine.length ? '' : 'disabled title="Open an agent or shell in this task first"';
   const members = [...mine.map(p => ({ ...p, pane: true })), ...agents.filter(a => a.task_id === t.id && !mine.some(p => p.id === a.id))];
   return `<div class="props"><label class="grow">Title<input data-set="task-title" data-id="${esc(t.id)}" value="${esc(t.title)}" maxlength="200"></label>${select('task-status', t.id, t.status, statuses, 'Status')}</div>
     <div class="detail-meta">Path: ${esc(t.path)}${t.worktree ? `<br>Worktree: ${esc(t.worktree)}` : ''}<br>TUIOS session: ${esc(t.session)}</div>
-    <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}" ${!mine.length ? 'disabled' : ''}>Compose work</button><button data-do="open-pane" data-id="${esc(t.id)}">+ Agent or shell</button><button data-do="open-mail" data-id="${esc(t.id)}" ${!mine.length ? 'disabled' : ''}>Send mail</button><button data-do="show-items" data-key="task_id" data-id="${esc(t.id)}">Show its items</button></div>
+    <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}" ${needsPane}>Compose work</button><button data-do="open-pane" data-id="${esc(t.id)}">+ Agent or shell</button><button data-do="open-mail" data-id="${esc(t.id)}" ${needsPane}>Send mail</button><button data-do="show-items" data-key="task_id" data-id="${esc(t.id)}">Show its items</button></div>
     <label>Task notes<textarea data-notes="${esc(t.id)}" rows="3">${esc(store.drafts.get(`notes:${t.id}`) ?? t.notes)}</textarea></label><button data-do="save-notes" data-id="${esc(t.id)}" class="subtle">Save notes</button>
     <div class="section-title">AGENTS AND SHELLS <span>${members.length}</span></div>
-    ${members.map(m => `<div class="pane"><div><strong>${esc(agentName(m.name, m.id))}</strong> ${badge(m.state)}<small>${esc(m.kind)}${m.harness ? ` · ${esc(m.harness)}` : ''} · ${esc(m.id.slice(0,8))}${m.conversation_id ? ` · conversation ${esc(m.conversation_id)}` : ''}</small></div><div class="pane-actions">${m.pane ? `<button data-do="inspect" data-id="${esc(m.id)}">Inspect</button>${m.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(m.id)}">Check mail</button>` : ''}` : ''}</div></div>`).join('') || hint('None yet. Open an agent or shell here, or assign an existing agent on the Agents page.')}`;
+    ${members.map(m => `<div class="pane"><div><strong>${esc(agentName(m.name, m.id))}</strong> ${badge(m.state)}<small>${esc(m.kind)}${m.harness ? ` · ${esc(m.harness)}` : ''} · ${esc(m.id.slice(0,8))}${m.conversation_id ? ` · conversation ${esc(m.conversation_id)}` : ''}</small></div><div class="pane-actions">${m.pane ? `<button data-do="inspect" data-id="${esc(m.id)}">Inspect</button>${m.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(m.id)}">Check mail</button>` : ''}` : ''}</div></div>`).join('') || hint('None yet. Use "+ Agent or shell" to open one here; Compose work and Send mail need it. Agents already running in TUIOS can be assigned on the Agents page.')}`;
 }
 
 // ---- Agent profiles ----
