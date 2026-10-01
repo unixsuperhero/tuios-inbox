@@ -128,8 +128,13 @@ async function importMail(session) {
 }
 // A turn row opens when a pane starts working; the after-agent-state hook fills in the reply.
 async function turnState(e) {
-  const open = one("SELECT id FROM turns WHERE pane_id=? AND finished IS NULL AND state IN ('working','needs_input') ORDER BY started DESC LIMIT 1", e.window);
-  if (open) { run('UPDATE turns SET state=? WHERE id=?', e.state, open.id); return; }
+  const open = one("SELECT id,prompt FROM turns WHERE pane_id=? AND finished IS NULL AND state IN ('working','needs_input') ORDER BY started DESC LIMIT 1", e.window);
+  if (open) {
+    // A harness that is only starting up reports working, then idle, with no prompt: not a turn.
+    if (e.state === 'idle' && !open.prompt) run('DELETE FROM turns WHERE id=?', open.id);
+    else run('UPDATE turns SET state=? WHERE id=?', e.state, open.id);
+    return;
+  }
   // Replayed history is not a turn starting now.
   if (!['working', 'needs_input'].includes(e.state) || Date.now() - e.time / 1e6 > 60000) return;
   let agent; try { agent = (await cli(['list-agents', '-s', e.session])).agents?.find(a => a.window_id === e.window); } catch {}

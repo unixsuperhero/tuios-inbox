@@ -33,10 +33,11 @@ async function refresh() {
 const turnNotes = { summary: 'Only the one-line TUIOS_AGENT_MESSAGE summary was available for this turn.', pane: 'Read from the pane transcript, so tool activity is included.' };
 function turnHtml(t) {
   const full = turnBodies.get(t.id);
-  const body = !t.finished ? `<p class="hint">${t.state === 'working' ? 'Still working. The reply appears here when the turn ends.' : t.state === 'needs_input' ? 'Waiting for your answer in the pane.' : 'The turn ended. Waiting for the hook to deliver the reply.'}</p>`
+  const body = !t.finished ? `<p class="hint">${t.state === 'working' ? 'Still working. The reply appears here when the turn ends.' : t.state === 'needs_input' ? 'Waiting for your answer in the pane.' : t.state === 'idle' ? 'The agent went idle without finishing this turn, so there is no reply.' : 'The turn ended. Waiting for the hook to deliver the reply.'}</p>`
     : !full ? '<p class="hint">Loading…</p>'
     : `${full.prompt.length > t.prompt.length ? `<p class="eyebrow">FULL PROMPT</p><pre>${esc(full.prompt)}</pre>` : ''}<p class="eyebrow">RESPONSE</p><pre>${esc(full.response || 'No reply text was captured.')}</pre>${turnNotes[full.source] ? `<p class="hint">${turnNotes[full.source]}</p>` : ''}`;
-  return `<summary><div class="row-top"><span class="${t.unread ? 'unread' : ''}">${esc(t.pane_name || 'agent')}${t.harness ? ` · ${esc(t.harness)}` : ''}</span><span>${badge(t.state)} &nbsp; ${time(t.finished || t.started)}</span></div><h3>${esc(t.prompt || 'Prompt not captured')}</h3></summary><div class="turn-body">${body}</div>`;
+  // An unnamed pane shows its title, which Claude Code prefixes with a spinner glyph.
+  return `<summary><div class="row-top"><span class="${t.unread ? 'unread' : ''}">${esc(t.pane_name.replace(/^[^\p{L}\p{N}]+/u, '') || 'agent')}${t.harness ? ` · ${esc(t.harness)}` : ''}</span><span>${badge(t.state)} &nbsp; ${time(t.finished || t.started)}</span></div><h3>${esc(t.prompt || 'Prompt not captured')}</h3></summary><div class="turn-body">${body}</div>`;
 }
 async function openTurn(key) {
   const t = state.turns.find(t => t.id === key);
