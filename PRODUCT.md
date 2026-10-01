@@ -50,10 +50,9 @@ These are limitations of the current implementation, not accepted product requir
 
 - The backend binds to loopback and restricts Host and Origin headers. Tailnet browser access is not currently provided by this configuration.
 - Human approvals and other human-only operations currently require an attached TUIOS client. This falls short of the browser-first requirement.
-- The executable field still uses typed text. Project and worktree Browse controls are now wired to a macOS directory chooser on the backend host, not the browser's device. Path selection for remote browser use remains a product-design decision.
-- The current interface and README use the name Dispatch. That conflicts with the confirmed name tuios inbox.
+- Executable Browse now opens a native macOS file chooser, while typed PATH commands remain valid. Project and worktree Browse controls use the native directory chooser. Both pickers select the backend host's filesystem, not the browser device's filesystem. Path selection for remote browser use remains a product-design decision.
 
-Initialization records these gaps; it does not implement their resolution.
+These remaining gaps are not resolved by the current UI changes.
 
 ### Existing execution and capture boundaries
 
@@ -70,11 +69,11 @@ Initialization records these gaps; it does not implement their resolution.
 
 ## Brand commitments
 
-The confirmed name is **tuios inbox**. No new visual identity, palette, typography, or aesthetic direction was chosen during initialization.
+The confirmed name is **tuios inbox**, now shown in the interface and README. No visual direction was chosen during initialization. The subsequent Packet capture workbench implementation is recorded in [DESIGN.md](DESIGN.md).
 
 ## Evidence on hand
 
-- [README](README.md) describes current workflows, capture limitations, setup, and security restrictions. Its Dispatch name and terminal-only approval flow describe current state, not the confirmed product direction.
+- [README](README.md) describes current workflows, capture limitations, setup, and security restrictions. Its native-client approval flow remains a current limitation, not the confirmed browser-first product direction.
 - [Server](server.mjs) implements the Bun backend, SQLite records, TUIOS integration, loopback binding, and request restrictions.
 - [Browser interface](public/index.html) and [browser behavior](public/app.js) provide the existing UI and workflows.
 - [Capture hook](scripts/capture-hook.mjs) and [turn capture](scripts/turn.mjs) provide native event collection and capture provenance.

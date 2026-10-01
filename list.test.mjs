@@ -33,6 +33,51 @@ test('an empty query returns every row in input order, as a new array', () => {
   expect(applyQuery(rows, fields, {})).toEqual(rows);
 });
 
+const items = [
+  { id: 'turn-zulu', type: 'turn', title: 'Zulu fix', task: 't1', unread: 1, updated: '2026-03-01T10:00:00Z' },
+  { id: 'command-alpha', type: 'command', title: 'Alpha fix', task: 't1', unread: 1, updated: '2026-01-01T10:00:00Z' },
+  { id: 'turn-beta', type: 'turn', title: 'Beta fix', task: 't1', unread: 0, updated: '2026-02-01T10:00:00Z' },
+  { id: 'command-docs', type: 'command', title: 'Write docs', task: 't2', unread: 1, updated: '2026-04-01T10:00:00Z' },
+  { id: 'note', type: 'note', title: 'Fix notes', task: 't1', unread: 1, updated: null },
+];
+const itemIds = query => applyQuery(items, fields, query).map(row => row.id);
+
+test('All includes every item type when toggles are absent, cleared or malformed', () => {
+  const expected = ['turn-zulu', 'command-alpha', 'turn-beta', 'command-docs', 'note'];
+  expect(itemIds({})).toEqual(expected);
+  expect(itemIds({ types: [] })).toEqual(expected);
+  expect(itemIds({ types: 'turn' })).toEqual(expected);
+  expect(itemIds({ types: ['obsolete'] })).toEqual(expected);
+  expect(itemIds({ types: ['turn', 'obsolete', 'turn'] })).toEqual(['turn-zulu', 'turn-beta']);
+});
+
+test('Turns and Commands independently narrow the list and together form a union', () => {
+  expect(itemIds({ types: ['turn'] })).toEqual(['turn-zulu', 'turn-beta']);
+  expect(itemIds({ types: ['command'] })).toEqual(['command-alpha', 'command-docs']);
+  expect(itemIds({ types: ['command', 'turn', 'command'] })).toEqual(['turn-zulu', 'command-alpha', 'turn-beta', 'command-docs']);
+});
+
+test('the item-type union is ANDed with ordinary filters, search and sort', () => {
+  const query = {
+    types: ['turn', 'command'],
+    filters: [{ key: 'task', op: 'is', value: 't1' }, { key: 'unread', op: 'is', value: 'true' }],
+    search: 'fix',
+    sort: { key: 'title', dir: 'asc' },
+  };
+  expect(itemIds(query)).toEqual(['command-alpha', 'turn-zulu']);
+  expect(itemIds({ ...query, types: ['turn'] })).toEqual(['turn-zulu']);
+  expect(itemIds({ ...query, types: [], sort: { key: 'updated', dir: 'desc' } })).toEqual(['turn-zulu', 'command-alpha', 'note']);
+  expect(itemIds({ ...query, filters: [...query.filters, { key: 'updated', op: 'between', from: local('2026-02-01T00:00:00Z') }] })).toEqual(['turn-zulu']);
+});
+
+test('item type filtering respects a computed type field without modifying rows or query', () => {
+  const records = [{ id: 'reply', kind: 'turn' }, { id: 'run', kind: 'command' }, { id: 'metadata', kind: 'note' }];
+  const query = { types: ['command', 'turn', 'command'], filters: [], sort: null };
+  const before = structuredClone({ records, query });
+  expect(applyQuery(records, [{ key: 'type', get: row => row.kind }], query).map(row => row.id)).toEqual(['reply', 'run']);
+  expect({ records, query }).toEqual(before);
+});
+
 test('enum: is / is not / has / has no', () => {
   expect(filter('status', 'is', 'done')).toBe('ac');
   expect(filter('status', 'is_not', 'done')).toBe('bde');

@@ -335,10 +335,10 @@ async function api(req, url) {
     db.transaction(() => { for (const key of ids) if (!run('DELETE FROM profiles WHERE id=?', key).changes) throw new Error('Profile not found'); })();
     changed(); return response({ ok: true, deleted: ids.length });
   }
-  if (url.pathname === '/api/pick-directory' && method === 'POST') {
+  if ((url.pathname === '/api/pick-directory' || url.pathname === '/api/pick-file') && method === 'POST') {
     let path = null;
     try {
-      const child = Bun.spawn(['/usr/bin/osascript', '-e', 'POSIX path of (choose folder)'], { stdout: 'pipe', stderr: 'ignore' });
+      const child = Bun.spawn(['/usr/bin/osascript', '-e', url.pathname === '/api/pick-file' ? 'POSIX path of (choose file)' : 'POSIX path of (choose folder)'], { stdout: 'pipe', stderr: 'ignore' });
       const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
       if (!code) path = text.trim() || null;
     } catch {}

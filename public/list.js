@@ -1,4 +1,4 @@
-// Generic list engine: search, filters, sort, multi-select with bulk actions, accordion rows.
+// Generic list engine: search, filters, sort, multi-select with bulk actions, accordion or linked rows.
 // Rows are patched in place, so a background refresh never collapses, scrolls, or retypes anything.
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const OPS = { is: 'is', is_not: 'is not', has: 'has', has_not: 'has no', between: 'between' };
@@ -10,10 +10,14 @@ const choices = (field, rows) => field.type === 'bool' ? [{ value: 'true', label
   : field.options ? field.options(rows)
   : [...new Set(rows.map(row => read(field, row)).filter(value => !absent(value)).map(String))].sort().map(value => ({ value, label: value }));
 const labels = (field, rows) => new Map(field.type === 'enum' ? choices(field, rows).map(o => [o.value, o.label]) : []);
+const itemTypes = value => Array.isArray(value) ? ['turn', 'command'].filter(type => value.includes(type)) : [];
+const creationOptions = source => source?.createOptions ?? (source?.createOption ? [{ label: source.createLabel ?? 'New…', create: source.createOption }] : []);
 
 /** Pure. No DOM. Returns a new array. */
 export function applyQuery(rows, fields, query) {
   const byKey = new Map(fields.map(f => [f.key, f])), tests = [];
+  const types = itemTypes(query.types), typeField = byKey.get('type');
+  if (types.length) tests.push(row => types.includes(typeField ? read(typeField, row) : row.type));
   for (const { key, op, value, from, to } of query.filters || []) {
     const f = byKey.get(key), not = op === 'is_not' || op === 'has_not', want = String(value ?? '');
     if (!f?.filter) continue;
@@ -53,14 +57,29 @@ export function createList(root, config) {
   const field = key => fields.find(f => f.key === key);
   const option = o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`;
   let saved; try { saved = JSON.parse(localStorage.getItem(store)); } catch {}
-  let query = { search: '', filters: [], sort: null, ...(saved || config.defaultQuery) };
-  if (!Array.isArray(query.filters)) query.filters = [];
-  let rows = [], shown = [], loaded = false, last = null;
+  const normalize = value => ({
+    ...value,
+    types: config.typeFilters ? itemTypes(value.types) : [],
+    filters: (Array.isArray(value.filters) ? value.filters : []).filter(f => f?.key !== config.scopeField),
+  });
+  let query = normalize({ search: '', filters: [], sort: null, ...(saved || config.defaultQuery) });
+  let rows = [], shown = [], loaded = false, last = null, destroyed = false;
   const picked = new Set(), els = new Map();
+  const created = new Map(), failedActions = new Map();
+  const catalog = source => {
+    const options = source.options ? source.options(rows) : choices(source, rows);
+    return [...options, ...[...(created.get(source)?.values() ?? [])].filter(o => !options.some(existing => existing.value === o.value))];
+  };
+  const remember = (source, choice) => {
+    if (!created.has(source)) created.set(source, new Map());
+    created.get(source).set(choice.value, choice);
+  };
+  const creatorButtons = (source, action) => creationOptions(source).map((o, i) => `<button type="button" class="${action ? 'list-create-action' : 'list-create-option'}"${action ? ` data-create-action="${esc(action)}"` : ''} data-create-index="${i}">${esc(o.label)}</button>`).join('');
 
   root.innerHTML = `<div class="list"><div class="list-toolbar">
     <input type="checkbox" class="list-select-all" aria-label="Select all shown" title="Select all shown">
     <input class="list-search" type="search" placeholder="Search" aria-label="Search">
+    ${config.typeFilters ? '<span class="list-types" role="group" aria-label="Item types"><button type="button" data-type="all">All</button><button type="button" data-type="turn">Turns</button><button type="button" data-type="command">Commands</button></span>' : ''}
     <span class="list-filter">
       <select class="list-field" aria-label="Filter by field"><option value="">Add filter…</option>${fields.filter(f => f.filter).map(f => option({ value: f.key, label: f.label })).join('')}</select>
       <select class="list-op" aria-label="Filter operator" hidden></select>
@@ -68,6 +87,7 @@ export function createList(root, config) {
       <input class="list-value" aria-label="Filter value" placeholder="value" hidden>
       <label class="list-range" hidden>From <input type="datetime-local" class="list-from"></label>
       <label class="list-range" hidden>To <input type="datetime-local" class="list-to"></label>
+      <span class="list-create-options" hidden></span>
       <button type="button" class="list-add" hidden>Add</button>
     </span>
     <span class="list-chips" hidden></span>
@@ -77,20 +97,21 @@ export function createList(root, config) {
       <span class="list-count"></span>
     </span>
   </div><div class="list-bulk" hidden><span class="list-selected"></span>${actions.map(a => a.options
-    ? `<select data-action="${esc(a.id)}" aria-label="${esc(a.label)}"></select>`
-    : `<button type="button" data-action="${esc(a.id)}"${a.danger ? ' class="danger"' : ''}>${esc(a.label)}</button>`).join('')}</div><div class="list-rows"></div><div class="list-empty" hidden>${config.empty ?? 'Nothing matches.'}</div></div>`;
+    ? `<select data-action="${esc(a.id)}" aria-label="${esc(a.label)}"></select>${creatorButtons(a, a.id)}<button type="button" data-retry-action="${esc(a.id)}" hidden>Apply ${esc(a.label.replace(/(…|\.\.\.)$/, ''))}</button>`
+    : `<button type="button" data-action="${esc(a.id)}"${a.danger ? ' class="danger"' : ''}>${esc(a.label)}</button>`).join('')}</div>${config.columns ? `<div class="list-columns" aria-hidden="true">${config.columns.map(label => `<span>${esc(label)}</span>`).join('')}</div>` : ''}<div class="list-rows"></div><div class="list-empty" hidden>${config.empty ?? 'Nothing matches.'}</div></div>`;
   const $ = selector => root.querySelector(selector), wrap = root.firstElementChild;
   const all = $('.list-select-all'), search = $('.list-search'), fieldSel = $('.list-field'), opSel = $('.list-op'), valSel = $('select.list-value'), valText = $('input.list-value'), fromIn = $('.list-from'), toIn = $('.list-to'), add = $('.list-add'),
-    chips = $('.list-chips'), sortSel = $('.list-sort'), dirBtn = $('.list-dir'), count = $('.list-count'), bulk = $('.list-bulk'), box = $('.list-rows'), empty = $('.list-empty');
+    chips = $('.list-chips'), sortSel = $('.list-sort'), dirBtn = $('.list-dir'), count = $('.list-count'), bulk = $('.list-bulk'), box = $('.list-rows'), empty = $('.list-empty'), createBox = $('.list-create-options');
 
   // Replace a part's HTML only when it changed, and never under the user's focus.
   const fill = (part, html) => { if (part.listHtml !== html && !part.contains(document.activeElement)) part.innerHTML = part.listHtml = html; };
 
   function tools() {
     if (search.value !== query.search) search.value = query.search;
+    for (const button of wrap.querySelectorAll('[data-type]')) button.setAttribute('aria-pressed', String(button.dataset.type === 'all' ? !query.types.length : query.types.includes(button.dataset.type)));
     chips.hidden = !query.filters.length;
     const html = query.filters.map((x, i) => {
-      const f = field(x.key), label = f?.label ?? x.key, value = (listed(f) && choices(f, rows).find(o => o.value === x.value)?.label) || x.value;
+      const f = field(x.key), label = f?.label ?? x.key, value = (listed(f) && catalog(f).find(o => o.value === x.value)?.label) || x.value;
       const text = x.op === 'has' || x.op === 'has_not' ? `${OPS[x.op]} ${label}`
         : x.op === 'between' ? `${label} ${x.from && x.to ? `from ${when(x.from)} to ${when(x.to)}` : x.from ? `after ${when(x.from)}` : `before ${when(x.to)}`}`
         : `${label} ${OPS[x.op] ?? x.op} ${value}`;
@@ -115,20 +136,35 @@ export function createList(root, config) {
     all.checked = ids.length > 0 && ids.length === shown.length; all.indeterminate = ids.length > 0 && !all.checked;
     bulk.hidden = !ids.length;
     $('.list-selected').textContent = `${ids.length} selected${picked.size > ids.length ? ` (+${picked.size - ids.length} filtered out)` : ''}`;
-    if (ids.length) for (const a of actions) if (a.options) fill(bulk.querySelector(`select[data-action="${CSS.escape(a.id)}"]`), option({ value: '', label: a.label.replace(/(…|\.\.\.)$/, '') + '…' }) + a.options().map(option).join(''));
+    if (ids.length) for (const a of actions) if (a.options) {
+      const pending = failedActions.get(a.id);
+      const select = bulk.querySelector(`select[data-action="${CSS.escape(a.id)}"]`), value = pending ? pending.value : select.value, selectedIndex = select.selectedIndex;
+      fill(select, option({ value: '', label: a.label.replace(/(…|\.\.\.)$/, '') + '…' }) + catalog(a).map(option).join(''));
+      select.value = value;
+      if (!value && (pending || selectedIndex > 0)) select.selectedIndex = [...select.options].findIndex((o, i) => i > 0 && !o.value);
+      bulk.querySelector(`[data-retry-action="${CSS.escape(a.id)}"]`).hidden = !pending;
+      for (const button of bulk.querySelectorAll(`[data-create-action="${CSS.escape(a.id)}"]`)) {
+        const index = +button.dataset.createIndex, retrying = pending?.choice && pending.createIndex === index;
+        button.textContent = retrying ? 'Retry assignment' : creationOptions(a)[index].label;
+        if (retrying) button.setAttribute('aria-label', `Retry ${a.label}: ${pending.choice.label}`);
+        else button.removeAttribute('aria-label');
+      }
+    }
   }
 
   function paint(el, row) {
-    const name = `item ${config.rowClass?.(row) ?? ''}`.trim();
+    const name = `item${config.rowHref ? ' item-index' : ''} ${config.rowClass?.(row) ?? ''}`.trim();
     if (el.className !== name) el.className = name;
     el.listRow = row;
     fill(el.firstChild.lastChild, config.summary(row));
+    if (config.rowHref) el.firstChild.lastChild.href = config.rowHref(row);
     if (el.open && config.detail) fill(el.lastChild, config.detail(row));
   }
 
   // `pin`: on a data refresh an open row stays even if it stopped matching (e.g. it was just marked read).
   function render(pin) {
     tools();
+    builder();
     const match = new Set(applyQuery(rows, fields, { ...query, sort: null }).map(rowId));
     shown = applyQuery(rows, fields, { sort: query.sort }).filter(row => match.has(rowId(row)) || (pin && els.get(rowId(row))?.open));
     const keep = new Set(shown.map(rowId));
@@ -139,8 +175,10 @@ export function createList(root, config) {
     for (const row of shown) {
       const id = rowId(row); let el = els.get(id);
       if (!el) {
-        el = document.createElement('details'); el.dataset.id = id;
-        el.innerHTML = '<summary><input type="checkbox" class="item-select" aria-label="Select row"><div class="item-summary"></div></summary><div class="item-body"></div>';
+        el = document.createElement(config.rowHref ? 'div' : 'details'); el.dataset.id = id;
+        el.innerHTML = config.rowHref
+          ? '<div class="item-row"><input type="checkbox" class="item-select" aria-label="Select row"><a class="item-link item-summary"></a></div>'
+          : '<summary><input type="checkbox" class="item-select" aria-label="Select row"><div class="item-summary"></div></summary><div class="item-body"></div>';
         els.set(id, el);
       }
       paint(el, row);
@@ -156,6 +194,7 @@ export function createList(root, config) {
   }
 
   function setOpen(el, open) {
+    if (config.rowHref) return;
     if (open && config.detail) fill(el.lastChild, config.detail(el.listRow));
     el.open = open;
     if (open) config.onOpen?.(el.listRow);
@@ -171,19 +210,26 @@ export function createList(root, config) {
     const f = field(fieldSel.value);
     if (fresh && f) {
       opSel.innerHTML = (f.type === 'date' ? ['between', 'has', 'has_not'] : ['is', 'is_not', 'has', 'has_not']).map(op => option({ value: op, label: OPS[op] })).join('');
-      valSel.innerHTML = listed(f) ? choices(f, rows).map(option).join('') : '';
+      valSel.innerHTML = valSel.listHtml = listed(f) ? catalog(f).map(option).join('') : '';
       valText.value = fromIn.value = toIn.value = ''; valText.type = f.type === 'number' ? 'number' : 'text';
+    }
+    if (!fresh && listed(f)) {
+      const value = valSel.value;
+      fill(valSel, catalog(f).map(option).join(''));
+      if (value) valSel.value = value;
     }
     const valued = f && (opSel.value === 'is' || opSel.value === 'is_not');
     opSel.hidden = add.hidden = !f; valSel.hidden = !valued || !listed(f); valText.hidden = !valued || listed(f);
     fromIn.parentElement.hidden = toIn.parentElement.hidden = !f || opSel.value !== 'between';
+    createBox.hidden = !valued || !listed(f) || !creationOptions(f).length;
+    fill(createBox, f ? creatorButtons(f) : '');
   }
 
   function addFilter() {
     const f = field(fieldSel.value), op = opSel.value, valued = op === 'is' || op === 'is_not';
     if (!f) return;
     const value = valued ? (valSel.hidden ? valText.value.trim() : valSel.value) : undefined;
-    if (value === '') return valText.focus();
+    if (value === '') return (valSel.hidden ? valText : valSel).focus();
     const next = valued ? { key: f.key, op, value } : { key: f.key, op };
     if (op === 'between') {
       // A half-typed date reads as '' and would silently become an open end, so the browser points at it instead.
@@ -197,19 +243,64 @@ export function createList(root, config) {
     if (!query.filters.some(x => x.key === f.key && x.op === op && x.value === value && x.from === next.from && x.to === next.to)) api.setQuery({ filters: [...query.filters, next] });
   }
 
+  const active = () => !destroyed && root.isConnected;
+  const report = error => { if (active()) root.dispatchEvent(new CustomEvent('list-error', { detail: error, bubbles: true })); };
+
+  async function createFilterOption(button) {
+    const f = field(fieldSel.value), create = creationOptions(f)[+button.dataset.createIndex].create;
+    button.disabled = true;
+    try {
+      const choice = await create({ owner: () => active() && field(fieldSel.value) === f });
+      if (!choice || !active() || field(fieldSel.value) !== f) return;
+      remember(f, choice);
+      valSel.innerHTML = valSel.listHtml = catalog(f).map(option).join('');
+      valSel.value = choice.value;
+      valSel.focus();
+    } catch (error) { report(error); }
+    finally { button.disabled = false; if (active() && document.activeElement !== valSel) button.focus(); }
+  }
+
   async function run(control) {
-    const action = actions.find(a => a.id === control.dataset.action), ids = api.selected(), chosen = control.tagName === 'SELECT';
-    if (!ids.length || (chosen && !control.selectedIndex)) return;
-    const value = control.value;
-    control.disabled = true;
-    try { await (chosen ? action.run(ids, value) : action.run(ids)); picked.clear(); last = null; }
-    catch (error) { root.dispatchEvent(new CustomEvent('list-error', { detail: error, bubbles: true })); }
-    control.disabled = false; if (chosen) control.selectedIndex = 0;
-    sync();
+    const actionId = control.dataset.action ?? control.dataset.createAction ?? control.dataset.retryAction;
+    const action = actions.find(a => a.id === actionId), chosen = Boolean(action.options);
+    const pending = failedActions.get(actionId), createIndex = control.dataset.createAction != null ? +control.dataset.createIndex : undefined;
+    const retry = control.dataset.retryAction ? pending : pending?.choice && pending.createIndex === createIndex ? pending : null;
+    const ids = retry ? retry.ids : api.selected(), creating = createIndex !== undefined && !retry;
+    const select = chosen && bulk.querySelector(`select[data-action="${CSS.escape(actionId)}"]`);
+    let value = retry ? retry.value : select?.value, choice = retry?.choice, assigning = false, succeeded = false;
+    if (!ids.length || (chosen && !creating && !retry && select.selectedIndex <= 0)) return;
+    const controls = [...bulk.querySelectorAll('button,select')].filter(el => [el.dataset.action, el.dataset.createAction, el.dataset.retryAction].includes(actionId));
+    for (const el of controls) el.disabled = true;
+    try {
+      if (creating) {
+        choice = await creationOptions(action)[createIndex].create({ owner: active });
+        if (!choice || !active()) return;
+        remember(action, choice);
+        select.innerHTML = select.listHtml = option({ value: '', label: action.label.replace(/(…|\.\.\.)$/, '') + '…' }) + catalog(action).map(option).join('');
+        select.value = value = choice.value;
+      }
+      assigning = true;
+      await (chosen ? action.run(ids, value) : action.run(ids));
+      if (!active()) return;
+      for (const id of ids) picked.delete(id);
+      failedActions.delete(actionId); last = null; succeeded = true;
+      if (select) select.value = '';
+    } catch (error) {
+      if (assigning && chosen) failedActions.set(actionId, { ids, value, choice, createIndex: retry?.createIndex ?? createIndex });
+      report(error);
+    } finally {
+      for (const el of controls) el.disabled = false;
+      if (active()) {
+        sync();
+        if (creating || retry) (succeeded && bulk.hidden ? all : control).focus();
+      }
+    }
   }
 
   wrap.addEventListener('click', e => {
     const t = e.target, summary = t.closest('summary');
+    const indexRow = t.closest('.item-row');
+    if (indexRow?.parentElement.parentElement === box && t === indexRow.firstChild) return pick(indexRow.parentElement.dataset.id, t.checked, e.shiftKey);
     if (summary?.parentElement.parentElement === box) {
       const el = summary.parentElement, check = summary.firstChild;
       if (t === check) return pick(el.dataset.id, check.checked, e.shiftKey);
@@ -222,18 +313,21 @@ export function createList(root, config) {
     const button = t.closest('button'); if (!button || t.closest('.list-rows')) return;
     if (button.dataset.chip) api.setQuery({ filters: query.filters.filter((_, i) => i !== +button.dataset.chip) });
     else if (button === add) addFilter();
+    else if (button.dataset.type) api.setQuery({ types: button.dataset.type === 'all' ? [] : query.types.includes(button.dataset.type) ? query.types.filter(type => type !== button.dataset.type) : [...query.types, button.dataset.type] });
+    else if (button.classList.contains('list-create-option')) createFilterOption(button);
+    else if ((button.dataset.createAction || button.dataset.retryAction) && bulk.contains(button)) run(button);
     else if (button === dirBtn) api.setQuery({ sort: { key: query.sort.key, dir: query.sort.dir === 'desc' ? 'asc' : 'desc' } });
     else if (button.dataset.action && bulk.contains(button)) run(button);
   });
   // Shift-click is range select here, not text selection.
-  wrap.addEventListener('mousedown', e => { if (e.shiftKey && e.target.closest('summary')?.parentElement.parentElement === box) e.preventDefault(); });
+  wrap.addEventListener('mousedown', e => { if (e.shiftKey && e.target.closest('summary,.item-row')?.parentElement.parentElement === box) e.preventDefault(); });
   wrap.addEventListener('change', e => {
     const t = e.target;
     if (t === all) { for (const row of shown) all.checked ? picked.add(rowId(row)) : picked.delete(rowId(row)); last = null; sync(); }
     else if (t === fieldSel) builder(true);
     else if (t === opSel) builder();
     else if (t === sortSel) api.setQuery({ sort: t.value ? { key: t.value, dir: field(t.value).type === 'date' ? 'desc' : 'asc' } : null });
-    else if (t.dataset.action && t.parentElement === bulk) run(t);
+    else if (t.dataset.action && t.parentElement === bulk) { failedActions.delete(t.dataset.action); run(t); }
   });
   wrap.addEventListener('input', e => { if (e.target === search) api.setQuery({ search: search.value }); });
   wrap.addEventListener('keydown', e => { if (e.key === 'Enter' && [valText, fromIn, toIn].includes(e.target)) addFilter(); });
@@ -245,15 +339,15 @@ export function createList(root, config) {
       render(true);
     },
     setQuery(partial) {
-      query = { ...query, ...partial };
+      query = normalize({ ...query, ...partial });
       try { localStorage.setItem(store, JSON.stringify(query)); } catch {}
       render(false);
     },
     getQuery: () => structuredClone(query),
     selected: () => shown.map(rowId).filter(id => picked.has(id)),
-    clearSelection() { picked.clear(); last = null; sync(); },
+    clearSelection() { picked.clear(); failedActions.clear(); last = null; sync(); },
     open(id) { const el = els.get(id); if (el && !el.open) setOpen(el, true); },
-    destroy() { root.replaceChildren(); els.clear(); picked.clear(); rows = shown = []; },
+    destroy() { destroyed = true; root.replaceChildren(); els.clear(); picked.clear(); created.clear(); failedActions.clear(); rows = shown = []; },
   };
   tools();
   return api;

@@ -1,4 +1,4 @@
-# Dispatch
+# tuios inbox
 
 Local task management and an email-style inbox backed by TUIOS. Browser UI, Bun HTTP server, SQLite. No package install or frontend build is required.
 
@@ -13,7 +13,11 @@ Open http://127.0.0.1:4399. The server binds only to loopback and rejects foreig
 
 The first page is one list of everything that came back from TUIOS: agent turns, finished shell commands, agent mail, and system notices. Unread rows are highlighted until you open them. Turns is the same list limited to agent turns, and Archive holds what you archived.
 
-Every page in the left nav is a list with search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. A row expands in place to its details, where its properties can be changed.
+The six-view top navigation opens lists with shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Work rows expand in place to their details, where properties can be changed. Task and Agent index rows are deep links to dedicated pages with factual, editable metadata above an intrinsically scoped inbox. Scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips.
+
+All is the default type selection and exclusive reset. Turns and Commands toggle independently; selecting both includes either type. The type union combines with search, filters, and sort. Selecting neither returns to All. Read and unread backgrounds describe state, never alternating stripes.
+
+The global inline composer sends a prompt or shell command to a native recipient. It lists Agents once and only agentless Panes separately, deduplicated by native ID. Task, Agent, and Pane selectors offer matching New choices. Creation returns the real record to the initiating selector; cancel or failure preserves its selection context and typed draft. Agent selection waits for that startup thread and returned native pane to become ready. Failed or blocked startup is not presented as ready.
 
 On the Agents page, assign a pane to a task. Its existing turns and commands move to that task, unless you moved one elsewhere by hand, and new ones inherit it.
 
@@ -41,7 +45,7 @@ turn: { id, session, pane_id, pane_name, harness, prompt, response, source, stat
 4. Read the result in Inbox. Reply to continue in the same pane and thread. Archive or mark threads unread independently of TUIOS's ephemeral read state.
 5. Use Inspect for a terminal snapshot, interruption, and shell keys. The inspector shows the `tuios attach SESSION` command for full interactive access.
 
-Agent profiles configure executable, argv, protocol, and environment. Put model and reasoning options in argv using your harness's actual CLI flags. Codex app-server and OpenCode ACP profiles use TUIOS's structured terminal adapters. Claude Code and oh-my-pi profiles use their native terminal interfaces. Credentials are inherited from the backend's environment and harness settings. Environment overrides are stored in the local database; prefer inherited credentials.
+Agent profiles configure executable, argv, protocol, and environment. Executable Browse opens the backend host's native macOS file chooser; typing a command resolved through PATH remains valid. Project and existing-worktree Browse controls use the native directory chooser. Canceling either picker preserves the current input. Pickers choose the backend filesystem, not the browser device's filesystem. Put model and reasoning options in argv using your harness's actual CLI flags. Codex app-server and OpenCode ACP profiles use TUIOS's structured terminal adapters. Claude Code and oh-my-pi profiles use their native terminal interfaces. Credentials are inherited from the backend's environment and harness settings. Environment overrides are stored in the local database; prefer inherited credentials.
 
 Task status and notes are editable. The project and optional worktree paths identify the working directories. Panes and conversation metadata belong to the task; terminal lifecycle is independent of the browser lifecycle. Closing the web backend does not terminate TUIOS's panes. On restart, an interrupted dispatch is marked uncertain and is never automatically replayed.
 
@@ -79,7 +83,7 @@ The subscriber saves agent mail without marking it read in TUIOS, tracks pane st
 
 The hook collector writes atomic JSON files to `~/.local/share/tuios-inbox/events`, even while the web backend is stopped. The backend imports them transactionally and removes only consumed files. Completion identities prevent an app result and its matching hook from creating two result messages. An offline completion can recover a pending message from the same daemon boot. App restarts never resend an uncertain prompt.
 
-Background UI updates refresh the list and an unfocused thread. They do not recreate task editors or overwrite focused reply drafts.
+Background UI updates refresh the list and an unfocused thread. They do not recreate focused task metadata editors or overwrite focused composer and reply drafts.
 
 ## TUIOS setup
 
@@ -125,9 +129,9 @@ The native installer preserves unrelated settings and writes `.tuios.bak` backup
 
 ## Architecture choice
 
-The standalone app leaves Portfolio unchanged. Its Wails app demonstrates a loopback Bun sidecar, but its PTY ownership closes processes with UI teardown. Dispatch instead keeps TUIOS responsible for persistent execution and SQLite responsible for tasks and correspondence.
+The standalone app leaves Portfolio unchanged. Its Wails app demonstrates a loopback Bun sidecar, but its PTY ownership closes processes with UI teardown. tuios inbox instead keeps TUIOS responsible for persistent execution and SQLite responsible for tasks and correspondence.
 
-A hook-only collector survives backend downtime but cannot provide live control or complete lifecycle reconciliation. A subscription-only collector provides replay and immediate state but loses unrecoverable events and output during outages. Dispatch combines resumable subscription and an atomic hook spool. Neither path is presented as a complete harness transcript.
+A hook-only collector survives backend downtime but cannot provide live control or complete lifecycle reconciliation. A subscription-only collector provides replay and immediate state but loses unrecoverable events and output during outages. tuios inbox combines resumable subscription and an atomic hook spool. Neither path is presented as a complete harness transcript.
 
 ```js
 {
