@@ -9,14 +9,28 @@ bun start
 
 Open http://127.0.0.1:4399. The server binds only to loopback and rejects foreign origins, foreign Host headers, and mutations without its same-origin JSON header. Do not expose it through a public proxy. It can execute commands as your user.
 
+## Inbox
+
+The first page is one list of everything that came back from TUIOS: agent turns, finished shell commands, agent mail, and system notices. Unread rows are highlighted until you open them. Turns is the same list limited to agent turns, and Archive holds what you archived.
+
+Every page in the left nav is a list with search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. A row expands in place to its details, where its properties can be changed.
+
+On the Agents page, assign a pane to a task. Its existing turns and commands move to that task, unless you moved one elsewhere by hand, and new ones inherit it.
+
+```js
+item:  { id: 'turn:…' | 'thread:…', type: 'turn' | 'command' | 'mail' | 'system' | 'dispatch' | 'snapshot',
+         title, agent_id, agent_name, harness, task_id, status, unread, archived, created, updated }
+agent: { id, session, name, harness, kind: 'agent' | 'shell', task_id, state, seen }
+```
+
 ## Turns
 
-The first page lists every agent turn in any TUIOS session, newest first. A row appears with the prompt when a pane starts working. When the turn ends, the `after-agent-state` hook delivers the reply and the row is highlighted as unread until you expand it.
+A turn row appears with the prompt when a pane starts working. When the turn ends, the `after-agent-state` hook delivers the reply and the row becomes unread.
 
 `TUIOS_AGENT_MESSAGE` holds only the first line of the reply, cut to about 120 characters. The hook therefore reads the whole turn from the Claude Code or oh-my-pi transcript (`source: transcript`) or from a protocol pane's own transcript (`source: pane`). Any other harness gets the one-line summary (`source: summary`). The hook runs after `notifications.agent.settle_seconds` (2 by default), and TUIOS drops it if the pane starts another turn first; that row then stays without a reply.
 
 ```js
-turn: { id, session, pane_id, pane_name, harness, prompt, response, source, state, unread, started, finished }
+turn: { id, session, pane_id, pane_name, harness, prompt, response, source, state, unread, archived, task_id, started, finished }
 ```
 
 ## Working with a task
