@@ -1,4 +1,5 @@
-/* Rendered Markdown (public/markdown.js). Everything is scoped under .md and uses the tokens of style.css. */
+/* Rendered Markdown (public/markdown.js). Everything is scoped under .md and uses the tokens of style.css,
+   including for code and table-header surfaces, so text stays readable in whatever theme those tokens define. */
 .md{font-size:13px;line-height:1.7;color:var(--ink);overflow-wrap:anywhere}
 /* The same gap under the RESPONSE label as the raw <pre> this replaces. */
 .item-body .md{margin-top:8px}
@@ -18,9 +19,9 @@
 .md a{color:var(--forest);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px}
 .md a:hover{text-decoration-thickness:2px}
 
-.md code{font:12px 'SFMono-Regular',Consolas,monospace;background:#e8ebdc;border-radius:4px;padding:1px 5px}
+.md code{font:12px 'SFMono-Regular',Consolas,monospace;color:var(--ink);background:var(--surface-raised);border-radius:4px;padding:1px 5px}
 /* list.css sets font and margin on every .item-body pre; the second selector outranks it whichever file loads last. */
-.md pre,.item-body .md pre{font:12px/1.6 'SFMono-Regular',Consolas,monospace!important;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink);background:#eef0e4;border:1px solid var(--line);border-radius:7px;padding:11px 14px;margin:0 0 12px}
+.md pre,.item-body .md pre{font:12px/1.6 'SFMono-Regular',Consolas,monospace!important;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:7px;padding:11px 14px;margin:0 0 12px}
 .md pre code{font:inherit;background:none;padding:0}
 
 .md ul,.md ol{padding-left:22px}
@@ -38,6 +39,6 @@
 .md .table{overflow-x:auto}
 .md table{border-collapse:collapse;font-size:12px;line-height:1.55;overflow-wrap:normal}
 .md th,.md td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
-.md th{background:#eef0e4;font-weight:600}
+.md th{background:var(--paper);font-weight:600}
 .md .center{text-align:center}
 .md .right{text-align:right}
