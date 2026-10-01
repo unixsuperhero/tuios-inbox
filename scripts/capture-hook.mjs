@@ -1,6 +1,7 @@
 import { mkdir, rename, chmod } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { captureTurn } from './turn.mjs';
 const dir = process.env.TUIOS_INBOX_SPOOL || join(homedir(), '.local/share/tuios-inbox/events');
 await mkdir(dir, { recursive: true, mode: 0o700 });
 const event = { id: crypto.randomUUID(), time: new Date().toISOString(), values: {} };
@@ -29,6 +30,11 @@ if (session && pane) {
     event.bootId = attention.boot_id;
     event.agent = agent;
   } catch (error) { event.captureError = error.message; }
+  if (process.env.TUIOS_EVENT === 'after-agent-state') {
+    event.turn = await captureTurn({ bin: process.env.TUIOS_BIN || '/opt/homebrew/bin/tuios', session, pane, time: event.time, seed: {
+      name: process.env.TUIOS_WINDOW_NAME, harness: process.env.TUIOS_AGENT_HARNESS, state: process.env.TUIOS_AGENT_STATE, summary: process.env.TUIOS_AGENT_MESSAGE,
+    } });
+  }
 }
 const temp = join(dir, `.${event.id}.tmp`), final = join(dir, `${event.id}.json`);
 await Bun.write(temp, JSON.stringify(event));

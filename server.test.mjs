@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
+import { claudeTranscript, paneTranscript } from './scripts/turn.mjs';
 
 let child, home, base, port;
 async function start() {
@@ -56,4 +57,34 @@ test('invalid working directories and non-argv agent arguments are rejected', as
   expect((await call('/tasks', { title: 'Invalid', path: join(home, 'missing') })).status).toBe(400);
   expect((await call('/profiles', { name: 'Bad argv', executable: 'codex', args: '--model x', env: {}, protocol: '' })).status).toBe(400);
   expect((await call('/profiles', { name: 'Bad environment', executable: 'codex', args: [], env: { SECRET: 42 }, protocol: '' })).status).toBe(400);
+});
+
+test('a finished agent turn from the hook is unread until its reply is opened', async () => {
+  const turn = { session: 's', pane: 'pane-1', name: 'reviewer', harness: 'codex', state: 'done', at: new Date().toISOString(), prompt: 'Summarise the diff', response: 'First line.\nSecond line.', source: 'pane' };
+  await Bun.write(join(home, 'events', 'turn-1.json'), JSON.stringify({ id: 'turn-1', values: { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: 'pane-1' }, turn }));
+  let listed;
+  for (let i = 0; i < 40 && !listed; i++) { await Bun.sleep(100); listed = (await (await call('/state')).json()).turns.find(t => t.prompt === turn.prompt); }
+  expect(listed).toMatchObject({ pane_name: 'reviewer', state: 'done', unread: 1 });
+  expect(listed.response).toBeUndefined();
+  const opened = await (await call(`/turns/${listed.id}`, { unread: false }, 'PATCH')).json();
+  expect(opened).toMatchObject({ response: turn.response, unread: 0 });
+  expect((await (await call('/state')).json()).turns.filter(t => t.prompt === turn.prompt)).toMatchObject([{ unread: 0 }]);
+});
+
+test('a turn is read in full from a Claude Code transcript or a protocol pane', () => {
+  const lines = [
+    { type: 'user', message: { content: 'earlier prompt' } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'earlier reply' }] } },
+    { type: 'user', message: { content: 'fix the bug' } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'Looking.' }] } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } },
+    { type: 'assistant', isSidechain: true, message: { content: [{ type: 'text', text: 'subagent chatter' }] } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'Fixed.\n\nTests pass.' }] } },
+  ].map(JSON.stringify);
+  expect(claudeTranscript(lines)).toEqual({ prompt: 'fix the bug', response: 'Fixed.\n\nTests pass.', source: 'transcript' });
+  expect(claudeTranscript(lines.slice(0, 5))).toBeNull();
+  const pane = ['you  old prompt', '', 'old reply', 'turn finished', '', 'you  Reply with exactly ONE TWO. Do not u', 'se tools.', '', 'ONE', 'TWO', 'turn finished', '> type a prompt'].join('\n');
+  expect(paneTranscript(pane)).toEqual({ prompt: 'Reply with exactly ONE TWO. Do not use tools.', response: 'ONE\nTWO', source: 'pane' });
+  expect(paneTranscript('> type a prompt')).toBeNull();
 });

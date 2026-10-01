@@ -1,7 +1,7 @@
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-let state = { tasks: [], panes: [], profiles: [], threads: [] }, view = 'tasks', selectedTask = null, selectedThread = null, selectedProfile = null, terminalPane = null, refreshTimer;
-const drafts = new Map();
+let state = { tasks: [], panes: [], profiles: [], threads: [], turns: [] }, view = 'turns', selectedTask = null, selectedThread = null, selectedProfile = null, terminalPane = null, refreshTimer;
+const drafts = new Map(), turnBodies = new Map();
 async function api(path, body, method = 'POST') {
   const response = await fetch('/api' + path, body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) });
   const result = await response.json(); if (!response.ok) throw Error(result.error || 'Request failed'); return result;
@@ -25,14 +25,46 @@ async function refresh() {
   state = await api('/state');
   $('#task-count').textContent = state.tasks.filter(t => t.status !== 'done').length;
   $('#unread-count').textContent = state.threads.filter(t => t.unread && !t.archived).length;
+  $('#turn-count').textContent = state.turns.filter(t => t.unread).length;
   renderList();
   // Incoming events never replace a draft, move focus, or rebuild the task editor.
   if (selectedThread && !$('#detail').contains(document.activeElement)) await renderThread(selectedThread, false);
 }
+const turnNotes = { summary: 'Only the one-line TUIOS_AGENT_MESSAGE summary was available for this turn.', pane: 'Read from the pane transcript, so tool activity is included.' };
+function turnHtml(t) {
+  const full = turnBodies.get(t.id);
+  const body = !t.finished ? `<p class="hint">${t.state === 'working' ? 'Still working. The reply appears here when the turn ends.' : t.state === 'needs_input' ? 'Waiting for your answer in the pane.' : 'The turn ended. Waiting for the hook to deliver the reply.'}</p>`
+    : !full ? '<p class="hint">Loading…</p>'
+    : `${full.prompt.length > t.prompt.length ? `<p class="eyebrow">FULL PROMPT</p><pre>${esc(full.prompt)}</pre>` : ''}<p class="eyebrow">RESPONSE</p><pre>${esc(full.response || 'No reply text was captured.')}</pre>${turnNotes[full.source] ? `<p class="hint">${turnNotes[full.source]}</p>` : ''}`;
+  return `<summary><div class="row-top"><span class="${t.unread ? 'unread' : ''}">${esc(t.pane_name || 'agent')}${t.harness ? ` · ${esc(t.harness)}` : ''}</span><span>${badge(t.state)} &nbsp; ${time(t.finished || t.started)}</span></div><h3>${esc(t.prompt || 'Prompt not captured')}</h3></summary><div class="turn-body">${body}</div>`;
+}
+async function openTurn(key) {
+  const t = state.turns.find(t => t.id === key);
+  if (!t?.finished || (turnBodies.has(key) && !t.unread)) return;
+  turnBodies.set(key, await api(`/turns/${key}`, { unread: false }, 'PATCH'));
+  await refresh();
+}
+function renderTurns(list, query) {
+  const turns = state.turns.filter(t => `${t.prompt} ${t.pane_name}`.toLowerCase().includes(query));
+  if (!$('#turns')) list.innerHTML = '<div class="list-label">AGENT TURNS <span id="turns-shown"></span></div><div id="turns"></div><p class="blank-list" id="no-turns">No turns yet.<br>A row appears when an agent in TUIOS receives a prompt.</p>';
+  $('#turns-shown').textContent = turns.length; $('#no-turns').hidden = turns.length > 0;
+  // Rows are patched in place so a background refresh never collapses an open reply.
+  const box = $('#turns'), keep = new Set(turns.map(t => t.id));
+  for (const el of [...box.children]) if (!keep.has(el.dataset.turn)) el.remove();
+  turns.forEach((t, i) => {
+    let el = box.querySelector(`[data-turn="${CSS.escape(t.id)}"]`);
+    if (!el) { el = document.createElement('details'); el.dataset.turn = t.id; }
+    const html = turnHtml(t);
+    if (el.turnHtml !== html) { el.innerHTML = el.turnHtml = html; el.className = `turn${t.unread ? ' is-unread' : ''}`; }
+    if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
+    if (el.open && t.finished && (t.unread || !turnBodies.has(t.id))) act(() => openTurn(t.id));
+  });
+}
 function renderList() {
   const query = $('#search').value.toLowerCase();
   const list = $('#list');
-  if (view === 'tasks') {
+  if (view === 'turns') renderTurns(list, query);
+  else if (view === 'tasks') {
     const tasks = state.tasks.filter(t => `${t.title} ${t.path}`.toLowerCase().includes(query));
     list.innerHTML = `<div class="list-label">PROJECT WORK <span>${tasks.length}</span></div>` + tasks.map(t => `<button class="row ${selectedTask === t.id && !selectedThread ? 'selected' : ''}" data-task="${esc(t.id)}"><div class="row-top"><span>${esc(t.path.split('/').pop())}</span>${badge(t.status)}</div><h3>${esc(t.title)}</h3><p>${state.panes.filter(p => p.task_id === t.id).length} sessions · ${state.threads.filter(x => x.task_id === t.id && x.unread && !x.archived).length} unread</p></button>`).join('') + (!tasks.length ? '<p class="blank-list">No tasks yet.<br>Create one to connect a project and start work.</p>' : '');
   } else if (view === 'profiles') {
@@ -85,7 +117,8 @@ function openProfile(profile) { const form = $('#profile-form'); form.reset(); f
 function setView(next) {
   view = next; selectedThread = null;
   document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active',b.dataset.view === view));
-  const titles = { tasks:['Your tasks.','Give work a home. Let your agents bring the results back.'], inbox:['The work came back.','Completed work, questions, and correspondence. No chat stream to babysit.'], archive:['Filed, not forgotten.','Your completed conversations stay here.'], profiles:['Your working team.','Reusable agent settings, ready for the next task.'] };
+  $('.workspace').classList.toggle('single', view === 'turns');
+  const titles = { turns:['Agent turns.','Every prompt an agent in TUIOS received. Expand a row to read the reply; highlighted rows are unread.'], tasks:['Your tasks.','Give work a home. Let your agents bring the results back.'], inbox:['The work came back.','Completed work, questions, and correspondence. No chat stream to babysit.'], archive:['Filed, not forgotten.','Your completed conversations stay here.'], profiles:['Your working team.','Reusable agent settings, ready for the next task.'] };
   $('#section-name').textContent = view.toUpperCase(); $('#page-title').textContent = titles[view][0]; $('#page-description').textContent = titles[view][1];
   if (view === 'tasks' && selectedTaskValue()) renderTask(selectedTask);
   else if (view === 'profiles' && state.profiles.length) renderProfile(state.profiles[0].id);
@@ -127,6 +160,7 @@ document.addEventListener('click', e => {
     }
   });
 });
+document.addEventListener('toggle', e => { if (e.target.matches?.('.turn') && e.target.open) act(() => openTurn(e.target.dataset.turn)); }, true);
 document.addEventListener('input',e=>{if(e.target.id==='search')renderList();if(e.target.id==='task-notes')drafts.set(`notes:${selectedTask}`,e.target.value);if(e.target.closest('#reply-form'))drafts.set(selectedThread,e.target.value);});
 document.addEventListener('change',e=>{if(e.target.id==='task-status')act(async()=>{await api(`/tasks/${selectedTask}`,{status:e.target.value},'PATCH');await refresh();});});
 document.addEventListener('submit',e=>{
@@ -146,4 +180,5 @@ const stream=new EventSource('/api/events');
 stream.onopen=()=>$('#connection').textContent='Connected locally';
 stream.onerror=()=>$('#connection').textContent='Reconnecting…';
 stream.onmessage=()=>{clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>act(refresh),150);};
+setView(view);
 await act(refresh);

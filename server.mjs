@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { mkdir, readdir, unlink, stat, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { captureTurn } from './scripts/turn.mjs';
 
 const root = import.meta.dir;
 const dataDir = process.env.TUIOS_INBOX_DATA || join(homedir(), '.local/share/tuios-inbox');
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, task_id TEXT REFERENCES
 CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id), role TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, meta TEXT NOT NULL DEFAULT '{}', created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, session TEXT NOT NULL, pane_id TEXT NOT NULL, pane_name TEXT NOT NULL, harness TEXT NOT NULL, prompt TEXT NOT NULL, response TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL, unread INTEGER NOT NULL DEFAULT 0, started TEXT NOT NULL, finished TEXT);
 `);
 const now = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
@@ -124,6 +126,27 @@ async function importMail(session) {
     db.transaction(() => { run('INSERT INTO events VALUES (?,?)', key, JSON.stringify(m)); message(tid, m.verified_human ? 'human' : 'agent', m.body || m.text || JSON.stringify(m), 'complete', { ...m, session, boot_id: boot, untrusted: !m.verified_human }); })();
   }
 }
+// A turn row opens when a pane starts working; the after-agent-state hook fills in the reply.
+async function turnState(e) {
+  const open = one("SELECT id FROM turns WHERE pane_id=? AND finished IS NULL AND state IN ('working','needs_input') ORDER BY started DESC LIMIT 1", e.window);
+  if (open) { run('UPDATE turns SET state=? WHERE id=?', e.state, open.id); return; }
+  // Replayed history is not a turn starting now.
+  if (!['working', 'needs_input'].includes(e.state) || Date.now() - e.time / 1e6 > 60000) return;
+  let agent; try { agent = (await cli(['list-agents', '-s', e.session])).agents?.find(a => a.window_id === e.window); } catch {}
+  const sent = active.has(e.window) && one("SELECT body FROM messages WHERE thread_id=? AND role='human' ORDER BY rowid DESC LIMIT 1", active.get(e.window));
+  run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,0,?,NULL)', id(), e.session, e.window, agent?.name || '', agent?.harness_id || '', sent?.body || agent?.meta?.prompt || '', '', '', e.state, new Date(e.time / 1e6).toISOString());
+}
+function completeTurn(t, eventId) {
+  const key = `turn:${eventId}`;
+  if (!['done', 'errored'].includes(t.state) || one('SELECT id FROM events WHERE id=?', key)) return;
+  const open = one('SELECT id,prompt FROM turns WHERE pane_id=? AND finished IS NULL AND started<=? ORDER BY started DESC LIMIT 1', t.pane, t.at);
+  db.transaction(() => {
+    run('INSERT INTO events VALUES (?,?)', key, '{}');
+    if (open) run('UPDATE turns SET pane_name=?,harness=?,prompt=?,response=?,source=?,state=?,unread=1,finished=? WHERE id=?', t.name, t.harness, t.prompt || open.prompt, t.response, t.source, t.state, t.at, open.id);
+    else run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,1,?,?)', id(), t.session, t.pane, t.name, t.harness, t.prompt, t.response, t.source, t.state, t.at, t.at);
+  })();
+  changed();
+}
 async function handleEvent(e) {
   if (e.type === 'subscribed') { boot = e.boot_id; await reconcile(); return; }
   if (e.type === 'gap') {
@@ -134,6 +157,7 @@ async function handleEvent(e) {
   }
   if (!e.session) return;
   if (e.type === 'agent-message') await importMail(e.session);
+  if (e.type === 'agent-state' && e.window && typeof e.state === 'string') await turnState(e);
   const p = e.window && one('SELECT * FROM panes WHERE id=?', e.window);
   if (p && e.type === 'agent-state') {
     const state = e.state || e.agent_state?.state || e.agent_state || 'unknown';
@@ -186,6 +210,7 @@ async function drainHooks() {
     for (const file of await readdir(spool)) {
       if (!file.endsWith('.json')) continue;
       const path = join(spool, file), e = await Bun.file(path).json(), v = e.values;
+      if (e.turn) completeTurn(e.turn, e.id);
       const completedKey = completionKey(e.bootId, v.TUIOS_WINDOW_ID, e.captureMeta?.command_seq, e.agent?.agent_state_at);
       if (completedKey && one('SELECT id FROM events WHERE id=?', completedKey)) { await unlink(path); continue; }
       if (!one('SELECT id FROM events WHERE id=?', e.id)) {
@@ -219,7 +244,7 @@ const response = (value, status = 200) => Response.json(value, { status, headers
 async function api(req, url) {
   const parts = url.pathname.split('/').filter(Boolean), method = req.method;
   const body = method === 'POST' || method === 'PATCH' ? await req.json() : {};
-  if (url.pathname === '/api/state') return response({ tasks: all('SELECT * FROM tasks ORDER BY created DESC'), panes: all('SELECT * FROM panes'), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), threads: all('SELECT * FROM threads ORDER BY updated DESC'), lastError, boot, dataDir });
+  if (url.pathname === '/api/state') return response({ tasks: all('SELECT * FROM tasks ORDER BY created DESC'), panes: all('SELECT * FROM panes'), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), threads: all('SELECT * FROM threads ORDER BY updated DESC'), turns: all('SELECT id,pane_name,harness,substr(prompt,1,400) AS prompt,state,unread,started,finished FROM turns ORDER BY started DESC LIMIT 200'), lastError, boot, dataDir });
   if (url.pathname === '/api/profiles' && method === 'POST') {
     const key = body.id || id(); const name = required(body.name, 'Name', 120), executable = required(body.executable, 'Executable', 500);
     if (!Array.isArray(body.args) || body.args.some(x => typeof x !== 'string')) throw new Error('Arguments must be a JSON array of strings');
@@ -287,6 +312,11 @@ async function api(req, url) {
       if (active.has(p.id)) throw new Error('Pane is busy with an app request');
       message(t.id, 'human', text); background(execute(task, p, text, t.id)); return response({ ok: true }, 202);
     }
+  }
+  if (parts[1] === 'turns' && parts[2]) {
+    const t = one('SELECT * FROM turns WHERE id=?', parts[2]); if (!t) throw new Error('Turn not found');
+    if (method === 'PATCH') { run('UPDATE turns SET unread=? WHERE id=?', Number(Boolean(body.unread)), t.id); changed(); return response({ ...t, unread: Number(Boolean(body.unread)) }); }
+    return response(t);
   }
   if (parts[1] === 'panes' && parts[2]) {
     const p = paneFor(parts[2]), t = taskFor(p.task_id);
