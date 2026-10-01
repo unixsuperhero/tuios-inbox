@@ -258,3 +258,18 @@ test('work can be composed to an agent assigned to the task, and to no other age
   const { threadId } = await sent.json();
   expect((await state()).items.find(i => i.id === `thread:${threadId}`)).toMatchObject({ type: 'dispatch', agent_id: 'pane-assigned', task_id: task.id, title: 'Do the thing' });
 });
+
+test('tasks and agents are archived without changing their task or status', async () => {
+  const task = await newTask('Archive me');
+  await turnHook('archive-1', 'pane-archived', 'archive prompt');
+  await call('/agents/update', { ids: ['pane-archived'], set: { task_id: task.id } });
+  expect((await call('/agents/update', { ids: ['pane-archived'], set: { archived: true } })).status).toBe(200);
+  expect((await call('/tasks/update', { ids: [task.id], set: { archived: true } })).status).toBe(200);
+  expect((await call('/tasks/update', { ids: [task.id], set: {} })).status).toBe(400);
+  let s = await state();
+  expect(s.agents.find(a => a.id === 'pane-archived')).toMatchObject({ archived: 1, task_id: task.id });
+  expect(s.tasks.find(t => t.id === task.id)).toMatchObject({ archived: 1, status: 'open' });
+  expect(tasksOf(s, 'archive prompt')).toEqual([task.id]);
+  await call('/tasks/update', { ids: [task.id], set: { archived: false } });
+  expect((await state()).tasks.find(t => t.id === task.id).archived).toBe(0);
+});

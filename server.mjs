@@ -31,7 +31,7 @@ if (!one('SELECT 1 FROM profiles')) for (const [key, name, executable, protocol]
 }
 // One row per TUIOS pane seen anywhere. A sighting fills in what it knows and never blanks the rest.
 function seeAgent(key, { session, name, harness, kind = 'agent', state, task = null, seen } = {}) {
-  run(`INSERT INTO agents VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET session=COALESCE(NULLIF(excluded.session,''),session), name=COALESCE(NULLIF(excluded.name,''),name), harness=COALESCE(NULLIF(excluded.harness,''),harness),
+  run(`INSERT INTO agents (id,session,name,harness,kind,task_id,state,seen) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET session=COALESCE(NULLIF(excluded.session,''),session), name=COALESCE(NULLIF(excluded.name,''),name), harness=COALESCE(NULLIF(excluded.harness,''),harness),
     kind=CASE WHEN excluded.kind='agent' THEN 'agent' ELSE kind END, task_id=COALESCE(excluded.task_id,task_id), state=COALESCE(NULLIF(excluded.state,''),state), seen=MAX(seen,excluded.seen)`,
     // Claude Code and oh-my-pi ("π ⠧ Title") prefix their window title with a status glyph that changes constantly.
     key, session || '', (name || '').replace(/^(?:π\s+)?[^\p{L}\p{N}]+/u, ''), harness || '', kind, task, state || '', seen || now());
@@ -39,6 +39,7 @@ function seeAgent(key, { session, name, harness, kind = 'agent', state, task = n
 // The task a pane's new turns and commands inherit.
 function agentTask(key) { return one('SELECT task_id FROM agents WHERE id=?', key || '')?.task_id ?? null; }
 if (!all("SELECT name FROM pragma_table_info('turns')").some(c => c.name === 'archived')) db.transaction(() => db.exec('ALTER TABLE turns ADD COLUMN task_id TEXT REFERENCES tasks(id); ALTER TABLE turns ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;'))();
+for (const table of ['tasks', 'agents']) if (!all(`SELECT name FROM pragma_table_info('${table}')`).some(c => c.name === 'archived')) db.exec(`ALTER TABLE ${table} ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`);
 // Runs once: a later start must not re-archive a snapshot the user moved back, or reassign an item they moved.
 if (!one("SELECT 1 FROM settings WHERE key='migrated_items'")) db.transaction(() => {
   const hookValue = name => `(SELECT json_extract(meta,'$.values.${name}') FROM messages WHERE thread_id=threads.id ORDER BY rowid LIMIT 1)`;
@@ -268,13 +269,13 @@ async function drainHooks() {
       if (v.TUIOS_WINDOW_ID) seeAgent(v.TUIOS_WINDOW_ID, { session: v.TUIOS_SESSION_ID || e.turn?.session, name: e.turn?.name || v.TUIOS_WINDOW_NAME, harness: e.turn?.harness || v.TUIOS_AGENT_HARNESS, kind: command ? 'shell' : 'agent', state: v.TUIOS_AGENT_STATE, seen: e.time });
       if (e.turn) completeTurn(e.turn, e.id);
       const completedKey = completionKey(e.bootId, v.TUIOS_WINDOW_ID, e.captureMeta?.command_seq, e.agent?.agent_state_at);
-      if (completedKey && one('SELECT id FROM events WHERE id=?', completedKey)) { await unlink(path); continue; }
+      if (completedKey && !command && one('SELECT id FROM events WHERE id=?', completedKey)) { await unlink(path); continue; }
       if (!one('SELECT id FROM events WHERE id=?', e.id)) {
         const p = one('SELECT * FROM panes WHERE id=?', v.TUIOS_WINDOW_ID || '');
-        // Managed active requests own their exact output; hooks are the offline/external safety net.
-        if (!p || !active.has(p.id)) {
+        // Managed active requests own their exact output; hooks are the offline/external safety net. A command always gets its own row.
+        if (command || !p || !active.has(p.id)) {
           const previous = p && one("SELECT messages.* FROM messages JOIN threads ON threads.id=messages.thread_id WHERE threads.pane_id=? AND messages.role IN ('agent','shell') ORDER BY messages.rowid DESC LIMIT 1", p.id);
-          const recover = previous && ['uncertain','partial','running'].includes(previous.status) && e.bootId && JSON.parse(previous.meta).boot_id === e.bootId;
+          const recover = previous && !active.has(p.id) && ['uncertain','partial','running'].includes(previous.status) && e.bootId && JSON.parse(previous.meta).boot_id === e.bootId;
           const body = e.capture || v.TUIOS_AGENT_MESSAGE || 'Event received; no terminal output was available.';
           db.transaction(() => {
             if (recover) finish(previous.id, body, 'snapshot', { hook: e, recovered: true });
@@ -306,16 +307,21 @@ async function api(req, url) {
     ORDER BY updated DESC LIMIT 2000`), lastError, boot, dataDir });
   if (url.pathname === '/api/items/update' && method === 'POST') return response({ ok: true, updated: updateItems(idList(body.ids), body.set) });
   if (url.pathname === '/api/tasks/update' && method === 'POST') {
-    const ids = idList(body.ids), status = body.set?.status;
-    if (!['open', 'active', 'done'].includes(status)) throw new Error('Unknown task status');
-    db.transaction(() => { for (const key of ids) if (!run('UPDATE tasks SET status=? WHERE id=?', status, key).changes) throw new Error('Task not found'); })();
+    const ids = idList(body.ids), set = body.set || {}, fields = [], args = [];
+    if (set.status !== undefined) { if (!['open', 'active', 'done'].includes(set.status)) throw new Error('Unknown task status'); fields.push('status=?'); args.push(set.status); }
+    if (set.archived !== undefined) { fields.push('archived=?'); args.push(Number(Boolean(set.archived))); }
+    if (!fields.length) throw new Error('Nothing to update');
+    db.transaction(() => { for (const key of ids) if (!run(`UPDATE tasks SET ${fields.join(',')} WHERE id=?`, ...args, key).changes) throw new Error('Task not found'); })();
     changed(); return response({ ok: true, updated: ids.length });
   }
   if (url.pathname === '/api/agents/update' && method === 'POST') {
-    const ids = idList(body.ids), task = body.set?.task_id === null ? null : taskFor(body.set?.task_id).id;
+    const ids = idList(body.ids), set = body.set || {}, task = set.task_id == null ? null : taskFor(set.task_id).id;
+    if (set.task_id === undefined && set.archived === undefined) throw new Error('Nothing to update');
     db.transaction(() => {
       for (const key of ids) {
         const a = one('SELECT task_id FROM agents WHERE id=?', key); if (!a) throw new Error('Agent not found');
+        if (set.archived !== undefined) run('UPDATE agents SET archived=? WHERE id=?', Number(Boolean(set.archived)), key);
+        if (set.task_id === undefined) continue;
         // The pane's items follow it, except those the user moved to some other task.
         for (const table of ['turns', 'threads']) run(`UPDATE ${table} SET task_id=? WHERE pane_id=? AND (task_id IS NULL OR task_id IS ?)`, task, key, a.task_id);
         run('UPDATE agents SET task_id=? WHERE id=?', task, key);
@@ -346,7 +352,7 @@ async function api(req, url) {
   }
   if (url.pathname === '/api/tasks' && method === 'POST') {
     const key = id(), path = await directory(body.path), worktree = body.worktree ? await directory(body.worktree) : '';
-    run('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?)', key, required(body.title, 'Title', 200), path, worktree, 'open', body.notes || '', `inbox-${key.slice(0, 8)}`, now());
+    run('INSERT INTO tasks (id,title,path,worktree,status,notes,session,created) VALUES (?,?,?,?,?,?,?,?)', key, required(body.title, 'Title', 200), path, worktree, 'open', body.notes || '', `inbox-${key.slice(0, 8)}`, now());
     changed(); return response(taskFor(key), 201);
   }
   if (parts[1] === 'tasks' && parts[2]) {
@@ -411,6 +417,17 @@ async function api(req, url) {
     if (method === 'PATCH') { updateItems([`turn:${t.id}`], body); return response(one('SELECT * FROM turns WHERE id=?', t.id)); }
     return response(t);
   }
+  if (parts[1] === 'agents' && parts[3] === 'prompt' && method === 'POST') {
+    // No thread is kept: the result comes back through the hooks as a new turn or command row.
+    const a = agentFor(parts[2]), text = required(body.body, 'Message');
+    if (a.kind === 'agent') await cli(['queue', '-s', a.session, '-w', a.id, '--', text], 15000, false);
+    else {
+      const sent = cli(['run', '-s', a.session, '-w', a.id, '--timeout', '1800000', '--lines', '0', '--', text], 1810000);
+      // Only an immediate refusal (window gone, shell not at a prompt) is reported to the sender.
+      background(sent); await Promise.race([sent, Bun.sleep(1500)]);
+    }
+    return response({ ok: true }, 202);
+  }
   if (parts[1] === 'panes' && parts[2]) {
     const p = paneFor(parts[2]), t = taskFor(p.task_id);
     if (parts[3] === 'capture') return response({ text: await cli(['capture-pane', '-s', t.session, '-w', p.id, '--scrollback', '--lines', '200'], 15000, false) });
@@ -450,7 +467,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port, idleTimeout: 0, maxReque
       return new Response(new ReadableStream({ start(c) { controller = c; listeners.add(c); c.enqueue('data: connected\n\n'); }, cancel() { listeners.delete(controller); } }), { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } });
     }
     if (url.pathname.startsWith('/api/')) return await api(req, url);
-    const files = { '/': 'index.html', '/app.js': 'app.js', '/pages.js': 'pages.js', '/list.js': 'list.js', '/style.css': 'style.css', '/list.css': 'list.css' };
+    const files = { '/': 'index.html', '/app.js': 'app.js', '/pages.js': 'pages.js', '/list.js': 'list.js', '/markdown.js': 'markdown.js', '/style.css': 'style.css', '/list.css': 'list.css', '/markdown.css': 'markdown.css' };
     if (!files[url.pathname]) return new Response('Not found', { status: 404 });
     return new Response(Bun.file(join(root, 'public', files[url.pathname])), { headers: { 'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' } });
   } catch (e) { return response({ error: e.message }, 400); }

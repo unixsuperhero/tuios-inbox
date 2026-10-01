@@ -69,10 +69,12 @@ document.addEventListener('click', e => {
     switch (name) {
       case 'unread': await api('/items/update', { ids: [d.id], set: { unread: Boolean(d.value) } }); await saved(); break;
       case 'archive': await api('/items/update', { ids: [d.id], set: { archived: Boolean(d.value) } }); await saved(); toast(d.value ? 'Archived' : 'Moved to inbox'); break;
+      case 'task-archive': await api('/tasks/update', { ids: [d.id], set: { archived: Boolean(d.value) } }); await saved(); toast(d.value ? 'Archived' : 'Unarchived'); break;
+      case 'agent-archive': await api('/agents/update', { ids: [d.id], set: { archived: Boolean(d.value) } }); await saved(); toast(d.value ? 'Archived' : 'Unarchived'); break;
       case 'show-items': setPage('inbox', { search: '', filters: [{ key: d.key, op: 'is', value: d.id }] }); break;
       case 'inspect': await inspect(d.id); break;
       case 'check-mail': await api(`/panes/${d.id}/check-mail`, {}); toast('Inbox check queued; it will not interrupt a busy agent.'); break;
-      case 'compose': dialogTask = d.id; $('#compose-panes').innerHTML = options(store.state.agents.filter(a => a.task_id === d.id && a.state !== 'closed').map(a => ({ ...a, name: agentName(a.name, a.id) }))); $('#compose-dialog').showModal(); break;
+      case 'compose': dialogTask = d.id; $('#compose-panes').innerHTML = options(store.state.agents.filter(a => a.task_id === d.id && a.state !== 'closed' && !a.archived).map(a => ({ ...a, name: agentName(a.name, a.id) }))); $('#compose-dialog').showModal(); break;
       case 'open-pane': dialogTask = d.id; $('#profile-options').innerHTML = store.state.profiles.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''); $('#pane-dialog').showModal(); break;
       case 'open-mail': dialogTask = d.id; $('#mail-from').innerHTML = options(taskPanes()); $('#mail-to').innerHTML = '<option value="human">Your TUIOS inbox</option>' + options(taskPanes()); $('#mail-dialog').showModal(); break;
       case 'save-notes': await api(`/tasks/${d.id}`, { notes: root.querySelector(`[data-notes="${CSS.escape(d.id)}"]`).value }, 'PATCH'); store.drafts.delete(`notes:${d.id}`); await saved(); toast('Notes saved'); break;
@@ -90,7 +92,7 @@ document.addEventListener('click', e => {
 // Text being typed lives in `drafts`, so a row that gets re-rendered shows it again.
 document.addEventListener('input', e => {
   if (e.target.dataset.notes) store.drafts.set(`notes:${e.target.dataset.notes}`, e.target.value);
-  const reply = e.target.closest('form[data-reply]'); if (reply) store.drafts.set(reply.dataset.reply, e.target.value);
+  const reply = e.target.closest('form[data-draft]'); if (reply) store.drafts.set(reply.dataset.draft, e.target.value);
 });
 // Property controls in row details save as soon as they change.
 document.addEventListener('change', e => {
@@ -106,10 +108,11 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('submit', e => {
   // getAttribute: the profile form has a field named "id", which shadows form.id.
-  e.preventDefault(); const form = e.target, key = form.dataset.reply, name = form.getAttribute('id'); if (!key && !name) return;
+  e.preventDefault(); const form = e.target, key = form.dataset.reply, agent = form.dataset.prompt, name = form.getAttribute('id'); if (!key && !agent && !name) return;
   const data = Object.fromEntries(new FormData(form)), button = form.querySelector('button[type="submit"],button.primary'); if (button) button.disabled = true;
   act(async () => {
     if (key) { await api(`/threads/${key.slice(key.indexOf(':') + 1)}/reply`, data); store.drafts.delete(key); form.elements.body.value = ''; await saved(); return; }
+    if (agent) { await api(`/agents/${agent}/prompt`, data); store.drafts.delete(form.dataset.draft); form.elements.body.value = ''; await saved(); toast('Sent. The result will arrive as a new row.'); return; }
     switch (name) {
       case 'task-form': { const task = await api('/tasks', data); form.reset(); $('#task-dialog').close(); await refresh(); setPage('tasks'); list.open(task.id); break; }
       case 'pane-form': await api(`/tasks/${dialogTask}/panes`, data); form.reset(); $('#pane-dialog').close(); await refresh(); toast('Session request sent. Agent startup appears in the inbox.'); break;
