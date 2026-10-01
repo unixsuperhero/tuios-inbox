@@ -1,0 +1,10 @@
+{
+  "name": "tuios-inbox",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun server.mjs",
+    "refresh-skills": "bun scripts/refresh-skills.mjs",
+    "test": "bun test"
+  }
+}
