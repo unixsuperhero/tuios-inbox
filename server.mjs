@@ -78,6 +78,7 @@ async function cli(args, timeout = 15000, json = true) {
 function required(value, label, max = 16000) { if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${label} is required (maximum ${max} characters)`); return value.trim(); }
 async function directory(value) { const p = resolve(required(value, 'Directory')); if (!(await stat(p)).isDirectory()) throw new Error('Path must be an existing directory'); return p; }
 function taskFor(key) { const t = one('SELECT * FROM tasks WHERE id=?', key); if (!t) throw new Error('Task not found'); return t; }
+function agentFor(key) { const a = one('SELECT * FROM agents WHERE id=?', key); if (!a) throw new Error('Agent not found'); return a; }
 function paneFor(key) { const p = one('SELECT * FROM panes WHERE id=?', key); if (!p) throw new Error('Pane not found'); return p; }
 function threadFor(key) { const t = one('SELECT * FROM threads WHERE id=?', key); if (!t) throw new Error('Thread not found'); return t; }
 function idList(ids) { if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(x => typeof x !== 'string')) throw new Error('ids must be a list of 1 to 1000 ids'); return [...new Set(ids)]; }
@@ -128,15 +129,16 @@ async function newShell(t, name) {
   await cli(['send-text', '-s', t.session, '-w', paneId, `source '${root.replaceAll("'", "'\\''")}/scripts/shell.zsh'\n`], 15000, false);
   changed(); return paneFor(paneId);
 }
-async function execute(t, p, body, threadId) {
+// `p` is an agents row: any TUIOS pane, in whichever session it runs.
+async function execute(p, body, threadId) {
   if (active.has(p.id)) throw new Error('This pane already has an active request. Wait for its result before replying.');
   const pending = message(threadId, p.kind === 'agent' ? 'agent' : 'shell', 'Waiting for result…', 'running', { boot_id: boot });
   active.set(p.id, threadId);
   run('UPDATE panes SET state=? WHERE id=?', 'working', p.id);
   try {
-    const args = p.kind === 'agent' ? ['ask-agent', '-s', t.session, '-w', p.id, '--timeout', '1800000', '--settle', '1800000', '--lines', '10000', '--', body] : ['run', '-s', t.session, '-w', p.id, '--timeout', '1800000', '--lines', '0', '--', body];
+    const args = p.kind === 'agent' ? ['ask-agent', '-s', p.session, '-w', p.id, '--timeout', '1800000', '--settle', '1800000', '--lines', '10000', '--', body] : ['run', '-s', p.session, '-w', p.id, '--timeout', '1800000', '--lines', '0', '--', body];
     const result = await cli(args, 1810000);
-    const agentState = p.kind === 'agent' ? await cli(['get-agent-state', '-s', t.session, '-w', p.id]) : null;
+    const agentState = p.kind === 'agent' ? await cli(['get-agent-state', '-s', p.session, '-w', p.id]) : null;
     const completedKey = completionKey(boot, p.id, result.command_seq, agentState?.agent_state_at);
     if (completedKey) run('INSERT OR IGNORE INTO events VALUES (?,?)', completedKey, JSON.stringify(result));
     const partial = result.truncated || result.settled_by === 'timeout' || result.settled_by === 'idle';
@@ -248,6 +250,12 @@ async function reconcile() {
       await importMail(t.session);
     } catch (e) { lastError = e.message; }
   }
+  // A window that closed while this server was not listening sent no event; its agent can no longer be prompted.
+  try {
+    const sessions = await cli(['ls']);
+    const live = (Array.isArray(sessions) ? sessions : sessions.sessions || []).flatMap(s => (s.windows || []).map(w => w.id));
+    run("UPDATE agents SET state='closed' WHERE state!='closed' AND id NOT IN (SELECT value FROM json_each(?))", JSON.stringify(live));
+  } catch (e) { lastError = e.message; }
   changed();
 }
 let draining = false;
@@ -371,10 +379,10 @@ async function api(req, url) {
       return response({ threadId: tid }, 202);
     }
     if (parts[3] === 'compose' && method === 'POST') {
-      const p = paneFor(body.paneId); if (p.task_id !== t.id) throw new Error('Pane belongs to another task');
+      const p = agentFor(body.paneId); if (p.task_id !== t.id) throw new Error('Agent belongs to another task');
       const text = required(body.body, 'Message'); if (active.has(p.id)) throw new Error('Pane is busy with an app request');
       const tid = thread(t.id, p.id, required(body.subject, 'Subject', 200), p.kind);
-      message(tid, 'human', text); background(execute(t, p, text, tid)); return response({ threadId: tid }, 202);
+      message(tid, 'human', text); background(execute(p, text, tid)); return response({ threadId: tid }, 202);
     }
   }
   if (parts[1] === 'threads' && parts[2]) {
@@ -392,10 +400,10 @@ async function api(req, url) {
         await importMail(meta.session);
         return response(result);
       }
-      const p = paneFor(body.paneId || t.pane_id), task = taskFor(p.task_id), text = required(body.body, 'Reply');
+      const p = agentFor(body.paneId || t.pane_id), text = required(body.body, 'Reply');
       if (p.id !== t.pane_id && t.task_id && p.task_id !== t.task_id) throw new Error('Pane belongs to another task');
       if (active.has(p.id)) throw new Error('Pane is busy with an app request');
-      message(t.id, 'human', text); background(execute(task, p, text, t.id)); return response({ ok: true }, 202);
+      message(t.id, 'human', text); background(execute(p, text, t.id)); return response({ ok: true }, 202);
     }
   }
   if (parts[1] === 'turns' && parts[2]) {

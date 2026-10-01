@@ -246,3 +246,15 @@ test('a turn is read in full from a harness transcript or a protocol pane', () =
   expect(paneTranscript(pane)).toEqual({ prompt: 'Reply with exactly ONE TWO. Do not use tools.', response: 'ONE\nTWO', source: 'pane' });
   expect(paneTranscript('> type a prompt')).toBeNull();
 });
+
+test('work can be composed to an agent assigned to the task, and to no other agent', async () => {
+  const task = await newTask('Compose target');
+  await turnHook('compose-1', 'pane-assigned', 'assigned prompt');
+  await turnHook('compose-2', 'pane-other', 'other prompt');
+  expect((await call('/agents/update', { ids: ['pane-assigned'], set: { task_id: task.id } })).status).toBe(200);
+  expect((await call(`/tasks/${task.id}/compose`, { paneId: 'pane-other', subject: 'Nope', body: 'x' })).status).toBe(400);
+  const sent = await call(`/tasks/${task.id}/compose`, { paneId: 'pane-assigned', subject: 'Do the thing', body: 'please' });
+  expect(sent.status).toBe(202);
+  const { threadId } = await sent.json();
+  expect((await state()).items.find(i => i.id === `thread:${threadId}`)).toMatchObject({ type: 'dispatch', agent_id: 'pane-assigned', task_id: task.id, title: 'Do the thing' });
+});

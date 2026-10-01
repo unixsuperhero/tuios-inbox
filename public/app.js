@@ -1,6 +1,6 @@
 // App shell: state fetch, live refresh, navigation, dialogs and the controls inside row details.
 import { createList } from '/list.js';
-import { pages, store, api, esc, unfinished } from '/pages.js';
+import { pages, store, api, esc, unfinished, agentName } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), loading = new Set();
 let current, list, dialogTask = null, terminalPane = null, refreshTimer;
@@ -72,7 +72,7 @@ document.addEventListener('click', e => {
       case 'show-items': setPage('inbox', { search: '', filters: [{ key: d.key, op: 'is', value: d.id }] }); break;
       case 'inspect': await inspect(d.id); break;
       case 'check-mail': await api(`/panes/${d.id}/check-mail`, {}); toast('Inbox check queued; it will not interrupt a busy agent.'); break;
-      case 'compose': dialogTask = d.id; $('#compose-panes').innerHTML = options(taskPanes()); $('#compose-dialog').showModal(); break;
+      case 'compose': dialogTask = d.id; $('#compose-panes').innerHTML = options(store.state.agents.filter(a => a.task_id === d.id && a.state !== 'closed').map(a => ({ ...a, name: agentName(a.name, a.id) }))); $('#compose-dialog').showModal(); break;
       case 'open-pane': dialogTask = d.id; $('#profile-options').innerHTML = store.state.profiles.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''); $('#pane-dialog').showModal(); break;
       case 'open-mail': dialogTask = d.id; $('#mail-from').innerHTML = options(taskPanes()); $('#mail-to').innerHTML = '<option value="human">Your TUIOS inbox</option>' + options(taskPanes()); $('#mail-dialog').showModal(); break;
       case 'save-notes': await api(`/tasks/${d.id}`, { notes: root.querySelector(`[data-notes="${CSS.escape(d.id)}"]`).value }, 'PATCH'); store.drafts.delete(`notes:${d.id}`); await saved(); toast('Notes saved'); break;
