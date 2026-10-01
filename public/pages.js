@@ -1,5 +1,6 @@
 // One config per page: which rows it lists, their fields, the row summary, the details and the bulk actions.
 // app.js mounts `list` with createList and handles the data-do / data-set controls the details contain.
+import { markdown } from '/markdown.js';
 export const store = { state: { tasks: [], panes: [], profiles: [], agents: [], items: [] }, drafts: new Map(), bodies: new Map() };
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 export async function api(path, body, method = 'POST') {
@@ -48,7 +49,7 @@ function itemSummary(r) {
 }
 function turnHtml(r, turn) {
   if (!turn.finished) return hint('The turn ended. Waiting for the hook to deliver the reply.');
-  return `${turn.prompt.length > r.title.length ? `<p class="eyebrow">FULL PROMPT</p><pre>${esc(turn.prompt)}</pre>` : ''}<p class="eyebrow">RESPONSE</p><pre>${esc(turn.response || 'No reply text was captured.')}</pre>${turnNotes[turn.source] ? hint(turnNotes[turn.source]) : ''}`;
+  return `${turn.prompt.length > r.title.length ? `<p class="eyebrow">FULL PROMPT</p><div class="md">${markdown(turn.prompt)}</div>` : ''}<p class="eyebrow">RESPONSE</p><div class="md">${markdown(turn.response || 'No reply text was captured.')}</div>${turnNotes[turn.source] ? hint(turnNotes[turn.source]) : ''}`;
 }
 function threadHtml(r, thread) {
   const p = liveAgent(thread.pane_id), mail = thread.kind === 'mail';
@@ -57,7 +58,7 @@ function threadHtml(r, thread) {
       <article class="message ${esc(m.role)}">
         <div class="message-head"><strong>${esc(m.role === 'human' ? 'You' : m.meta.from_label || m.role)}</strong>
           <span>${badge(m.status)} &nbsp; ${time(m.created)}</span></div>
-        <pre>${esc(m.body)}</pre>
+        ${mail ? `<div class="md">${markdown(m.body)}</div>` : `<pre>${esc(m.body)}</pre>`}
         ${['snapshot','captured'].includes(m.status) ? hint('Captured terminal output; not a parsed final answer.') : ''}
         <details><summary>Delivery details</summary><pre>${esc(JSON.stringify(m.meta,null,2))}</pre></details>
       </article>`).join('')}
