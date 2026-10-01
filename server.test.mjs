@@ -273,3 +273,11 @@ test('tasks and agents are archived without changing their task or status', asyn
   await call('/tasks/update', { ids: [task.id], set: { archived: false } });
   expect((await state()).tasks.find(t => t.id === task.id).archived).toBe(0);
 });
+
+test('a command hook without a command line or without output creates no item', async () => {
+  await hook('blank-1', { TUIOS_EVENT: 'after-command-finished', TUIOS_COMMAND: '', TUIOS_EXIT_CODE: '0', TUIOS_WINDOW_ID: 'blank-pane', TUIOS_SESSION_ID: 's' });
+  await hook('blank-2', { TUIOS_EVENT: 'after-command-finished', TUIOS_COMMAND: 'cd /tmp', TUIOS_EXIT_CODE: '0', TUIOS_WINDOW_ID: 'blank-pane', TUIOS_SESSION_ID: 's' }, { capture: '  \n' });
+  const s = await hook('blank-3', { TUIOS_EVENT: 'after-command-finished', TUIOS_COMMAND: '', TUIOS_EXIT_CODE: '0', TUIOS_WINDOW_ID: 'blank-pane', TUIOS_SESSION_ID: 's' }, { capture: 'output with no command' });
+  expect(s.items.filter(i => i.agent_id === 'blank-pane')).toEqual([]);
+  expect(s.agents.find(a => a.id === 'blank-pane')).toMatchObject({ kind: 'shell' });
+});

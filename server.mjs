@@ -279,9 +279,10 @@ async function drainHooks() {
           const body = e.capture || v.TUIOS_AGENT_MESSAGE || 'Event received; no terminal output was available.';
           db.transaction(() => {
             if (recover) finish(previous.id, body, 'snapshot', { hook: e, recovered: true });
-            else if (command) {
-              const tid = thread(agentTask(v.TUIOS_WINDOW_ID), v.TUIOS_WINDOW_ID || null, v.TUIOS_COMMAND || 'Command finished', 'command');
-              message(tid, 'system', body, v.TUIOS_EXIT_CODE === '0' ? 'complete' : 'failed', e);
+            // A command row needs a command line and output; agent panes fire this hook with neither, constantly.
+            else if (command && v.TUIOS_COMMAND?.trim() && e.capture?.trim()) {
+              const tid = thread(agentTask(v.TUIOS_WINDOW_ID), v.TUIOS_WINDOW_ID || null, v.TUIOS_COMMAND, 'command');
+              message(tid, 'system', e.capture, v.TUIOS_EXIT_CODE === '0' ? 'complete' : 'failed', e);
             }
             run('INSERT INTO events VALUES (?,?)', e.id, JSON.stringify(e));
           })();
