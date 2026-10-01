@@ -299,6 +299,10 @@ run("UPDATE messages SET status='uncertain',body=body || '\nBackend restarted wh
 const port = Number(process.env.PORT || 4399);
 const origin = `http://127.0.0.1:${port}`;
 const response = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
+// TUIOS takes an answer only from the person. This server answers for them once they say so, and never raises its own grants.
+const respondHint = process.env.TUIOS_PANE_ID
+  ? `To answer from the browser, give the pane running this server the respond grant. Run this yourself, in a shell outside TUIOS: tuios set-pane-grants -s ${process.env.TUIOS_SESSION} -w ${process.env.TUIOS_PANE_ID} --grants ${process.env.TUIOS_PANE_GRANTS || 'read,write,fan'},respond`
+  : 'To answer from the browser, run TUIOS with respond_from_shell = true under [daemon] in its config.';
 async function api(req, url) {
   const parts = url.pathname.split('/').filter(Boolean), method = req.method;
   const body = method === 'POST' || method === 'PATCH' ? await req.json() : {};
@@ -428,6 +432,21 @@ async function api(req, url) {
       background(sent); await Promise.race([sent, Bun.sleep(1500)]);
     }
     return response({ ok: true }, 202);
+  }
+  if (parts[1] === 'agents' && parts[3] === 'question' && method === 'GET') {
+    // The lines are the blocked pane's screen: untrusted text, shown and never interpreted.
+    const a = agentFor(parts[2]), p = await cli(['peek-prompt', '-s', a.session, '-w', a.id]);
+    return response({ found: Boolean(p.found), kind: p.kind || '', lines: p.lines || [], options: p.options || [], actions: p.actions || [], promptId: p.prompt_id || '', reason: p.reason || '' });
+  }
+  if (parts[1] === 'agents' && parts[3] === 'answer' && method === 'POST') {
+    const a = agentFor(parts[2]);
+    if (!['approve', 'approve_always', 'deny', 'choose', 'text'].includes(body.action)) throw new Error('Unknown answer');
+    // The prompt id is the one the page showed, so an answer never lands on a prompt the user has not read.
+    const args = ['respond', '-s', a.session, '-w', a.id, '--prompt-id', required(body.promptId, 'Prompt id', 200), '--', body.action];
+    if (body.action === 'choose') { if (!/^\d{1,3}$/.test(body.value)) throw new Error('Choose an option by its number'); args.push(body.value); }
+    if (body.action === 'text') args.push(required(body.value, 'Answer', 4096));
+    try { return response(await cli(args, 35000)); }
+    catch (e) { throw new Error(/not_human|for the person/.test(e.message) ? `${e.message}\n${respondHint}` : e.message); }
   }
   if (parts[1] === 'panes' && parts[2]) {
     const p = paneFor(parts[2]), t = taskFor(p.task_id);

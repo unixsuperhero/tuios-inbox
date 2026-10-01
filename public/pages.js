@@ -1,6 +1,6 @@
 // Page schemas and record markup; app.js owns navigation, dialogs and delegated actions.
 import { markdown } from '/markdown.js';
-export const store = { state: { tasks: [], panes: [], profiles: [], agents: [], items: [] }, drafts: new Map(), bodies: new Map() };
+export const store = { state: { tasks: [], panes: [], profiles: [], agents: [], items: [] }, drafts: new Map(), bodies: new Map(), questions: new Map() };
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 export async function api(path, body, method = 'POST') {
   const response = await fetch('/api' + path, body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) });
@@ -113,9 +113,25 @@ function promptForm(r) {
     <textarea name="body" required rows="3">${esc(store.drafts.get(r.id) || '')}</textarea></label>
     <button class="primary">Send</button><span class="hint"> &nbsp; ${a.kind === 'agent' ? 'It is typed when the agent is at rest. The reply' : 'The result'} arrives as a new row in the Inbox.</span></form>`;
 }
+// The prompt a blocked agent shows in its pane, with the answers TUIOS can press for the user.
+const answerLabels = { approve: 'Approve', approve_always: 'Approve always', deny: 'Deny' };
+function questionHtml(r) {
+  const cached = store.questions.get(r.agent_id), q = cached?.data, agent = esc(r.agent_id);
+  const again = `<button data-do="read-question" data-id="${agent}">Read again</button>`;
+  if (!cached) return hint('Reading the question from the pane…');
+  if (cached.error) return `<p class="hint danger">Could not read the question: ${esc(cached.error)}</p><div class="actions">${again}</div>`;
+  if (!q.found) return `${hint(`${waiting.needs_input} ${esc(q.reason)}`)}<div class="actions">${again}</div>`;
+  const answer = (action, label, value = '') => `<button data-do="answer" data-id="${agent}" data-prompt-id="${esc(q.promptId)}" data-action="${action}" data-value="${esc(value)}">${esc(label)}</button>`;
+  const draft = `answer:${r.agent_id}`;
+  return `<p class="eyebrow">${q.kind === 'approval' ? 'APPROVAL' : 'QUESTION'} · WAITING FOR YOUR ANSWER</p><div class="message"><pre>${esc(q.lines.join('\n'))}</pre></div>
+    <div class="actions">${q.actions.includes('choose') ? q.options.map(o => answer('choose', `${o.n}. ${o.label}`, o.n)).join('') : ''}${q.actions.filter(a => answerLabels[a]).map(a => answer(a, answerLabels[a])).join('')}${again}</div>
+    ${q.actions.includes('text') ? `<form class="reply" data-answer="${agent}" data-prompt-id="${esc(q.promptId)}" data-draft="${esc(draft)}"><label>Type an answer
+      <textarea name="body" required rows="2">${esc(store.drafts.get(draft) || '')}</textarea></label><button class="primary">Send answer</button></form>` : ''}
+    ${hint(q.actions.length ? 'This is the pane’s screen, shown as untrusted text. Your answer is pressed in the pane by TUIOS, only if this is still the prompt it shows.' : 'TUIOS cannot press an answer to this prompt. Answer it in the pane.')}`;
+}
 function itemDetail(r) {
   const agent = store.state.agents.find(a => a.id === r.agent_id), pane = store.state.panes.find(p => p.id === r.agent_id), cached = store.bodies.get(r.id);
-  const body = unfinished(r) ? hint(waiting[r.status])
+  const body = unfinished(r) ? (r.status === 'needs_input' ? questionHtml(r) : hint(waiting[r.status]))
     : !cached ? hint('Loading…')
     : cached.error ? `<p class="hint danger">Could not load this item: ${esc(cached.error)}</p>`
     : r.type === 'turn' ? turnHtml(r, cached.data) : threadHtml(r, cached.data);

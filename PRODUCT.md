@@ -49,7 +49,7 @@ TUIOS owns persistent execution in terminal panes. tuios inbox presents that wor
 These are limitations of the current implementation, not accepted product requirements:
 
 - The backend binds to loopback and restricts Host and Origin headers. Tailnet browser access is not currently provided by this configuration.
-- Human approvals and other human-only operations currently require an attached TUIOS client. This falls short of the browser-first requirement.
+- A blocked agent's question or approval is shown in the browser, and answered there once the user gives the server's pane the TUIOS `respond` grant. Held approvals, risk-matched approvals and other human-only operations still require an attached TUIOS client. This falls short of the browser-first requirement.
 - Executable Browse now opens a native macOS file chooser, while typed PATH commands remain valid. Project and worktree Browse controls use the native directory chooser. Both pickers select the backend host's filesystem, not the browser device's filesystem. Path selection for remote browser use remains a product-design decision.
 
 These remaining gaps are not resolved by the current UI changes.

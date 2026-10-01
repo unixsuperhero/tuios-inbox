@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
@@ -280,4 +280,41 @@ test('a command hook creates no item only when both its command line and its out
   const s = await hook('blank-3', { TUIOS_EVENT: 'after-command-finished', TUIOS_COMMAND: '', TUIOS_EXIT_CODE: '0', TUIOS_WINDOW_ID: 'blank-pane', TUIOS_SESSION_ID: 's' }, { capture: 'output with no command' });
   expect(s.items.filter(i => i.agent_id === 'blank-pane').map(i => i.title).sort()).toEqual(['Command finished', 'cd /tmp']);
   expect(s.agents.find(a => a.id === 'blank-pane')).toMatchObject({ kind: 'shell' });
+});
+
+test('a blocked agent\'s question is read from its pane and answered only with the prompt id that was shown', async () => {
+  await turnHook('question-1', 'pane-asking', 'needs a decision');
+  // Stands in for tuios: logs every call, shows one prompt, and refuses the answers a real daemon would.
+  const bin = join(home, 'not-installed'), log = join(home, 'tuios-calls.log');
+  await Bun.write(bin, `#!/bin/sh
+printf '%s\\n' "$*" >> '${log}'
+case "$1" in
+  peek-prompt) echo '{"found":true,"kind":"question","lines":["Which color?","1. Red","2. Blue"],"options":[{"n":1,"label":"Red"},{"n":2,"label":"Blue"}],"actions":["choose","text"],"prompt_id":"abc123","reason":"","waiting_ms":900}';;
+  respond) case "$*" in
+    *stale*) echo '{"error":"nothing was pressed: the prompt on the pane is not the one prompt_id names (prompt_changed)","success":false}'; exit 1;;
+    *refused*) echo '{"error":"respond is for the person at an attached client (not_human)","success":false}'; exit 1;;
+    *) echo '{"action":"choose","sent":"2","prompt_id":"abc123","settled_by":"state","state":"working"}';;
+  esac;;
+esac
+`);
+  await chmod(bin, 0o755);
+  try {
+    const question = await (await call('/agents/pane-asking/question')).json();
+    expect(question).toEqual({ found: true, kind: 'question', lines: ['Which color?', '1. Red', '2. Blue'], options: [{ n: 1, label: 'Red' }, { n: 2, label: 'Blue' }], actions: ['choose', 'text'], promptId: 'abc123', reason: '' });
+    const answer = body => call('/agents/pane-asking/answer', body);
+    const responds = async () => (await Bun.file(log).text()).split('\n').filter(line => line.startsWith('respond '));
+    for (const bad of [{ promptId: 'abc123', action: 'press-enter' }, { action: 'choose', value: '2' }, { promptId: 'abc123', action: 'choose', value: 'two' }, { promptId: 'abc123', action: 'text', value: '' }])
+      expect((await answer(bad)).status).toBe(400);
+    expect(await responds()).toEqual([]);
+    expect((await answer({ promptId: 'abc123', action: 'choose', value: '2' })).status).toBe(200);
+    expect((await answer({ promptId: 'abc123', action: 'text', value: '--timeout 1' })).status).toBe(200);
+    expect(await responds()).toEqual(['respond -s s -w pane-asking --prompt-id abc123 --json -- choose 2', 'respond -s s -w pane-asking --prompt-id abc123 --json -- text --timeout 1']);
+    const stale = await answer({ promptId: 'stale', action: 'choose', value: '1' });
+    expect(stale.status).toBe(400);
+    expect((await stale.json()).error).toContain('prompt_changed');
+    const refused = await answer({ promptId: 'refused', action: 'choose', value: '1' });
+    expect(refused.status).toBe(400);
+    expect((await refused.json()).error).toMatch(/not_human[\s\S]*To answer from the browser/);
+    expect((await call('/agents/no-such-pane/question')).status).toBe(400);
+  } finally { await rm(bin); }
 });

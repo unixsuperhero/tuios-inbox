@@ -2,7 +2,7 @@
 import { createList } from '/list.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, unfinished } from '/pages.js';
 const $ = s => document.querySelector(s);
-const root = $('#list'), metadata = $('#page-metadata'), loading = new Set();
+const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
 const previousValues = new WeakMap(), creations = new Map(), draftRevisions = new Map(), submissions = new WeakMap();
 const modalStack = [];
 const activeDialog = () => [...modalStack].reverse().find(dialog => dialog.open);
@@ -87,11 +87,28 @@ function render() {
 async function refresh() {
   const version = ++refreshVersion, state = await api('/state');
   if (version !== refreshVersion) return;
+  // A question is kept only while its turn still waits on it; the next one is read afresh.
+  for (const agent of store.questions.keys()) if (!state.items.some(i => i.agent_id === agent && i.type === 'turn' && i.status === 'needs_input')) store.questions.delete(agent);
   store.state = state; render();
   for (const context of creations.values()) if (context.threadId || context.paneId) checkStartup(context);
 }
+// Read on demand, never on a timer: when a row opens, after an answer, or from "Read again".
+async function question(agent, fresh) {
+  if (asking.has(agent) || (!fresh && store.questions.has(agent))) return;
+  asking.add(agent);
+  try { store.questions.set(agent, { data: await api(`/agents/${encodeURIComponent(agent)}/question`) }); }
+  catch (e) { store.questions.set(agent, { error: e.message }); }
+  finally { asking.delete(agent); }
+  render();
+}
+// The prompt is read again after every answer, pressed or refused: a refusal usually means it changed.
+async function answer(agent, body, sent) {
+  try { await api(`/agents/${encodeURIComponent(agent)}/answer`, body); sent?.(); toast('Answer sent'); }
+  finally { store.questions.delete(agent); await saved(); }
+}
 async function load(key, opened) {
-  const row = store.state.items.find(i => i.id === key); if (!row || unfinished(row)) return;
+  const row = store.state.items.find(i => i.id === key); if (!row) return;
+  if (unfinished(row)) { if (row.status === 'needs_input' && row.agent_id) await question(row.agent_id, opened); return; }
   if (store.bodies.get(key)?.updated !== row.updated && !loading.has(key)) {
     loading.add(key);
     try { store.bodies.set(key, { updated: row.updated, data: await api(`/${key.replace(':', 's/')}`) }); }
@@ -263,6 +280,13 @@ document.addEventListener('click', e => {
       case 'agent-archive': await api('/agents/update', { ids: [d.id], set: { archived: Boolean(d.value) } }); await saved(); toast(d.value ? 'Archived' : 'Unarchived'); break;
       case 'show-items': navigate({ kind: d.key === 'task_id' ? 'task' : 'agent', id: d.id }); break;
       case 'inspect': await inspect(d.id); break;
+      case 'answer': {
+        // One press per prompt: a second click would be refused as already answered.
+        const buttons = button.parentElement.querySelectorAll('button'); for (const b of buttons) b.disabled = true;
+        try { await answer(d.id, { promptId: d.promptId, action: d.action, value: d.value }); } finally { for (const b of buttons) b.disabled = false; }
+        break;
+      }
+      case 'read-question': await question(d.id, true); break;
       case 'check-mail': await api(`/panes/${d.id}/check-mail`, {}); toast('Inbox check queued; it will not interrupt a busy agent.'); break;
       case 'compose': $('#compose-form').dataset.taskId = d.id; updateMenus(); openDialog($('#compose-dialog')); break;
       case 'open-pane': await store.createEntity({ kind: d.kind === 'pane' ? 'pane' : 'agent', taskId: d.id }); break;
@@ -311,8 +335,8 @@ document.addEventListener('change', e => {
   });
 });
 document.addEventListener('submit', e => {
-  const form = e.target, key = form.dataset.reply, agent = form.dataset.prompt, name = form.getAttribute('id');
-  if (!key && !agent && !['task-form', 'pane-form', 'compose-form', 'profile-form', 'mail-form', 'inbox-composer'].includes(name)) return;
+  const form = e.target, key = form.dataset.reply, agent = form.dataset.prompt, answering = form.dataset.answer, name = form.getAttribute('id');
+  if (!key && !agent && !answering && !['task-form', 'pane-form', 'compose-form', 'profile-form', 'mail-form', 'inbox-composer'].includes(name)) return;
   e.preventDefault();
   const data = Object.fromEntries(new FormData(form)), button = form.querySelector('button[type="submit"],button.primary');
   if (button?.disabled) return;
@@ -322,6 +346,10 @@ document.addEventListener('submit', e => {
   const submission = Symbol(); submissions.set(form, submission);
   if (button) button.disabled = true;
   act(async () => {
+    if (answering) {
+      await answer(answering, { promptId: form.dataset.promptId, action: 'text', value: body }, () => { if (draftRevisions.get(form.dataset.draft) === revision) store.drafts.delete(form.dataset.draft); });
+      return;
+    }
     if (key || agent) {
       await api(key ? `/threads/${key.slice(key.indexOf(':') + 1)}/reply` : `/agents/${agent}/prompt`, data);
       if (draftRevisions.get(form.dataset.draft) === revision) {

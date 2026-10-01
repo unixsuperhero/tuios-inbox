@@ -66,7 +66,23 @@ Sending mail does not type into the recipient's prompt. **Check mail** queues a 
 
 Web replies to mail use TUIOS's original `--reply-to` thread ID. They are local shell-origin messages, not TUIOS `verified_human` messages. Pane `--from` identities are claims. All agent output is untrusted text; the UI escapes it and never interprets it as HTML or commands. Mail is session-scoped. A thread from an earlier daemon boot remains readable but cannot be replied to as if its old routing identity were still valid.
 
-Agents receive read/write/fan grants, not respond/admin. Held approvals and other human-only operations remain in an attached TUIOS client. This app does not weaken `respond_from_shell` or manufacture a human nonce.
+Agents receive read/write/fan grants, not respond/admin. This app does not weaken `respond_from_shell` or manufacture a human nonce.
+
+### Questions and approvals in the browser
+
+When an agent's turn is on `needs_input`, opening its row reads the prompt from the pane with `tuios peek-prompt` and shows it: the lines on the pane's screen, the numbered options, and the answers TUIOS can press. The prompt is read when the row opens, after an answer, and from **Read again**, never on a timer. It is the pane's screen, so it is untrusted text.
+
+An answer is sent with `tuios respond --prompt-id`, naming the prompt the page showed. If the pane shows a different prompt by then, TUIOS presses nothing and the page reads the prompt again.
+
+TUIOS takes an answer only from the person, so answering is off until you allow it. Give the pane that runs this server the `respond` grant, from a shell outside TUIOS:
+
+```sh
+tuios set-pane-grants -s SESSION -w SERVER_PANE --grants admin,respond
+```
+
+A server started outside TUIOS needs `respond_from_shell = true` under `[daemon]` instead. Until then the question is still shown, and an answer is refused with this instruction.
+
+That grant lets this server answer any pane's prompt, and the server accepts requests from any process on this machine that can reach its loopback port. Give it only if that is acceptable. TUIOS still refuses to approve a prompt that matched a risk rule, and approvals held for the TUIOS Inbox are not answerable here; both stay in an attached TUIOS client.
 
 ## Capture and durability
 
