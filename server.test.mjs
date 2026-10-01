@@ -104,11 +104,11 @@ test('an agent state change without a finished turn updates the agent and create
   expect(after.agents.find(a => a.id === 'pane-waiting')).toMatchObject({ name: 'Build the thing', harness: 'claude-code', kind: 'agent', state: 'needs_input' });
 });
 
-test('a finished shell command arrives as a read command item and records its pane', async () => {
+test('a finished shell command arrives as an unread command item and records its pane', async () => {
   await commandHook('cmd-1', 'shell-1', 'ls -la');
   const s = await commandHook('cmd-2', 'shell-1', 'false', '1');
-  expect(s.items.find(i => i.title === 'ls -la')).toMatchObject({ type: 'command', agent_id: 'shell-1', task_id: null, status: 'complete', unread: 0, archived: 0 });
-  expect(s.items.find(i => i.title === 'false')).toMatchObject({ type: 'command', status: 'failed', unread: 0 });
+  expect(s.items.find(i => i.title === 'ls -la')).toMatchObject({ type: 'command', agent_id: 'shell-1', task_id: null, status: 'complete', unread: 1, archived: 0 });
+  expect(s.items.find(i => i.title === 'false')).toMatchObject({ type: 'command', status: 'failed', unread: 1 });
   expect(s.agents.find(a => a.id === 'shell-1')).toMatchObject({ session: 's', kind: 'shell', task_id: null });
   const thread = await (await call(`/threads/${s.items.find(i => i.title === 'ls -la').id.slice(7)}`)).json();
   expect(thread).toMatchObject({ kind: 'command', pane_id: 'shell-1', messages: [{ body: 'output of ls -la', status: 'complete' }] });

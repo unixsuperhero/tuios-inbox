@@ -42,7 +42,7 @@ if (!all("SELECT name FROM pragma_table_info('turns')").some(c => c.name === 'ar
 // Runs once: a later start must not re-archive a snapshot the user moved back, or reassign an item they moved.
 if (!one("SELECT 1 FROM settings WHERE key='migrated_items'")) db.transaction(() => {
   const hookValue = name => `(SELECT json_extract(meta,'$.values.${name}') FROM messages WHERE thread_id=threads.id ORDER BY rowid LIMIT 1)`;
-  // Commands are read on arrival from now on, so the old ones are too.
+  // The backlog of old commands starts out read; new ones arrive unread.
   run(`UPDATE threads SET kind='command', unread=0, pane_id=COALESCE(pane_id,${hookValue('TUIOS_WINDOW_ID')}) WHERE kind='hook' AND ${hookValue('TUIOS_EVENT')}='after-command-finished'`);
   run("UPDATE messages SET status=CASE WHEN json_extract(meta,'$.values.TUIOS_EXIT_CODE')='0' THEN 'complete' ELSE 'failed' END WHERE status='snapshot' AND thread_id IN (SELECT id FROM threads WHERE kind='command')");
   // What is still a hook thread is a raw agent snapshot; turns replace those.
@@ -273,8 +273,6 @@ async function drainHooks() {
             else if (command) {
               const tid = thread(agentTask(v.TUIOS_WINDOW_ID), v.TUIOS_WINDOW_ID || null, v.TUIOS_COMMAND || 'Command finished', 'command');
               message(tid, 'system', body, v.TUIOS_EXIT_CODE === '0' ? 'complete' : 'failed', e);
-              // Whoever ran the command already saw it.
-              run('UPDATE threads SET unread=0 WHERE id=?', tid);
             }
             run('INSERT INTO events VALUES (?,?)', e.id, JSON.stringify(e));
           })();
