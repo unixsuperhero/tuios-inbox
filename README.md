@@ -13,7 +13,7 @@ Open http://127.0.0.1:4399. The server binds only to loopback and rejects foreig
 
 The first page lists every agent turn in any TUIOS session, newest first. A row appears with the prompt when a pane starts working. When the turn ends, the `after-agent-state` hook delivers the reply and the row is highlighted as unread until you expand it.
 
-`TUIOS_AGENT_MESSAGE` holds only the first line of the reply, cut to about 120 characters. The hook therefore reads the whole turn from the Claude Code transcript (`source: transcript`) or from a protocol pane's own transcript (`source: pane`). Any other harness gets the one-line summary (`source: summary`). The hook runs after `notifications.agent.settle_seconds` (2 by default), and TUIOS drops it if the pane starts another turn first; that row then stays without a reply.
+`TUIOS_AGENT_MESSAGE` holds only the first line of the reply, cut to about 120 characters. The hook therefore reads the whole turn from the Claude Code or oh-my-pi transcript (`source: transcript`) or from a protocol pane's own transcript (`source: pane`). Any other harness gets the one-line summary (`source: summary`). The hook runs after `notifications.agent.settle_seconds` (2 by default), and TUIOS drops it if the pane starts another turn first; that row then stays without a reply.
 
 ```js
 turn: { id, session, pane_id, pane_name, harness, prompt, response, source, state, unread, started, finished }

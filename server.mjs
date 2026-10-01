@@ -2,7 +2,6 @@ import { Database } from 'bun:sqlite';
 import { mkdir, readdir, unlink, stat, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { captureTurn } from './scripts/turn.mjs';
 
 const root = import.meta.dir;
 const dataDir = process.env.TUIOS_INBOX_DATA || join(homedir(), '.local/share/tuios-inbox');

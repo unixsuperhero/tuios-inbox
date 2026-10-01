@@ -9,20 +9,39 @@ async function tuios(bin, args) {
   return code ? '' : text;
 }
 
-// Claude Code's own conversation file: the last prompt and the text after its last tool call.
-export function claudeTranscript(lines) {
+function entries(lines) {
+  return lines.flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+}
+// The last prompt in a conversation and the assistant text after its last tool call.
+function lastTurn(messages, toolCall) {
   let prompt = '', reply = [];
-  for (const line of lines) {
-    let entry; try { entry = JSON.parse(line); } catch { continue; }
-    if (entry.isSidechain || entry.isMeta || !['user', 'assistant'].includes(entry.type)) continue;
-    const content = entry.message?.content;
+  for (const { role, content } of messages) {
     const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
     const text = blocks.filter(b => b.type === 'text').map(b => b.text).join('\n\n').trim();
-    if (entry.type === 'user') { if (text && !blocks.some(b => b.type === 'tool_result')) { prompt = text; reply = []; } }
-    else if (blocks.some(b => b.type === 'tool_use')) reply = [];
+    if (role === 'user') { if (text && !blocks.some(b => b.type === 'tool_result')) { prompt = text; reply = []; } }
+    else if (role !== 'assistant') continue;
+    else if (blocks.some(b => b.type === toolCall)) reply = [];
     else if (text) reply.push(text);
   }
   return prompt && reply.length ? { prompt, response: reply.join('\n\n'), source: 'transcript' } : null;
+}
+export const claudeTranscript = lines => lastTurn(entries(lines).filter(e => !e.isSidechain && !e.isMeta && e.message).map(e => ({ role: e.type, content: e.message.content })), 'tool_use');
+export const ompTranscript = lines => lastTurn(entries(lines).filter(e => e.type === 'message' && e.message).map(e => e.message), 'toolCall');
+
+// Where each harness keeps the conversation file for a session id, and how to read it.
+const transcripts = {
+  'claude-code': id => [join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'), `*/${id}.jsonl`, claudeTranscript],
+  omp: id => [join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.omp/agent'), 'sessions'), `*/*_${id}.jsonl`, ompTranscript],
+};
+async function transcriptTurn(harness, sessionId) {
+  if (!transcripts[harness] || !/^[\w-]+$/.test(sessionId)) return null;
+  const [root, pattern, read] = transcripts[harness](sessionId);
+  const [path] = await Array.fromAsync(new Bun.Glob(pattern).scan({ cwd: root, absolute: true }));
+  if (!path) return null;
+  const file = Bun.file(path), size = 4 << 20;
+  const lines = (await file.slice(Math.max(0, file.size - size)).text()).split('\n');
+  if (file.size > size) lines.shift();
+  return read(lines);
 }
 
 // A protocol pane prints "you  <prompt>", the turn, then "turn finished".
@@ -43,17 +62,6 @@ export function paneTranscript(text) {
   return { prompt: turn.slice(0, gap).join('\n').slice(5), response: turn.slice(gap + 1).join('\n').trim(), source: 'pane' };
 }
 
-async function claudeTurn(sessionId) {
-  if (!/^[\w-]+$/.test(sessionId)) return null;
-  const projects = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
-  const [path] = await Array.fromAsync(new Bun.Glob(`*/${sessionId}.jsonl`).scan({ cwd: projects, absolute: true }));
-  if (!path) return null;
-  const file = Bun.file(path), size = 4 << 20;
-  const lines = (await file.slice(Math.max(0, file.size - size)).text()).split('\n');
-  if (file.size > size) lines.shift();
-  return claudeTranscript(lines);
-}
-
 // TUIOS_AGENT_MESSAGE (the seed summary) is only the first line of the reply, cut short.
 // The whole turn comes from the harness transcript or the pane, when one can be read.
 export async function captureTurn({ bin, session, pane, time, seed = {} }) {
@@ -70,7 +78,7 @@ export async function captureTurn({ bin, session, pane, time, seed = {} }) {
   let full = null;
   try {
     if (agent.protocol) full = paneTranscript(await tuios(bin, ['capture-pane', '-s', session, '-w', pane, '--scrollback', '--lines', '10000']));
-    else if (agent.harness_id === 'claude-code' && agent.agent_session_id) full = await claudeTurn(agent.agent_session_id);
+    else full = await transcriptTurn(agent.harness_id, agent.agent_session_id);
   } catch {}
   return { ...turn, ...full };
 }

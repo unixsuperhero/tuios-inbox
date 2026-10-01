@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
-import { claudeTranscript, paneTranscript } from './scripts/turn.mjs';
+import { claudeTranscript, ompTranscript, paneTranscript } from './scripts/turn.mjs';
 
 let child, home, base, port;
 async function start() {
@@ -71,7 +71,7 @@ test('a finished agent turn from the hook is unread until its reply is opened', 
   expect((await (await call('/state')).json()).turns.filter(t => t.prompt === turn.prompt)).toMatchObject([{ unread: 0 }]);
 });
 
-test('a turn is read in full from a Claude Code transcript or a protocol pane', () => {
+test('a turn is read in full from a harness transcript or a protocol pane', () => {
   const lines = [
     { type: 'user', message: { content: 'earlier prompt' } },
     { type: 'assistant', message: { content: [{ type: 'text', text: 'earlier reply' }] } },
@@ -84,6 +84,14 @@ test('a turn is read in full from a Claude Code transcript or a protocol pane', 
   ].map(JSON.stringify);
   expect(claudeTranscript(lines)).toEqual({ prompt: 'fix the bug', response: 'Fixed.\n\nTests pass.', source: 'transcript' });
   expect(claudeTranscript(lines.slice(0, 5))).toBeNull();
+  const omp = [
+    { type: 'session' },
+    { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'testing' }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: 'bash' }] } },
+    { type: 'message', message: { role: 'toolResult', content: [{ type: 'text', text: 'No messages.' }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: "Received. I'm here." }] } },
+  ].map(JSON.stringify);
+  expect(ompTranscript(omp)).toEqual({ prompt: 'testing', response: "Received. I'm here.", source: 'transcript' });
   const pane = ['you  old prompt', '', 'old reply', 'turn finished', '', 'you  Reply with exactly ONE TWO. Do not u', 'se tools.', '', 'ONE', 'TWO', 'turn finished', '> type a prompt'].join('\n');
   expect(paneTranscript(pane)).toEqual({ prompt: 'Reply with exactly ONE TWO. Do not use tools.', response: 'ONE\nTWO', source: 'pane' });
   expect(paneTranscript('> type a prompt')).toBeNull();
