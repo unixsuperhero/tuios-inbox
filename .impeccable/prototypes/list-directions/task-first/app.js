@@ -2,17 +2,18 @@ import { createScenario, deriveModel } from './model.js';
 import { escapeHtml, icon } from '../shared.js';
 import { sendUnavailable } from './shared.js';
 
-const variants = ['ledger', 'rooms', 'desk'];
+const variants = ['ledger', 'rooms', 'desk', 'workbench'];
 const tradeoffs = {
   ledger: 'Ledger · Dense task hierarchy beside a chronological review queue. Task context stays visible while reading.',
   rooms: 'Rooms · Parallel task activity on a board, with a shared review tray. Opening a task trades the overview for focus.',
   desk: 'Desk · A persistent task index above a spacious reading desk. The compact queue keeps the next response nearby.',
+  workbench: 'Workbench · A narrow task and agent rail beside a separate review queue and a large reading and composition pane.',
 };
-const validVariant = value => variants.includes(value) ? value : 'ledger';
+const validVariant = value => variants.includes(value) ? value : 'workbench';
 const compareText = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const compare = (a, b, field) => compareText(a[field], b[field]) || compareText(a.id, b.id);
 
-export function createUI(variant = 'ledger') {
+export function createUI(variant = 'workbench') {
   return {
     variant: validVariant(variant), taskId: null, agentId: null, threadId: null, openTurnId: null,
     expandedTaskIds: ['auth'], expandedAgentIds: [], queueOrder: 'oldest', drafts: {},
@@ -36,6 +37,7 @@ export function createController(options = {}) {
     const turn = model().turns.find(item => item.id === id);
     if (!turn) return false;
     ui.openTurnId = turn.id;
+    ui.composerShown = false;
     ui.threadId = turn.thread.id;
     ui.agentId = turn.agent.id;
     ui.taskId = turn.task.id;
@@ -51,7 +53,7 @@ export function createController(options = {}) {
   }
   function selectTask(id) {
     if (!data.tasks.some(task => task.id === id)) return false;
-    Object.assign(ui, { taskId: id, agentId: null, threadId: null, openTurnId: null, mobileView: 'tasks' });
+    Object.assign(ui, { taskId: id, agentId: null, threadId: null, openTurnId: null, mobileView: 'tasks', composerShown: false });
     expand('expandedTaskIds', id);
     return true;
   }
@@ -182,11 +184,13 @@ export function createController(options = {}) {
       ui.openTurnId = null;
       ui.mobileView = 'review';
     } else if (act === 'new-prompt') {
+      const taskId = id || ui.taskId;
+      if (taskId && data.tasks.some(item => item.id === taskId)) selectTask(taskId);
       ui.composerShown = true;
       ui.mobileView = 'tasks';
       ui.openTurnId = null;
-      if (id && data.tasks.some(item => item.id === id)) {
-        ui.composerTaskId = id;
+      if (taskId && data.tasks.some(item => item.id === taskId)) {
+        ui.composerTaskId = taskId;
         ui.composerAgentId = '';
         ui.composerThreadId = '';
         ui.composerSubject = '';
@@ -220,6 +224,77 @@ export function mount() {
       updateControls();
     },
   });
+  const navigationActions = new Set(['task', 'agent', 'thread', 'open-turn', 'all-tasks', 'back-queue', 'new-prompt', 'review-next', 'reviewed', 'mobile-view']);
+  function navSnapshot() {
+    const ui = controller.ui;
+    return {
+      variant: ui.variant, taskId: ui.taskId, agentId: ui.agentId, threadId: ui.threadId, openTurnId: ui.openTurnId,
+      expandedTaskIds: [...ui.expandedTaskIds], expandedAgentIds: [...ui.expandedAgentIds],
+      composerShown: ui.composerShown, composerTaskId: ui.composerTaskId,
+      composerAgentId: ui.composerAgentId, composerThreadId: ui.composerThreadId, mobileView: ui.mobileView,
+    };
+  }
+  function navigationFromUrl() {
+    const query = new URL(location.href).searchParams;
+    return {
+      ...createUI(query.get('variant')), taskId: query.get('task'), agentId: query.get('agent'),
+      threadId: query.get('thread'), openTurnId: query.get('turn'),
+      mobileView: query.has('turn') ? 'review' : 'tasks',
+    };
+  }
+  function applyNavigation(snapshot, revealSelection = false) {
+    const { tasks, agents, threads, turns } = controller.data;
+    const find = (items, id) => items.find(item => item.id === id);
+    const turn = find(turns, snapshot.openTurnId);
+    const thread = find(threads, turn?.threadId || snapshot.threadId);
+    const agent = find(agents, thread?.agentId || snapshot.agentId);
+    const task = find(tasks, agent?.taskId || snapshot.taskId);
+    const invalid = (snapshot.openTurnId && !turn) || ((turn || snapshot.threadId) && !thread)
+      || ((thread || snapshot.agentId) && !agent) || ((agent || snapshot.taskId) && !task);
+    const composerThread = find(threads, snapshot.composerThreadId);
+    const composerAgent = find(agents, composerThread?.agentId || snapshot.composerAgentId);
+    const composerTask = find(tasks, composerAgent?.taskId || snapshot.composerTaskId);
+    const invalidTarget = (snapshot.composerThreadId && snapshot.composerThreadId !== 'new' && !composerThread)
+      || ((composerThread || snapshot.composerAgentId) && !composerAgent)
+      || ((composerAgent || snapshot.composerTaskId) && !composerTask);
+    const validIds = (ids, items) => [...new Set(Array.isArray(ids) ? ids.filter(id => find(items, id)) : [])];
+    Object.assign(controller.ui, {
+      variant: validVariant(snapshot.variant), taskId: invalid ? null : task?.id || null,
+      agentId: invalid ? null : agent?.id || null, threadId: invalid ? null : thread?.id || null,
+      openTurnId: invalid ? null : turn?.id || null,
+      expandedTaskIds: validIds(snapshot.expandedTaskIds, tasks), expandedAgentIds: validIds(snapshot.expandedAgentIds, agents),
+      composerShown: !invalid && !invalidTarget && snapshot.composerShown === true,
+      composerTaskId: invalidTarget ? '' : composerTask?.id || '',
+      composerAgentId: invalidTarget ? '' : composerAgent?.id || '',
+      composerThreadId: invalidTarget ? '' : composerThread?.id || (composerAgent && snapshot.composerThreadId === 'new' ? 'new' : ''),
+      mobileView: !invalid && snapshot.mobileView === 'review' ? 'review' : 'tasks',
+    });
+    const ui = controller.ui;
+    // Subject text, like prompt drafts, always comes from current memory.
+    ui.composerSubject = ui.subjects[`${ui.composerTaskId}:${ui.composerAgentId}`] || '';
+    if (revealSelection && ui.taskId && !ui.expandedTaskIds.includes(ui.taskId)) ui.expandedTaskIds.push(ui.taskId);
+    if (revealSelection && ui.agentId && !ui.expandedAgentIds.includes(ui.agentId)) ui.expandedAgentIds.push(ui.agentId);
+  }
+  function navigationUrl(snapshot) {
+    const url = new URL(location.href);
+    url.searchParams.set('variant', snapshot.variant);
+    for (const [query, field] of [['task', 'taskId'], ['agent', 'agentId'], ['thread', 'threadId'], ['turn', 'openTurnId']]) {
+      if (snapshot[field]) url.searchParams.set(query, snapshot[field]);
+      else url.searchParams.delete(query);
+    }
+    return url;
+  }
+  function writeNavigation(method, snapshot = navSnapshot()) {
+    history[method]({ taskFirstNavigation: snapshot }, '', navigationUrl(snapshot));
+  }
+  function recordNavigation(before) {
+    const after = navSnapshot();
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    writeNavigation('replaceState', before);
+    writeNavigation('pushState', after);
+  }
+  applyNavigation(navigationFromUrl(), true);
+  writeNavigation('replaceState');
   const identity = node => node && ({ id: node.id, draft: node.dataset.draft, field: node.dataset.field, act: node.dataset.act, target: node.dataset.id, view: node.dataset.view, form: node.closest('[data-form]')?.dataset.form, send: node.dataset.send });
   const identityMatches = (node, key) => {
     if (key.id) return node.id === key.id;
@@ -302,15 +377,12 @@ export function mount() {
     }
   }
   async function setVariant(value, updateUrl = true, retry = false) {
+    const before = navSnapshot();
     const key = validVariant(value);
     const version = ++generation;
     controller.ui.variant = key;
     if (selector) selector.value = key;
-    if (updateUrl) {
-      const url = new URL(location.href);
-      url.searchParams.set('variant', key);
-      history.replaceState(null, '', url);
-    }
+    if (updateUrl) recordNavigation(before);
     cancelPendingStyle?.();
     pendingStyle?.remove();
     pendingStyle = null;
@@ -366,9 +438,15 @@ export function mount() {
   }
   selector?.addEventListener('change', () => setVariant(selector.value));
   document.querySelector('#sample-finish')?.addEventListener('click', () => controller.finish());
-  document.querySelector('#sample-reset')?.addEventListener('click', () => controller.reset());
+  document.querySelector('#sample-reset')?.addEventListener('click', () => { controller.reset(); writeNavigation('replaceState'); });
   document.querySelector('#sample-fail')?.addEventListener('change', event => controller.change('failNextSend', event.target.checked));
-  window.addEventListener('popstate', () => setVariant(new URL(location.href).searchParams.get('variant'), false));
+  window.addEventListener('popstate', event => {
+    const previousVariant = controller.ui.variant;
+    applyNavigation(event.state?.taskFirstNavigation || navigationFromUrl(), !event.state?.taskFirstNavigation);
+    writeNavigation('replaceState');
+    if (previousVariant !== controller.ui.variant || !renderer) setVariant(controller.ui.variant, false);
+    else { render(); updateControls(); }
+  });
   document.addEventListener('keydown', event => {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.target.closest('input,textarea,select,button,a,summary,[contenteditable]:not([contenteditable="false"]),[role="tab"],[role="tablist"],[role="listbox"],[role="slider"],[role="spinbutton"],[role="tree"],[role="grid"],[role="menu"],[role="combobox"],[data-tray]')) return;
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); cycle(event.key === 'ArrowLeft' ? -1 : 1); }
@@ -382,13 +460,17 @@ export function mount() {
   });
   workspace.addEventListener('change', event => {
     const node = event.target;
-    if (node.dataset.field && node.dataset.field !== 'composerSubject') controller.change(node.dataset.field, node.value);
+    if (node.dataset.field && node.dataset.field !== 'composerSubject') {
+      controller.change(node.dataset.field, node.value);
+      writeNavigation('replaceState');
+    }
   });
   workspace.addEventListener('submit', event => {
     const form = event.target.closest('[data-form]');
     if (!form) return;
     event.preventDefault();
-    controller.send(form.dataset.form);
+    const before = navSnapshot();
+    if (controller.send(form.dataset.form)) recordNavigation(before);
   });
   workspace.addEventListener('click', event => {
     const control = event.target.closest('[data-act]');
@@ -400,10 +482,13 @@ export function mount() {
       tray?.scrollBy({ left: (direction === 'left' ? -1 : 1) * tray.clientWidth * 0.8, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
       return;
     }
+    const before = navSnapshot();
     controller.action(act, id, view);
+    if (navigationActions.has(act)) recordNavigation(before);
+    else if (act === 'reset' || act === 'toggle-task' || act === 'toggle-agent') writeNavigation('replaceState');
   });
   updateControls();
-  setVariant(controller.ui.variant);
+  setVariant(controller.ui.variant, false);
   return controller;
 }
 

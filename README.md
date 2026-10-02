@@ -168,7 +168,7 @@ References: [agents](https://tuios.dev/docs/agents), [hooks](https://tuios.dev/d
 
 ## Task-first design comparisons
 
-Three interactive sample-data comparisons live separately from the app. They use Task > Agent > Thread > Turn navigation and share an in-memory workspace. They do not open SQLite, call production APIs, or start TUIOS agents.
+The merged Task workbench and three original interactive sample-data comparisons live separately from the app. They share Task > Agent > Thread > Turn navigation and an in-memory workspace. They do not open SQLite, call production APIs, or start TUIOS agents.
 
 ```sh
 bun .impeccable/prototypes/list-directions/server.mjs
@@ -179,9 +179,14 @@ Open the explicit entry filename, using the port printed by the preview server:
 - [A · Task ledger](http://127.0.0.1:4401/task-first/index.html?variant=ledger): a connected task hierarchy beside the review queue.
 - [B · Task rooms](http://127.0.0.1:4401/task-first/index.html?variant=rooms): fixed task rooms above a chronological review tray.
 - [C · Review desk](http://127.0.0.1:4401/task-first/index.html?variant=desk): a persistent activity index above a focused reading desk.
+- [D · Task workbench](http://127.0.0.1:4401/task-first/index.html?variant=workbench): the merged design, with a narrow Task > Agent rail, Rooms graphite palette, compact main content, and a separate sortable review queue.
 
 Opening a response leaves it pending. **Reviewed · next** or a successful sample reply clears only that turn. Variant changes retain selections, review decisions, ordering, and target-specific drafts; reload resets the sample. Expand **Sample controls** to finish working turns deterministically, simulate one failed send, inspect state, or reset. All prompts and results are synthetic. If port 4401 is occupied, run the same command with `PORT=4402` or another free port; do not stop the existing process.
 
 Agent execution state is carried by the whole agent row: green Working, amber Needs input, rose Stopped, flat neutral Idle, and subdued dashed Offline. Borders and offset soft shadows strengthen for states needing attention; labels and glyphs remain visible. These treatments do not change task-level counts or whether a response awaits review.
+
+The entry without a variant opens the merged workbench. Its desktop task rail is 15% wide, bounded to 200–250px; only tasks and agents appear there. Threads and turns open in the main pane, and reviewing displays the original prompt with its response. On narrow screens, Tasks is expandable and the queue opens separately. Content navigation writes real URL/history entries: browser Back/Forward restores the previous view without rolling back drafts, sent prompts, or review decisions. The `task`, `agent`, `thread`, and `turn` query parameters deep-link sample records; reloading still resets sample mutations and drafts.
+
+Merged screenshots: [desktop](.impeccable/review/task-first/workbench-desktop.png), [open response](.impeccable/review/task-first/workbench-response.png), and [mobile](.impeccable/review/task-first/workbench-mobile.png).
 
 These artifacts compare interaction designs only. Their relational sample fields and review semantics are not a production storage contract or a change to the live app.
