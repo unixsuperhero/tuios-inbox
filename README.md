@@ -51,7 +51,7 @@ Task status and notes are editable. The project and optional worktree paths iden
 
 ## Agent mail
 
-Send mail from the task's session controls, or let agents use the installed TUIOS skill:
+Send mail from the task's session controls, or let agents use the installed `tuios-inbox` skill:
 
 ```sh
 tuios list-agents -s "$TUIOS_SESSION"
@@ -129,7 +129,7 @@ h tuios doctor
 h tuios help                 # full command list
 ```
 
-`h tuios skills-refresh` regenerates the complete reference from **`tuios --skill all`** under `~/.local/share/h-tuios/skills/tuios`. It links supported local skill roots there and migrates this app's earlier links without overwriting unrelated skills. `bun run refresh-skills` delegates to that command; the web backend is not needed.
+`h tuios skills-refresh` regenerates the complete reference from **`tuios --skill all`** under `~/.local/share/h-tuios/skills/tuios-inbox`. The saved copy is named `tuios-inbox`, leaving the name `tuios` to the skill TUIOS itself installs. It links each supported local skill root's `skills/tuios-inbox` there and removes this tool's earlier `skills/tuios` links without overwriting unrelated skills. `bun run refresh-skills` delegates to that command; the web backend is not needed.
 
 `bootstrap-install` adds a marked block to supported global instruction files. It tells newly started agents to inspect their TUIOS environment, read the native core and mail skills, and check their own unread mail at turn start and before finishing. Existing instruction text, symlinks, and hardlinks are preserved; first edits save `.h-tuios.bak` backups. `bootstrap-remove` removes only the marked block. `uninstall` also removes this tool's skill links, but leaves native state hooks and the shared reference intact.
 
