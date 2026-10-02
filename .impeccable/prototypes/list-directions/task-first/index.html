@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>tuios inbox · task-first prototype</title>
+<link rel="stylesheet" href="./base.css">
+<script type="module" src="./app.js"></script>
+</head>
+<body>
+<header class="prototype-banner">Prototype · Sample data · No real agents are running here</header>
+<main id="workspace" aria-label="tuios inbox sample workspace" tabindex="-1"></main>
+<footer class="comparison-chrome">
+<nav class="prototype-switcher" aria-label="Design comparison">
+<button id="variant-prev" type="button" aria-label="Previous design">←</button>
+<label for="variant-select">Compare designs<select id="variant-select"><option value="ledger">A · Task ledger</option><option value="rooms">B · Task rooms</option><option value="desk">C · Review desk</option></select></label>
+<button id="variant-next" type="button" aria-label="Next design">→</button>
+<p id="variant-tradeoff"></p>
+</nav>
+<details class="sample-controls"><summary>Sample controls</summary>
+<div class="sample-actions"><button id="sample-finish" type="button">Finish next working turn</button><label><input id="sample-fail" type="checkbox"> Fail next send</label><button id="sample-reset" type="button">Reset sample</button></div>
+<pre id="state-inspector" aria-label="Sample state inspector"></pre>
+</details>
+</footer>
+</body>
+</html>

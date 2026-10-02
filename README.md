@@ -165,3 +165,21 @@ A hook-only collector survives backend downtime but cannot provide live control 
 Environment options: `PORT` defaults to 4399; `TUIOS_BIN` defaults to `/opt/homebrew/bin/tuios`; `TUIOS_INBOX_DATA` changes database storage; `TUIOS_INBOX_SPOOL` changes the hook spool. Use the same spool setting in the daemon and backend if overriding it.
 
 References: [agents](https://tuios.dev/docs/agents), [hooks](https://tuios.dev/docs/hooks), [inbox](https://tuios.dev/docs/agent-inbox), [messaging](https://tuios.dev/docs/agent-messaging).
+
+## Task-first design comparisons
+
+Three interactive sample-data comparisons live separately from the app. They use Task > Agent > Thread > Turn navigation and share an in-memory workspace. They do not open SQLite, call production APIs, or start TUIOS agents.
+
+```sh
+bun .impeccable/prototypes/list-directions/server.mjs
+```
+
+Open the explicit entry filename, using the port printed by the preview server:
+
+- [A · Task ledger](http://127.0.0.1:4401/task-first/index.html?variant=ledger): a connected task hierarchy beside the review queue.
+- [B · Task rooms](http://127.0.0.1:4401/task-first/index.html?variant=rooms): fixed task rooms above a chronological review tray.
+- [C · Review desk](http://127.0.0.1:4401/task-first/index.html?variant=desk): a persistent activity index above a focused reading desk.
+
+Opening a response leaves it pending. **Reviewed · next** or a successful sample reply clears only that turn. Variant changes retain selections, review decisions, ordering, and target-specific drafts; reload resets the sample. Expand **Sample controls** to finish working turns deterministically, simulate one failed send, inspect state, or reset. All prompts and results are synthetic. If port 4401 is occupied, run the same command with `PORT=4402` or another free port; do not stop the existing process.
+
+These artifacts compare interaction designs only. Their relational sample fields and review semantics are not a production storage contract or a change to the live app.
