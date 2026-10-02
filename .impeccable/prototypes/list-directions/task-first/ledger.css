@@ -33,11 +33,21 @@ body { height: 100dvh; }
 .ledger-agents { margin: 0 0 4px 21px; border-left: 1px solid var(--rule); }
 .ledger-agent { position: relative; padding-left: 10px; }
 .ledger-agent::before, .ledger-thread::before { content: ''; position: absolute; left: 0; top: 22px; width: 10px; border-top: 1px solid var(--rule); }
+.ledger-agent > .ledger-agent-line { --muted: #4f5852; position: relative; margin-block: 2px 4px; padding-right: 6px; border: 1px solid #c4c9bf; background: #f2f2ed; color: var(--ink); box-shadow: none; }
+.ledger-agent > .ledger-agent-line:has(> .ledger-agent-select > .status-working) { background: #e1f0e6; border-color: #8aac98; box-shadow: 1px 2px 4px -2px rgb(35 70 48 / .24); }
+.ledger-agent > .ledger-agent-line:has(> .ledger-agent-select > .status-needs_input) { background: #fff0c5; border: 2px solid #b58222; box-shadow: 1px 3px 6px -2px rgb(100 70 18 / .32); }
+.ledger-agent > .ledger-agent-line:has(> .ledger-agent-select > .status-error) { background: #f9d7d5; border: 2px solid #b6433f; box-shadow: 2px 4px 7px -2px rgb(109 39 35 / .38); }
+.ledger-agent > .ledger-agent-line:has(> .ledger-agent-select > .status-idle) { background: #f2f2ed; border-color: #c4c9bf; box-shadow: none; }
+.ledger-agent > .ledger-agent-line:has(> .ledger-agent-select > .status-offline) { background: #e4e6df; border: 1px dashed #90988d; box-shadow: none; }
+.ledger-agent > .ledger-agent-line > button { background: transparent; }
+.ledger-agent > .ledger-agent-line > button:hover:not(:disabled) { background: rgb(32 39 37 / .07); color: var(--accent); }
+.ledger-agent-select > .status-needs_input { color: #78500f; }
+.ledger-agent-select > .status-error { color: #8f2929; }
 .ledger-agent-select { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; text-align: left; border: 0; padding: 6px 0; font-size: 13px; }
 .ledger-agent-name { font-weight: 550; }
 .ledger-agent-select > .ledger-meta { margin-left: auto; }
 .ledger [aria-current=true] { color: var(--accent); }
-.ledger-agent.is-selected > .ledger-agent-line { box-shadow: inset 2px 0 var(--accent); }
+.ledger-agent.is-selected > .ledger-agent-line > .ledger-agent-select > .ledger-agent-name { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
 .ledger-threads { margin-left: 21px; padding-left: 12px; border-left: 1px solid var(--rule); }
 .ledger-thread { position: relative; }
 .ledger-thread::before { left: -12px; }

@@ -182,4 +182,6 @@ Open the explicit entry filename, using the port printed by the preview server:
 
 Opening a response leaves it pending. **Reviewed · next** or a successful sample reply clears only that turn. Variant changes retain selections, review decisions, ordering, and target-specific drafts; reload resets the sample. Expand **Sample controls** to finish working turns deterministically, simulate one failed send, inspect state, or reset. All prompts and results are synthetic. If port 4401 is occupied, run the same command with `PORT=4402` or another free port; do not stop the existing process.
 
+Agent execution state is carried by the whole agent row: green Working, amber Needs input, rose Stopped, flat neutral Idle, and subdued dashed Offline. Borders and offset soft shadows strengthen for states needing attention; labels and glyphs remain visible. These treatments do not change task-level counts or whether a response awaits review.
+
 These artifacts compare interaction designs only. Their relational sample fields and review semantics are not a production storage contract or a change to the live app.

@@ -17,8 +17,8 @@ body { background: var(--bg); color: var(--ink); }
 .desk-index-task strong { font-size: 13px; font-weight: 650; }
 .desk-index-task.is-selected { background: var(--panel); box-shadow: inset 0 3px var(--accent); }
 .desk-index-counts, .desk-index-agents { color: var(--muted); }
-.desk-index-agents { display: flex; flex-direction: column; gap: 3px; margin-top: 3px; }
-.desk-index-agent { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 8px; }
+.desk-index-agents { display: flex; flex-direction: column; gap: 7px; margin-top: 3px; }
+.desk-index-agent { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 8px; padding: 3px 6px; min-width: 0; border-radius: 3px; }
 .desk-index-agent .status-mark { font-size: 13px; }
 
 .desk-columns { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 3fr); margin-top: 24px; align-items: start; }
@@ -78,6 +78,62 @@ body { background: var(--bg); color: var(--ink); }
 .desk-layout .task-agent.is-selected { border-left-color: var(--accent); }
 .desk-layout .task-agent h2 { margin: 0; font-size: 18px; }
 .desk-layout .task-agent h2 button { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; text-align: left; border-color: transparent; padding-left: 0; font-size: 18px; }
+.desk-layout .task-workspace .task-agent > h2 > button { width: 100%; min-width: 0; padding: 8px 10px; gap: 6px 14px; }
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button) {
+  --agent-fill: #f4f1eb;
+  --agent-hover: #eae5dd;
+  --agent-border: #c9c1b7;
+  --agent-border-width: 1px;
+  --agent-border-style: solid;
+  --agent-shadow: none;
+  background: var(--agent-fill);
+  border: var(--agent-border-width) var(--agent-border-style) var(--agent-border);
+  box-shadow: var(--agent-shadow);
+  color: var(--ink);
+}
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button):has(> .status-working) {
+  --agent-fill: #e6efdc;
+  --agent-hover: #d9e7cb;
+  --agent-border: #91a47b;
+  --agent-shadow: 0 2px 4px rgb(55 68 41 / 13%);
+}
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button):has(> .status-needs_input) {
+  --agent-fill: #ffe5a0;
+  --agent-hover: #ffda7b;
+  --agent-border: #b87916;
+  --agent-border-width: 2px;
+  --agent-shadow: 1px 3px 6px rgb(100 66 18 / 20%);
+}
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button):has(> .status-error) {
+  --agent-fill: #f9d9d2;
+  --agent-hover: #f4c6bc;
+  --agent-border: #b34138;
+  --agent-border-width: 2px;
+  --agent-shadow: 1px 4px 8px rgb(103 42 34 / 26%);
+}
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button):has(> .status-idle) {
+  --agent-fill: #f4f1eb;
+  --agent-hover: #eae5dd;
+  --agent-border: #c9c1b7;
+  --agent-shadow: none;
+}
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button):has(> .status-offline) {
+  --agent-fill: #e0dcd5;
+  --agent-hover: #d5cfc6;
+  --agent-border: #958b7f;
+  --agent-border-style: dashed;
+  --agent-shadow: none;
+}
+.desk-layout .desk-index-task:hover .desk-index-agent,
+.desk-layout .task-workspace .task-agent > h2 > button:hover {
+  background: var(--agent-hover);
+  border-color: var(--agent-border);
+  color: var(--ink);
+}
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button) > .status-working { color: #426239; }
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button) > .status-needs_input { color: #78500c; }
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button) > .status-error { color: #982a2a; }
+.desk-layout :is(.desk-index-agent, .task-workspace .task-agent > h2 > button) > .status-offline { color: #554f49; }
 .desk-layout .task-agent > p { color: var(--muted); font-size: 13px; }
 .desk-layout .agent-threads { margin-left: 16px; padding-left: 16px; border-left: 1px solid var(--rule); }
 .desk-layout .thread h3 button { text-align: left; font-size: 15px; border-color: transparent; }
