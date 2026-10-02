@@ -1,5 +1,6 @@
 // State, hash routes, modal continuations and native-session work dispatch.
 import { createList } from '/list.js';
+import { createWorkbench, patchHTML, terminalResponse } from '/workbench.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, unfinished } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
@@ -11,13 +12,47 @@ function openDialog(dialog) {
   modalStack.push(dialog); dialog.showModal();
 }
 const inboxDraft = { recipientId: '', body: '', revision: 0 };
+const scopedDrafts = new Map(), viewCache = new Map(), composeDrafts = new Map();
+function composerDraft() {
+  if (!route || route.kind === 'index') return inboxDraft;
+  const key = routeKey(route);
+  if (!scopedDrafts.has(key)) scopedDrafts.set(key, { recipientId: route.kind === 'agent' ? route.id : '', body: '', revision: 0 });
+  return scopedDrafts.get(key);
+}
+function composerRecipients() {
+  if (route?.kind === 'task') return recipients({ taskId: route.id });
+  if (route?.kind === 'agent') return recipients().filter(r => r.value === route.id);
+  return recipients();
+}
+const workbench = createWorkbench({ root, navigate, load, review: reviewItem, report: error });
+async function reviewItem(id) {
+  await api('/items/update', { ids: [id], set: { unread: false } });
+  await refresh();
+}
+function routePage(r) {
+  if (r.kind !== 'item') return pageForRoute(r);
+  const row = store.state.items.find(i => i.id === r.id);
+  return row ? { ...pages.inbox, title: row.title || 'Work record', description: `${row.type} · ${row.status}` } : null;
+}
+function rememberCompose() {
+  const form = $('#compose-form');
+  if (form.dataset.taskId) composeDrafts.set(form.dataset.taskId, Object.fromEntries(new FormData(form)));
+}
+function compose(taskId, agentId) {
+  rememberCompose();
+  const form = $('#compose-form'); form.dataset.taskId = taskId;
+  form.reset(); updateMenus();
+  for (const [key, value] of Object.entries(composeDrafts.get(taskId) || {})) if (form.elements[key]) form.elements[key].value = value;
+  if (agentId && recipients({ taskId }).some(r => r.value === agentId)) form.elements.paneId.value = agentId;
+  openDialog($('#compose-dialog'));
+}
 let route, page, list, terminalPane = null, refreshTimer, refreshVersion = 0;
 const routeKey = r => r?.kind === 'index' ? r.page : `${r?.kind}/${r?.id}`;
 function parseRoute(hash) {
   const path = hash.replace(/^#\/?/, '');
   if (!path) return { kind: 'index', page: 'inbox' };
   if (Object.hasOwn(pages, path)) return { kind: 'index', page: path };
-  const match = /^(task|agent)\/([^/]+)$/.exec(path);
+  const match = /^(task|agent|item)\/([^/]+)$/.exec(path);
   if (match) { try { return { kind: match[1], id: decodeURIComponent(match[2]) }; } catch {} }
   return { kind: 'invalid' };
 }
@@ -45,7 +80,9 @@ function setChoices(select, choices, value = select.value, placeholder = 'Choose
   previousValues.set(select, value);
 }
 function updateMenus() {
-  if (document.activeElement !== $('#inbox-recipient')) setChoices($('#inbox-recipient'), [...recipients(), ...newChoices(['agent', 'pane'])], inboxDraft.recipientId, 'Choose an Agent or Pane');
+  if (document.activeElement !== $('#inbox-recipient')) setChoices($('#inbox-recipient'), [...composerRecipients(), ...(route?.kind === 'agent' ? [] : newChoices(['agent', 'pane']))], composerDraft().recipientId, 'Choose an Agent or Pane');
+  const composer = $('#inbox-composer');
+  if (!composer.dataset.submitting) composer.querySelector('button.primary').disabled = !composerRecipients().some(r => r.value === composerDraft().recipientId);
   const pane = $('#pane-form');
   if (document.activeElement !== $('#pane-task')) setChoices($('#pane-task'), [...store.state.tasks.map(t => ({ value: t.id, label: t.title })), ...newChoices(['task'])]);
   if (document.activeElement !== $('#profile-options')) setChoices($('#profile-options'), store.state.profiles.map(p => ({ value: p.id, label: p.name })), pane.elements.profileId.value, 'Choose an agent profile');
@@ -63,7 +100,8 @@ function render() {
   $('#task-count').textContent = store.state.tasks.filter(t => t.status !== 'done').length;
   updateMenus();
   if (!route) return;
-  const nextPage = pageForRoute(route);
+  const nextPage = routePage(route);
+  workbench.render(route);
   if (!nextPage) {
     list?.destroy(); list = null; page = null; metadata.hidden = true;
     $('#page-title').textContent = 'Page unavailable';
@@ -72,15 +110,13 @@ function render() {
     root.innerHTML = '<p class="list-empty">No record at this address.</p>';
     return;
   }
-  if (!list) { mount(route); return; }
+  if (!list && !workbench.supports(route)) { mount(route); return; }
   page = nextPage;
   $('#page-title').textContent = page.title;
   $('#page-description').textContent = page.description;
   document.title = `tuios inbox · ${page.title}`;
-  if (route.kind !== 'index' && !metadata.contains(document.activeElement)) {
-    const html = metadataForRoute(route);
-    if (metadata.innerHTML !== html) metadata.innerHTML = html;
-  }
+  if (['task', 'agent'].includes(route.kind)) patchHTML(metadata, metadataForRoute(route));
+  if (workbench.supports(route)) return;
   list.setRows(page.rows());
   if (page.items) for (const el of root.querySelectorAll('.list-rows > .item[open]')) load(el.dataset.id).catch(error);
 }
@@ -116,33 +152,48 @@ async function load(key, opened) {
     finally { loading.delete(key); }
     render();
   }
-  const data = store.bodies.get(key)?.data;
-  if (opened && row.unread && data && (row.type !== 'turn' || data.finished)) { await api('/items/update', { ids: [key], set: { unread: false } }); await refresh(); }
+
 }
 async function saved() {
   if (root.contains(document.activeElement) || metadata.contains(document.activeElement)) document.activeElement.blur();
   await refresh();
 }
 function mount(next) {
-  route = next; page = pageForRoute(route);
-  const index = next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : '';
+  const oldKey = route && routeKey(route), nextKey = routeKey(next), main = root.closest('main');
+  if (oldKey !== nextKey) {
+    list?.destroy(); list = null;
+    if (oldKey) {
+      const content = document.createDocumentFragment(); content.append(...root.childNodes);
+      viewCache.set(oldKey, { content, scroll: main.scrollTop });
+    }
+    root.replaceChildren();
+    const cached = viewCache.get(nextKey); if (cached) root.append(cached.content);
+  }
+  route = next; page = routePage(route);
+  const index = next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : '';
   document.querySelectorAll('[data-page]').forEach(link => {
     const active = link.dataset.page === index; link.classList.toggle('active', active);
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   });
   $('#section-name').textContent = (index || 'Unavailable').toUpperCase();
   $('#add-profile').hidden = index !== 'profiles';
-  $('#inbox-composer').hidden = next.kind !== 'index' || next.page !== 'inbox';
+  $('#inbox-composer').hidden = !(['task', 'agent'].includes(next.kind) || next.kind === 'index' && next.page === 'inbox');
+  const composer = $('#inbox-composer');
+  composer.elements.body.value = composerDraft().body;
+  if (next.kind === 'task') { composer.dataset.taskId = next.id; $('#inbox-recipient').dataset.taskScope = ''; }
+  else { delete composer.dataset.taskId; delete $('#inbox-recipient').dataset.taskScope; }
   $('#page-back').hidden = next.kind === 'index';
   $('#page-back').href = `#${index || 'inbox'}`;
   $('#page-back').textContent = `← Back to ${index || 'Inbox'}`;
-  metadata.hidden = next.kind === 'index' || !page;
-  metadata.innerHTML = page && next.kind !== 'index' ? metadataForRoute(next) : '';
+  metadata.hidden = !['task', 'agent'].includes(next.kind) || !page;
+  if (oldKey !== nextKey) metadata.replaceChildren();
+  if (!metadata.hidden) patchHTML(metadata, metadataForRoute(next));
   list?.destroy(); list = null;
-  if (page) list = createList(root, { ...page.list,
-    onOpen: page.items ? row => act(() => load(row.id, true)) : undefined,
+  if (page && !workbench.supports(route)) list = createList(root, { ...page.list,
+    onOpen: page.items ? row => navigate({ kind: 'item', id: row.id }) : undefined,
     actions: (page.list.actions || []).map(a => ({ ...a, run: async (ids, value) => { $('#error').hidden = true; await a.run(ids, value); await refresh(); } })) });
   render();
+  if (oldKey !== nextKey) main.scrollTop = viewCache.get(nextKey)?.scroll || 0;
 }
 function ownerActive(context) {
   if (typeof context.owner === 'function') return context.owner();
@@ -288,7 +339,7 @@ document.addEventListener('click', e => {
       }
       case 'read-question': await question(d.id, true); break;
       case 'check-mail': await api(`/panes/${d.id}/check-mail`, {}); toast('Inbox check queued; it will not interrupt a busy agent.'); break;
-      case 'compose': $('#compose-form').dataset.taskId = d.id; updateMenus(); openDialog($('#compose-dialog')); break;
+      case 'compose': compose(d.id, d.agentId); break;
       case 'open-pane': await store.createEntity({ kind: d.kind === 'pane' ? 'pane' : 'agent', taskId: d.id }); break;
       case 'open-mail': $('#mail-form').dataset.taskId = d.id; updateMenus(); openDialog($('#mail-dialog')); break;
       case 'save-notes': {
@@ -310,7 +361,8 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('focusin', e => { if (e.target.matches('select') && !e.target.value.startsWith('__new_')) previousValues.set(e.target, e.target.value); });
 document.addEventListener('input', e => {
-  if (e.target.closest('#inbox-composer') && e.target.name === 'body') { inboxDraft.body = e.target.value; inboxDraft.revision++; }
+  if (e.target.closest('#inbox-composer') && e.target.name === 'body') { const draft = composerDraft(); draft.body = e.target.value; draft.revision++;
+    if (route.kind !== 'index') store.drafts.set(`compose:${routeKey(route)}`, draft.body); }
   let key;
   if (e.target.dataset.notes) key = `notes:${e.target.dataset.notes}`;
   else if (e.target.name === 'body') key = e.target.closest('form[data-draft]')?.dataset.draft;
@@ -323,7 +375,7 @@ document.addEventListener('change', e => {
     if (kind) { act(() => chooseCreated(target, kind)); return; }
     previousValues.set(target, target.value);
   }
-  if (target.id === 'inbox-recipient') { inboxDraft.recipientId = target.value; inboxDraft.revision++; return; }
+  if (target.id === 'inbox-recipient') { const draft = composerDraft(); draft.recipientId = target.value; draft.revision++; updateMenus(); return; }
   if (target.form?.getAttribute('id') === 'pane-form' && target.name === 'kind') { paneKind(); return; }
   const { set, id } = target.dataset, value = target.value; if (!set) return;
   act(async () => {
@@ -339,11 +391,13 @@ document.addEventListener('submit', e => {
   if (!key && !agent && !answering && !['task-form', 'pane-form', 'compose-form', 'profile-form', 'mail-form', 'inbox-composer'].includes(name)) return;
   e.preventDefault();
   const data = Object.fromEntries(new FormData(form)), button = form.querySelector('button[type="submit"],button.primary');
-  if (button?.disabled) return;
+  if (button?.disabled || submissions.has(form)) return;
   const context = creations.get(form.closest('dialog'));
   if (context?.accepted) return;
   const revision = draftRevisions.get(form.dataset.draft), body = data.body;
-  const submission = Symbol(); submissions.set(form, submission);
+  const submission = Symbol(); submissions.set(form, submission); form.dataset.submitting = '';
+  const submittedDraft = name === 'inbox-composer' ? composerDraft() : null;
+  const submittedScope = routeKey(route);
   if (button) button.disabled = true;
   act(async () => {
     if (answering) {
@@ -351,18 +405,21 @@ document.addEventListener('submit', e => {
       return;
     }
     if (key || agent) {
-      await api(key ? `/threads/${key.slice(key.indexOf(':') + 1)}/reply` : `/agents/${agent}/prompt`, data);
+      const source = store.state.items.find(i => i.id === form.dataset.draft);
+      const shouldReview = source && terminalResponse(source) && source.unread;
+      await api(key ? `/threads/${encodeURIComponent(key.slice(key.indexOf(':') + 1))}/reply` : `/agents/${encodeURIComponent(agent)}/prompt`, data);
       if (draftRevisions.get(form.dataset.draft) === revision) {
         store.drafts.delete(form.dataset.draft); if (form.elements.body.value === body) form.elements.body.value = '';
       }
+      if (shouldReview) await api('/items/update', { ids: [source.id], set: { unread: false } });
       await saved(); if (agent) toast('Work accepted. Results depend on native capture.'); return;
     }
     switch (name) {
       case 'inbox-composer': {
-        const submitted = { ...inboxDraft };
-        if (!recipients().some(c => c.value === submitted.recipientId)) throw new Error('Choose an available Agent or Pane before sending.');
+        const submitted = { ...submittedDraft };
+        if (!composerRecipients().some(c => c.value === submitted.recipientId)) throw new Error('Choose an available Agent or Pane before sending.');
         await api(`/agents/${encodeURIComponent(submitted.recipientId)}/prompt`, { body: submitted.body });
-        if (inboxDraft.revision === submitted.revision) { inboxDraft.body = ''; inboxDraft.revision++; form.elements.body.value = ''; }
+        if (submittedDraft.revision === submitted.revision) { submittedDraft.body = ''; submittedDraft.revision++; store.drafts.delete(`compose:${submittedScope}`); if (composerDraft() === submittedDraft) form.elements.body.value = ''; }
         $('#inbox-composer-status').textContent = 'Work accepted by the native session; this is not a completion confirmation.';
         await refresh(); toast('Work accepted'); break;
       }
@@ -388,8 +445,8 @@ document.addEventListener('submit', e => {
         if (!recipients({ taskId }).some(c => c.value === data.paneId)) throw new Error('Choose an available recipient in this task.');
         const result = await api(`/tasks/${taskId}/compose`, data);
         if (form.elements.body.value === body && form.elements.subject.value === data.subject && form.elements.paneId.value === data.paneId) { form.reset(); $('#compose-dialog').close(); }
-        await refresh(); navigate({ kind: 'task', id: taskId }); toast('Task work accepted');
-        if (route.kind === 'task' && route.id === taskId) list?.open(`thread:${result.threadId}`); break;
+        composeDrafts.delete(taskId);
+        await refresh(); navigate({ kind: 'item', id: `thread:${result.threadId}` }); toast('Task work accepted'); break;
       }
       case 'profile-form': data.args = JSON.parse(data.args); data.env = JSON.parse(data.env); await api('/profiles', data); $('#profile-dialog').close(); await refresh(); navigate({ kind: 'index', page: 'profiles' }); break;
       case 'mail-form': await api(`/panes/${data.from}/mail`, data); if (form.elements.body.value === body && form.elements.subject.value === data.subject) { form.reset(); $('#mail-dialog').close(); } await refresh(); toast('Mail delivered. Use Check mail to notify a recipient agent.'); break;
@@ -397,7 +454,12 @@ document.addEventListener('submit', e => {
   }, e => {
     if (context && creations.get(context.dialog) !== context) error(e, null);
     else error(e, form.closest('dialog')?.open ? form.closest('dialog') : null);
-  }).finally(() => { if (button && submissions.get(form) === submission && !(context?.accepted && creations.get(context.dialog) === context)) button.disabled = false; });
+  }).finally(() => {
+    if (submissions.get(form) !== submission) return;
+    submissions.delete(form); delete form.dataset.submitting;
+    if (button && !(context?.accepted && creations.get(context.dialog) === context)) button.disabled = false;
+    updateMenus();
+  });
 });
 window.addEventListener('hashchange', () => {
   mount(parseRoute(location.hash));

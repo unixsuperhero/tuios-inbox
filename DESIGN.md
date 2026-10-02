@@ -1,19 +1,19 @@
 ---
 name: tuios inbox
-description: Packet capture workbench for inspecting and continuing native TUIOS work.
+description: Task-first graphite workbench for inspecting and continuing native TUIOS work.
 colors:
-  paper: "#101b22"
-  white: "#15232b"
-  surface-raised: "#1c2b34"
-  ink: "#dfeaf0"
-  muted: "#b8ccd6"
-  line: "#354751"
-  control-line: "#4c626e"
-  accent: "#79c9c3"
-  danger: "#ffb7b0"
-  accent-soft: "#203a3a"
-  accent-hover: "#a0ded8"
-  nav-hover: "#263a44"
+  paper: "#15181e"
+  white: "#20252d"
+  surface-raised: "#2c333d"
+  ink: "#edf1f7"
+  muted: "#b6beca"
+  line: "#444d59"
+  control-line: "#697382"
+  accent: "#b9d776"
+  danger: "#ffd0d8"
+  accent-soft: "#303a28"
+  accent-hover: "#d1e7a3"
+  nav-hover: "#2c333d"
   danger-background: "#38292c"
   danger-line: "#765051"
   warning: "#edce91"
@@ -26,7 +26,7 @@ colors:
 typography:
   headline:
     fontFamily: "Arial, Helvetica, sans-serif"
-    fontSize: "clamp(26px, 3vw, 36px)"
+    fontSize: "clamp(21px, 2vw, 27px)"
     fontWeight: 600
     lineHeight: 1.15
     letterSpacing: "-.035em"
@@ -80,15 +80,15 @@ spacing:
   compact: "4px"
   small: "8px"
   field: "12px"
-  gutter-mobile: "16px"
+  gutter-mobile: "8px"
   section-small: "20px"
   section: "24px"
-  gutter: "28px"
+  gutter: "10px"
 components:
   button:
     textColor: "{colors.ink}"
     rounded: "{rounded.control}"
-    padding: "8px 12px"
+    padding: "5px 8px"
   button-hover:
     backgroundColor: "{colors.accent-soft}"
     textColor: "{colors.accent}"
@@ -96,14 +96,14 @@ components:
     backgroundColor: "{colors.accent}"
     textColor: "{colors.paper}"
     rounded: "{rounded.control}"
-    padding: "8px 12px"
+    padding: "5px 8px"
   button-primary-hover:
     backgroundColor: "{colors.accent-hover}"
     textColor: "{colors.paper}"
   button-danger:
     textColor: "{colors.danger}"
     rounded: "{rounded.control}"
-    padding: "8px 12px"
+    padding: "5px 8px"
   button-danger-hover:
     backgroundColor: "{colors.danger-background}"
     textColor: "{colors.danger}"
@@ -111,11 +111,11 @@ components:
     backgroundColor: "{colors.surface-raised}"
     textColor: "{colors.ink}"
     rounded: "{rounded.control}"
-    padding: "9px 11px"
+    padding: "6px 8px"
   navigation:
     textColor: "{colors.muted}"
     rounded: "{rounded.record}"
-    padding: "20px 12px 18px"
+    padding: "8px"
   navigation-active:
     textColor: "{colors.accent}"
   type-toggle:
@@ -140,9 +140,9 @@ components:
     textColor: "{colors.unread-ink}"
     typography: "{typography.record-title-unread}"
   composer:
-    padding: "18px 0"
+    padding: "10px 0"
   metadata:
-    padding: "0 0 22px"
+    padding: "0 0 12px"
   dialog:
     backgroundColor: "{colors.white}"
     textColor: "{colors.ink}"
@@ -152,20 +152,13 @@ components:
 
 ## Overview
 
-**Creative North Star: "Packet capture workbench"**
+The default live UI is the Task workbench, backed by existing production APIs and SQLite records. Only Task > Agent navigation appears in the left rail. Task histories, agent histories, original prompts, responses, and reply forms occupy the main pane; finished unread responses occupy an independently sortable review queue.
 
-The product is tuios inbox. Its Operate interface presents native TUIOS work as aligned, inspectable records. The first view puts navigation, the page title, an inline composer, and shared query controls before the work list. Task and Agent detail pages put factual, editable metadata above their scoped inboxes.
+Graphite backgrounds and lime controls follow the merged Rooms/Desk/Ledger comparison. Agent rows carry execution state with green Working, amber Needs input, rose Stopped, flat neutral Idle, and darker dashed Offline treatments. Selection uses a separate outline. Execution state does not determine review state.
 
-This is the implemented code-led Packet world, not an image-comp reproduction. Flat blue-black backgrounds distinguish ground, read records, and unread records. Teal identifies actions and focus. Neutral Arial labels and headings carry ordinary language; system monospace carries identifiers, timestamps, terminal output, and metadata values. The interface adds no illustrative imagery or simulated material.
+Opening a response does not mark it reviewed. Explicit review or a successful reply updates its production unread flag; failed replies retain their drafts and pending status. Native hash links change main-pane content, and Back/Forward restores prior views without rolling back writes. Live updates morph stable DOM nodes instead of replacing focused forms or reading panes.
 
-**Key Characteristics:**
-- Aligned records with explicit read state and stable fields.
-- In-place output inspection and direct Task and Agent navigation.
-- Shared query controls and real native-work composition.
-- Metadata above the scoped inbox, with drafts preserved during live updates.
-- Mobile field labels and brief, functional state transitions.
-
-The normative tokens above describe [style.css](public/style.css) and [list.css](public/list.css). The [extension sidecar](.impeccable/design.json) records states, breakpoints, motion, shadows, and independent component examples. Its synthesized tonal ramps are derived preview aids, not additional shipped colors. The [direction contract](.impeccable/planning/packet-surface.md) records the selected world.
+The tokens above describe [style.css](public/style.css) and [list.css](public/list.css). The [extension sidecar](.impeccable/design.json) and [earlier direction contract](.impeccable/planning/packet-surface.md) describe the preceding Packet list design; they are not the current workbench layout contract.
 
 ## Colors
 
@@ -189,23 +182,23 @@ Body text inherits the base line height. Descriptions and hints loosen it, Markd
 
 ## Layout
 
-The desktop rail is a horizontal, wrapping navigation band. Main content is centered with a maximum width of 1600px. The headline follows a compact topbar. The inline composer uses a recipient column beside a flexible prompt column, then an action row. The query shelf wraps search, property filters, sort, counts, creation controls, and removable chips around the available space.
+The desktop shell fills the viewport beneath the global navigation. Three independently scrolling areas use `clamp(200px, 15vw, 250px) minmax(0, 1fr) 280px` columns, 4px gaps, and 4px shell padding. Between 900px and 1199px, the outer columns become 200px and 240px. The task rail has exactly two levels; thread and turn navigation stays in the main pane.
 
-Desktop records use a shared six-column grid for type, title, Agent, Task, status, and time. A checkbox sits before the grid; the Inspect, Close, or Open affordance sits after it. The column header and each record share alignment. Task and Agent indexes use links, while work records use native details and summary elements for inline inspection.
+The main pane has compact gutters, factual Task/Agent metadata, scoped composition, history links, and full record detail. Secondary index pages retain the shared query shelf and bulk operations. Opening a work record from an index navigates to the main-pane detail rather than expanding its output inline.
 
-At 1100px and below, connection controls move to a full-width rail row and the query shelf relinquishes its right alignment. At 760px and below, the composer becomes one column, navigation becomes compact, and the table-like column header disappears. Each record becomes a two-column field grid: the title spans the first row, type and Agent share the next, Task spans its own row, then status and time share a row. Visible labels come from each field's `data-label`. Empty Task or time fields do not reserve empty content. Inspect moves below the fields; link records stack their Open action. Metadata labels and values stack, pane controls wrap below their content, and the bulk-action bar stretches across the list.
+Record summaries use six aligned fields when space permits. A main-pane container width of 760px or less switches to labeled mobile fields, independently of viewport width.
 
-At 360px and below, outer gutters tighten, filters wrap further, sort gets its own line, Browse controls wrap, and the heading may wrap. The exact responsive gutter tokens are in frontmatter; the breakpoint extensions are in the sidecar.
+Below 900px, bottom Tasks, Content, and Review buttons select one work area at a time. Controls have 44px minimum heights. Metadata and composer fields stack, paths and output wrap, and dialogs retain bounded scrolling.
 
 **The Scoped Inbox Rule.** Task and Agent pages place metadata above work and constrain the query by Task ID or native Agent/pane ID. Scope is intrinsic to the route, not a removable chip or a display-name match.
 
 ## Elevation & Depth
 
-The workbench is flat. Background changes, single-pixel separators, and outlines define its ordinary hierarchy; records have no ornamental drop shadow. Opening a record adds an accent separator, while hover adds a control-line separator.
+Separators and backgrounds define ordinary content hierarchy. Agent state rows add distinct borders and soft offset shadows: Working is light, Needs input is stronger, Stopped is strongest, while Idle and Offline have no shadow.
 
 Native HTML dialogs use the one large blurred shadow and a dim backdrop. Toasts and the sticky bulk-action bar share the smaller blurred shadow. These exact values live in the sidecar rather than unsupported frontmatter properties. The bulk bar remains near the viewport bottom, and the toast appears above ordinary content.
 
-Selection, focus, and open-record inset outlines are state markers, not elevation levels. No depth gradient, halo, or hard offset shadow belongs to this system.
+Selection and focus outlines remain independent of execution state. No gradient or halo is used.
 
 ## Shapes
 
@@ -225,7 +218,7 @@ Navigation is a native link set with `aria-current` on the active page. Active l
 
 ### Records and mobile fields
 
-Read and unread records share field geometry. Unread titles use unread-ink and the heavier title role; an accent dot and explicit Unread text supplement the background difference. Checked records retain that state background and add an accent inset outline. Expanded records show output on paper, with preserved Markdown rendering, provenance, editable properties, and threaded continuation. Native summary focus stays inside the record boundary. Linked Task and Agent titles change to accent on hover.
+Read and unread records share field geometry. Unread titles use unread-ink and the heavier title role, with an explicit Unread label. Index selection keeps its read-state background. Record links open full main-pane details with Markdown, provenance, editable properties, and threaded continuation. Opening alone never clears unread state.
 
 ### Metadata and composer
 
@@ -260,4 +253,4 @@ Native TUIOS approvals remain in an attached client, including ACP approvals. Ta
 - Present accepted work as completed work or failed startup as ready.
 - Describe native approvals, tailnet access, or browser-device filesystem picking as shipped.
 
-The terminal inspector retains an uppercase eyebrow in the existing build. It is not a reusable heading rule and is not canonized here. No implementation change is made by this documentation pass.
+The terminal inspector retains its existing uppercase eyebrow. It is not a reusable heading rule.

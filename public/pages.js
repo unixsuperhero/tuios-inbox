@@ -78,7 +78,7 @@ function itemSummary(r) {
   const task = store.state.tasks.find(t => t.id === r.task_id);
   return `<div class="record-summary">
     <span class="record-type" data-label="Type">${esc(typeLabels[r.type] || r.type)}</span>
-    <div class="record-title" data-label="Work"><h3>${esc(r.title || (r.type === 'turn' ? 'Prompt not captured' : 'No subject'))}</h3><span class="record-reference">${esc(r.harness || '')}</span><span class="unread-indicator">${r.unread ? 'Unread' : 'Read'}</span></div>
+    <div class="record-title" data-label="Work"><h2>${esc(r.title || (r.type === 'turn' ? 'Prompt not captured' : 'No subject'))}</h2><span class="record-reference">${esc(r.harness || '')}</span><span class="unread-indicator">${r.unread ? 'Unread' : 'Read'}</span></div>
     <span class="record-agent" data-label="Agent">${r.agent_id ? `<a href="${agentHref(r.agent_id)}">${esc(agentName(r.agent_name, r.agent_id))}</a>` : '—'}</span>
     <span class="record-task" data-label="Task">${task ? taskTag(task.id) : 'No task'}</span>
     <span class="record-status" data-label="State">${badge(r.status)}</span>

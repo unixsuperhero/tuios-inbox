@@ -11,9 +11,11 @@ Open http://127.0.0.1:4399. The server binds only to loopback and rejects foreig
 
 ## Inbox
 
-The first page is one list of everything that came back from TUIOS: agent turns, finished shell commands, agent mail, and system notices. Unread rows are highlighted until you open them. Turns is the same list limited to agent turns, and Archive holds what you archived.
+The default page is the live Task workbench. A narrow Task > Agent rail stays on the left, threads and records open in the main pane, and a separate review queue stays on the right. These are real SQLite records and native TUIOS recipients, not the sample comparisons. The rail is 15% wide at desktop sizes, bounded to 200–250px.
 
-The six-view top navigation opens lists with shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Work rows expand in place to their details, where properties can be changed. Task and Agent index rows are deep links to dedicated pages with factual, editable metadata above an intrinsically scoped inbox. Scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips.
+The review queue contains unread, unarchived finished responses and sorts oldest-first or newest-first independently of task navigation. Opening a response does not mark it read. **Reviewed**, **Review next**, or a successful reply records review; a failed reply preserves the pending response and draft. Native hash links support browser Back/Forward without undoing sent work or review decisions. Live refresh preserves focused controls, drafts, text selection, expanded details, and scroll position.
+
+Turns, Tasks, Agents, Archive, and Agent profiles remain available in the top navigation. Their indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Tasks, Content, and Review buttons switch between the three work areas.
 
 All is the default type selection and exclusive reset. Turns and Commands toggle independently; selecting both includes either type. The type union combines with search, filters, and sort. Selecting neither returns to All. Read and unread backgrounds describe state, never alternating stripes.
 
@@ -189,4 +191,4 @@ The entry without a variant opens the merged workbench. Its desktop task rail is
 
 Merged screenshots: [desktop](.impeccable/review/task-first/workbench-desktop.png), [open response](.impeccable/review/task-first/workbench-response.png), and [mobile](.impeccable/review/task-first/workbench-mobile.png).
 
-These artifacts compare interaction designs only. Their relational sample fields and review semantics are not a production storage contract or a change to the live app.
+These previews remain isolated sample-data comparisons. The default live app now uses the merged workbench design with its existing production APIs and records; it does not import the sample model.
