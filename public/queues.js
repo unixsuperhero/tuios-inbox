@@ -1,7 +1,7 @@
 // Queues page: one bucket per task, oldest at the top, read on the right. Records, actions, drafts
 // and forms are the workbench's own (pages.js detail + app.js handlers); this module only lays
 // them out as a queue and moves you to the next one.
-import { store, pages, esc, agentName, unfinished } from '/pages.js';
+import { store, pages, esc, agentName, unfinished, api } from '/pages.js';
 import { patchHTML } from '/workbench.js';
 import { buildBuckets, nextAfter, waitingFor, ALL } from '/queue-model.js';
 
@@ -11,8 +11,9 @@ const time = value => value ? new Date(value).toLocaleString([], { month: 'short
 const reviewable = row => !(unfinished(row) && row.status !== 'needs_input');
 const typing = () => document.activeElement?.matches('input, textarea, select, [contenteditable]');
 
-export function createQueues({ root, navigate, load, review, report }) {
-  let route = null, reviewing = false;
+export function createQueues({ root, navigate, load, review, refresh, report }) {
+  let route = null, reviewing = false, pending = false;
+  const picked = new Set();
   const agentFilters = new Map(); // bucket id -> agent id ('' = no agent), absent = all
   const supports = r => r?.kind === 'queue' || r?.kind === 'index' && r.page === 'queues';
   const model = () => buildBuckets({ tasks: store.state.tasks, items: store.state.items, reviewable, label: row => row.agent_id ? agentName(row.agent_name, row.agent_id) : '' });
@@ -36,7 +37,7 @@ export function createQueues({ root, navigate, load, review, report }) {
   }
 
   function row(r, bucket, item, position, total) {
-    return `<div class="wb-record ${r.unread ? 'is-unread' : 'is-read'}" data-wb-key="${esc(r.id)}"><a class="wb-record-link" href="${href(bucket.id, r.id)}"${item?.id === r.id ? ' aria-current="page"' : ''}>
+    return `<div class="wb-record ${r.unread ? 'is-unread' : 'is-read'}${picked.has(r.id) ? ' is-picked' : ''}" data-wb-key="${esc(r.id)}"><input type="checkbox" data-qb-pick="${esc(r.id)}" aria-label="Select ${esc(r.title || 'record')}"${picked.has(r.id) ? ' checked' : ''}${pending ? ' disabled' : ''}><a class="wb-record-link" href="${href(bucket.id, r.id)}"${item?.id === r.id ? ' aria-current="page"' : ''}>
       <strong>${esc(r.title || 'Prompt not captured')}</strong>
       <span>${esc(r.agent_id ? agentName(r.agent_name, r.agent_id) : 'No agent')} · ${esc(r.type)}${r.status === 'needs_input' ? ' · <b class="qb-blocked">needs your answer</b>' : ''}</span>
       <small>${esc(r.status)} · ${esc(time(r.updated))} · waiting ${waitingFor(r)}</small>
@@ -48,7 +49,10 @@ export function createQueues({ root, navigate, load, review, report }) {
     const filter = agentFilters.get(bucket.id);
     const chip = (id, name, n, on) => `<button type="button" data-qb-agent="${esc(id)}" aria-pressed="${on}">${esc(name)} <span>${n}</span></button>`;
     const chips = bucket.agents.length > 1 ? `<div class="qb-chips" role="group" aria-label="Agents in this queue">${chip('*', 'All', bucket.count, filter === undefined)}${bucket.agents.map(a => chip(a.id, a.name, a.count, filter === a.id)).join('')}</div>` : '';
-    const head = `<div class="qb-queue-head" data-wb-key="head"><h2>${esc(bucket.title)} <span class="qb-count">${rows.length}</span></h2><p class="hint">Oldest at the top. <span class="qb-kbd"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>r</kbd> mark reviewed and go to the next</span></p>${chips}</div>`;
+    for (const id of picked) if (!rows.some(r => r.id === id)) picked.delete(id);
+    const tasks = store.state.tasks.filter(t => !t.archived);
+    const bulk = `<div class="qb-bulk" data-wb-key="bulk"><label class="wb-select-all"><input type="checkbox" data-qb-all${!rows.length || pending ? ' disabled' : ''}${rows.length && picked.size === rows.length ? ' checked' : ''}>Select all</label><span class="wb-selection-count">${picked.size ? `${picked.size} selected` : ''}</span>${picked.size ? `<button type="button" data-qb-bulk="read"${pending ? ' disabled' : ''}>Mark reviewed</button><button type="button" data-qb-bulk="archive"${pending ? ' disabled' : ''}>Archive</button><select data-qb-assign aria-label="Assign checked to task"${pending ? ' disabled' : ''}><option value="">Assign to task…</option><option value="__none">No task</option>${tasks.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</select>` : ''}</div>`;
+    const head = `<div class="qb-queue-head" data-wb-key="head"><h2>${esc(bucket.title)} <span class="qb-count">${rows.length}</span></h2><p class="hint">Oldest at the top. <span class="qb-kbd"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>r</kbd> mark reviewed and go to the next</span></p>${chips}${bulk}</div>`;
     const list = rows.length ? rows.map((r, i) => row(r, bucket, item, i + 1, rows.length)).join('') : `<p class="qb-empty">Nothing waiting in this queue.</p>`;
     let reading;
     if (!item) {
@@ -86,8 +90,24 @@ export function createQueues({ root, navigate, load, review, report }) {
     finally { reviewing = false; render(route); }
   }
 
+  async function bulkUpdate(set) {
+    const ids = [...picked]; if (!ids.length || pending) return;
+    pending = true; render(route);
+    try { await api('/items/update', { ids, set }); picked.clear(); await refresh(); }
+    catch (e) { report(e); }
+    finally { pending = false; render(route); }
+  }
+  document.addEventListener('change', e => {
+    if (!supports(route)) return;
+    const input = e.target;
+    if (input.dataset.qbPick !== undefined) { input.checked ? picked.add(input.dataset.qbPick) : picked.delete(input.dataset.qbPick); render(route); return; }
+    if (input.dataset.qbAll !== undefined) { const { rows } = current(); picked.clear(); if (input.checked) for (const r of rows) picked.add(r.id); render(route); return; }
+    if (input.dataset.qbAssign !== undefined) { const value = input.value; if (!value) return; input.value = ''; bulkUpdate({ task_id: value === '__none' ? null : value }); }
+  });
   document.addEventListener('click', e => {
     if (!supports(route)) return;
+    const bulk = e.target.closest('[data-qb-bulk]');
+    if (bulk && !bulk.disabled) { bulkUpdate(bulk.dataset.qbBulk === 'read' ? { unread: false } : { archived: true }); return; }
     const chip = e.target.closest('[data-qb-agent]');
     if (chip) { const { bucket } = current(); if (chip.dataset.qbAgent === '*') agentFilters.delete(bucket.id); else agentFilters.set(bucket.id, chip.dataset.qbAgent); render(route); return; }
     if (e.target.closest('[data-qb-review]') && !e.target.closest('button').disabled) reviewAndAdvance();

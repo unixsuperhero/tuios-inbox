@@ -62,7 +62,10 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
   const queue = () => order === 'newest' ? reviewRows().reverse() : reviewRows();
   const history = () => !route || !supports(route) || route.kind === 'item' ? [] : store.state.items.filter(i => !i.archived && (route.kind === 'task' ? i.task_id === route.id : route.kind === 'agent' ? i.agent_id === route.id : true)).sort(chronological).reverse();
   const rowsFor = key => key === 'queue' ? queue() : key === 'history' ? history() : key === 'members' ? (route?.kind === 'task' ? [...document.querySelectorAll('[data-wb-pick="members"]')].map(input => ({ id: input.dataset.id })) : []) : store.state[key].filter(r => !r.archived);
+  const allActionsFor = key => key === 'members' || key === 'agents' ? pages.agents.list.actions : key === 'tasks' ? pages.tasks.list.actions : pages.inbox.list.actions;
   const actionsFor = key => key === 'members' ? pages.agents.list.actions.filter(a => !a.options) : key === 'tasks' || key === 'agents' ? pages[key].list.actions.filter(a => !a.options && a.id === 'archive') : pages.inbox.list.actions.filter(a => !a.options);
+  // Anything checked can be assigned to a task: items move by themselves, agents take their items along.
+  const assignSelect = (key, busy) => `<select data-wb-assign="${key}" aria-label="Assign checked to task"${busy ? ' disabled' : ''}><option value="">Assign to task…</option><option value="__none">No task</option>${store.state.tasks.filter(t => !t.archived).map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</select>`;
   function checkbox(key, id, title) {
     return `<input type="checkbox" data-wb-pick="${key}" data-id="${esc(id)}" aria-label="Select ${esc(title)}"${selections[key].has(id) ? ' checked' : ''}${pending.has(key) ? ' disabled' : ''}>`;
   }
@@ -71,7 +74,7 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
     return `<div class="wb-selection-toolbar" data-wb-key="tools:${key}" role="group" aria-label="${key} selection">
       <label class="wb-select-all"><input type="checkbox" data-wb-all="${key}"${!rows.length || busy ? ' disabled' : ''}>Select all ${noun}</label>
       <span class="wb-selection-count" role="status">${count ? count + ' selected' : rows.length + ' ' + noun}</span>
-      <div class="wb-bulk-actions"${count ? '' : ' hidden'}>${actionsFor(key).map(a => `<button type="button" data-wb-action="${a.id}" data-wb-scope="${key}"${busy ? ' disabled' : ''}>${esc(a.label)}</button>`).join('')}<button type="button" data-wb-clear="${key}"${busy ? ' disabled' : ''}>Clear</button></div>
+      <div class="wb-bulk-actions"${count ? '' : ' hidden'}>${actionsFor(key).map(a => `<button type="button" data-wb-action="${a.id}" data-wb-scope="${key}"${busy ? ' disabled' : ''}>${esc(a.label)}</button>`).join('')}${key === 'tasks' ? '' : assignSelect(key, busy)}<button type="button" data-wb-clear="${key}"${busy ? ' disabled' : ''}>Clear</button></div>
       <p class="wb-action-notice${notices.get(key)?.error ? ' danger' : ''}" role="${notices.get(key)?.error ? 'alert' : 'status'}"${notices.has(key) || busy ? '' : ' hidden'}>${busy ? 'Applying changes…' : esc(notices.get(key)?.text || '')}</p>
     </div>`;
   }
@@ -129,13 +132,13 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
     }
     renderRail(); renderQueue(); renderContent(); syncSelection();
   }
-  async function bulkAction(key, actionId) {
+  async function bulkAction(key, actionId, value) {
     if (pending.has(key)) return;
-    const picked = selections[key], ids = [...picked], action = actionsFor(key).find(a => a.id === actionId);
+    const picked = selections[key], ids = [...picked], action = allActionsFor(key).find(a => a.id === actionId);
     if (!ids.length || !action) return;
     pending.add(key); notices.delete(key); render(route);
     try {
-      await action.run(ids);
+      await action.run(ids, value);
       for (const id of ids) picked.delete(id);
       notices.set(key, { text: `${action.label}: ${ids.length} updated.` });
       await refresh();
@@ -149,6 +152,10 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
       const ids = input.dataset.wbAll ? rowsFor(key).map(r => r.id) : [input.dataset.id];
       for (const id of ids) input.checked ? selections[key].add(id) : selections[key].delete(id);
       notices.delete(key); render(route); return;
+    }
+    if (input.dataset.wbAssign) {
+      const key = input.dataset.wbAssign, value = input.value; if (!value) return;
+      input.value = ''; bulkAction(key, 'task', value === '__none' ? '' : value); return;
     }
     if (input.id !== 'queue-order') return;
     order = input.value === 'newest' ? 'newest' : 'oldest';

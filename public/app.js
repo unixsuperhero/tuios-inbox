@@ -26,7 +26,7 @@ function composerRecipients() {
   return recipients();
 }
 const workbench = createWorkbench({ root, navigate, load, review: reviewItem, refresh, report: error });
-const queues = createQueues({ root, navigate, load, review: reviewItem, report: error });
+const queues = createQueues({ root, navigate, load, review: reviewItem, refresh, report: error });
 async function reviewItem(id) {
   await api('/items/update', { ids: [id], set: { unread: false } });
   await refresh();

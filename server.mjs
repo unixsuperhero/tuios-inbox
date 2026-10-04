@@ -178,6 +178,8 @@ async function turnState(e) {
   if (open) {
     // A harness that is only starting up reports working, then idle, with no prompt: not a turn.
     if (e.state === 'idle' && !open.prompt) run('DELETE FROM turns WHERE id=?', open.id);
+    // The turn ended: it is unread now, whether or not the capture hook later delivers the reply text.
+    else if (['done', 'errored'].includes(e.state)) run('UPDATE turns SET state=?, unread=1, finished=COALESCE(finished, ?) WHERE id=?', e.state, new Date(e.time / 1e6).toISOString(), open.id);
     else run('UPDATE turns SET state=? WHERE id=?', e.state, open.id);
     return;
   }
@@ -191,7 +193,7 @@ async function turnState(e) {
 function completeTurn(t, eventId) {
   const key = `turn:${eventId}`;
   if (!['done', 'errored'].includes(t.state) || one('SELECT id FROM events WHERE id=?', key)) return;
-  const open = one('SELECT id,prompt FROM turns WHERE pane_id=? AND finished IS NULL AND started<=? ORDER BY started DESC LIMIT 1', t.pane, t.at);
+  const open = one("SELECT id,prompt FROM turns WHERE pane_id=? AND (finished IS NULL OR response='') AND started<=? ORDER BY started DESC LIMIT 1", t.pane, t.at);
   db.transaction(() => {
     run('INSERT INTO events VALUES (?,?)', key, '{}');
     if (open) run('UPDATE turns SET pane_name=?,harness=?,prompt=?,response=?,source=?,state=?,unread=1,finished=? WHERE id=?', t.name, t.harness, t.prompt || open.prompt, t.response, t.source, t.state, t.at, open.id);
@@ -296,6 +298,8 @@ async function drainHooks() {
 }
 // Interrupted dispatches are never blindly replayed after a backend restart.
 run("UPDATE messages SET status='uncertain',body=body || '\nBackend restarted while waiting. Inspect the pane before resending.' WHERE status='running'");
+// Turns that ended without a hook report used to stay read and unfinished; they are review work.
+run("UPDATE turns SET unread=1, finished=started WHERE state IN ('done','errored') AND finished IS NULL");
 const port = Number(process.env.PORT || 4399);
 const origin = `http://127.0.0.1:${port}`;
 const response = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });

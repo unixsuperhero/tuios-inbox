@@ -318,3 +318,29 @@ esac
     expect((await call('/agents/no-such-pane/question')).status).toBe(400);
   } finally { await rm(bin); }
 });
+
+test('a turn that ended without a hook report is unread and finished; the hook’s reply then lands on it, not on a second row', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dispatch-ended-')), at = '2026-01-02T00:00:00.000Z';
+  const db = new Database(join(dir, 'inbox.sqlite'), { create: true });
+  db.exec(`CREATE TABLE turns (id TEXT PRIMARY KEY, session TEXT NOT NULL, pane_id TEXT NOT NULL, pane_name TEXT NOT NULL, harness TEXT NOT NULL, prompt TEXT NOT NULL, response TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL, unread INTEGER NOT NULL DEFAULT 0, started TEXT NOT NULL, finished TEXT);
+    INSERT INTO turns VALUES ('stuck','s','quiet-pane','worker','claude-code','ended without a hook','','','done',0,'${at}',NULL);
+    INSERT INTO turns VALUES ('live','s','busy-pane','worker','claude-code','still running','','','working',0,'${at}',NULL);`);
+  db.close();
+  const p = await freePort(), url = `http://127.0.0.1:${p}/api`;
+  const json = async (path, body, method = 'POST') => (await fetch(url + path, body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) })).json();
+  const proc = await launch(dir, p);
+  try {
+    const first = await json('/state');
+    expect(first.items.find(i => i.title === 'ended without a hook')).toMatchObject({ status: 'done', unread: 1, updated: at });
+    expect(first.items.find(i => i.title === 'still running')).toMatchObject({ status: 'working', unread: 0 });
+    expect(await json('/turns/stuck')).toMatchObject({ finished: at, response: '' });
+    const reply = { session: 's', pane: 'quiet-pane', name: 'worker', harness: 'claude-code', state: 'done', at: new Date().toISOString(), prompt: 'ended without a hook', response: 'the late reply', source: 'pane' };
+    const path = join(dir, 'events', 'late.json');
+    await Bun.write(path, JSON.stringify({ id: 'late', time: new Date().toISOString(), values: { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: 'quiet-pane' }, turn: reply }));
+    await json('/reconcile', {});
+    for (let i = 0; i < 40 && await Bun.file(path).exists(); i++) await Bun.sleep(100);
+    const second = await json('/state');
+    expect(second.items.filter(i => i.agent_id === 'quiet-pane')).toHaveLength(1);
+    expect(await json('/turns/stuck')).toMatchObject({ response: 'the late reply', unread: 1 });
+  } finally { proc.kill(); await proc.exited; await rm(dir, { recursive: true, force: true }); }
+});

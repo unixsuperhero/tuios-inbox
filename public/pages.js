@@ -87,7 +87,7 @@ function itemSummary(r) {
 }
 function turnHtml(r, turn) {
   if (!turn.finished) return hint('The turn ended. Waiting for the hook to deliver the reply.');
-  return `${turn.prompt.length > r.title.length ? `<p class="eyebrow">FULL PROMPT</p><div class="md">${markdown(turn.prompt)}</div>` : ''}<p class="eyebrow">RESPONSE</p><div class="md">${markdown(turn.response || 'No reply text was captured.')}</div>${turnNotes[turn.source] ? hint(turnNotes[turn.source]) : ''}`;
+  return `${turn.prompt.length > r.title.length ? `<p class="eyebrow">FULL PROMPT</p><div class="md">${markdown(turn.prompt)}</div>` : ''}<p class="eyebrow">RESPONSE</p>${turn.response ? `<div class="md">${markdown(turn.response)}</div>` : hint('The turn ended, but no reply text was captured: the capture hook did not report it. Inspect the pane for the answer.')}${turnNotes[turn.source] ? hint(turnNotes[turn.source]) : ''}`;
 }
 function threadHtml(r, thread) {
   const p = liveAgent(thread.pane_id), mail = thread.kind === 'mail';
