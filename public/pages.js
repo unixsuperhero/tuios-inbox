@@ -136,15 +136,15 @@ function itemDetail(r) {
     : cached.error ? `<p class="hint danger">Could not load this item: ${esc(cached.error)}</p>`
     : r.type === 'turn' ? turnHtml(r, cached.data) : threadHtml(r, cached.data);
   return `<div class="props">${select('item-task', r.id, r.task_id, taskChoices(), 'Task')}${agent ? select('agent-task', agent.id, agent.task_id, taskChoices(), 'Agent’s task') : ''}
-    <button data-do="unread" data-id="${esc(r.id)}" data-value="${r.unread ? '' : '1'}">${r.unread ? 'Mark read' : 'Mark unread'}</button>
-    <button data-do="archive" data-id="${esc(r.id)}" data-value="${r.archived ? '' : '1'}">${r.archived ? 'Move to inbox' : 'Archive'}</button>
+    <button data-do="unread" data-id="${esc(r.id)}" data-value="${r.unread ? '' : '1'}">${r.unread ? 'Mark as read' : 'Mark as unread'}</button>
+    <button data-do="archive" data-id="${esc(r.id)}" data-value="${r.archived ? '' : '1'}">${r.archived ? 'Restore to inbox' : 'Archive'}</button>
     ${pane ? `<button data-do="inspect" data-id="${esc(pane.id)}">Inspect ${esc(pane.name)}</button>` : ''}</div>
     ${agent ? hint(`“Agent’s task” assigns the whole agent (${esc(agentName(agent.name, agent.id))}): its other turns and commands move too, and new ones follow.`) : ''}${body}${unfinished(r) ? '' : promptForm(r)}`;
 }
 const itemActions = archived => [
-  { id: 'read', label: 'Mark read', run: update('/items/update', { unread: false }) },
-  { id: 'unread', label: 'Mark unread', run: update('/items/update', { unread: true }) },
-  archived ? { id: 'unarchive', label: 'Move to inbox', run: update('/items/update', { archived: false }) } : { id: 'archive', label: 'Archive', run: update('/items/update', { archived: true }) },
+  { id: 'read', label: 'Mark as read', run: update('/items/update', { unread: false }) },
+  { id: 'unread', label: 'Mark as unread', run: update('/items/update', { unread: true }) },
+  archived ? { id: 'unarchive', label: 'Restore to inbox', run: update('/items/update', { archived: false }) } : { id: 'archive', label: 'Archive', run: update('/items/update', { archived: true }) },
   assign('/items/update'),
 ];
 const itemList = (storageKey, fields, archived, empty) => ({
@@ -168,8 +168,8 @@ function taskDetail(t) {
     <dl class="metadata-facts"><div><dt>Project path</dt><dd>${esc(t.path)}</dd></div>${t.worktree ? `<div><dt>Existing worktree</dt><dd>${esc(t.worktree)}</dd></div>` : ''}<div><dt>TUIOS session</dt><dd>${esc(t.session)}</dd></div><div><dt>Created</dt><dd>${esc(time(t.created))}</dd></div><div><dt>Task ID</dt><dd>${esc(t.id)}</dd></div></dl>
     <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}">Compose work</button><button data-do="open-pane" data-kind="agent" data-id="${esc(t.id)}">New Agent…</button><button data-do="open-pane" data-kind="pane" data-id="${esc(t.id)}">New Pane…</button><button data-do="open-mail" data-id="${esc(t.id)}">Send mail</button>${archiveButton('task-archive', t)}</div>
     <label>Task notes<textarea data-notes="${esc(t.id)}" rows="3">${esc(store.drafts.get(`notes:${t.id}`) ?? t.notes)}</textarea></label><button data-do="save-notes" data-id="${esc(t.id)}" class="subtle">Save notes</button>
-    <div class="metadata-members"><h2 class="section-title">Agents and panes <span>${members.length}</span></h2>
-    ${members.map(m => `<div class="pane"><div><strong>${agents.some(a => a.id === m.id) ? `<a href="${agentHref(m.id)}">${esc(agentName(m.name, m.id))}</a>` : esc(agentName(m.name, m.id))}</strong> ${badge(m.state)}<small>${esc(m.kind)}${m.harness ? ` · ${esc(m.harness)}` : ''} · ${esc(m.id)}${m.pane ? ' · managed here' : ' · assigned here'}</small></div><div class="pane-actions">${m.pane ? `<button data-do="inspect" data-id="${esc(m.id)}">Inspect</button>${mine.find(p => p.id === m.id)?.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(m.id)}">Check mail</button>` : ''}` : ''}</div></div>`).join('') || hint('No members yet. Open an agent or pane here, or assign an existing recipient from Agents.')}</div>
+    <div class="metadata-members"><h2 class="section-title">Agents and panes <span>${members.length}</span></h2><div id="member-selection" data-workbench-controls></div>
+    ${members.map(m => `<div class="pane" data-wb-key="member:${esc(m.id)}"><div class="member-summary"><input type="checkbox" data-wb-pick="members" data-id="${esc(m.id)}" aria-label="Select ${esc(agentName(m.name, m.id))}"><div><strong>${agents.some(a => a.id === m.id) ? `<a href="${agentHref(m.id)}">${esc(agentName(m.name, m.id))}</a>` : esc(agentName(m.name, m.id))}</strong> ${badge(m.state)}${archivedTag(m)}<small>${esc(m.kind)}${m.harness ? ` · ${esc(m.harness)}` : ''} · ${esc(m.id)}${m.pane ? ' · managed here' : ' · assigned here'}</small></div></div><div class="pane-actions">${m.pane ? `<button data-do="inspect" data-id="${esc(m.id)}">Inspect</button>${mine.find(p => p.id === m.id)?.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(m.id)}">Check mail</button>` : ''}` : ''}</div></div>`).join('') || hint('No members yet. Open an agent or pane here, or assign an existing recipient from Agents.')}</div>
     ${hint('Work uses observed recipients assigned to this task. Mail uses only panes opened in this task; assignment does not move native sessions or directories.')}
   </section>`;
 }
@@ -192,7 +192,7 @@ const protocol = p => p.protocol || 'native';
 export const pages = {
   inbox: {
     title: 'Inbox', items: true,
-    description: 'Agent turns, commands, mail and captured work. Unread records are marked explicitly. Open a record to inspect it.',
+    description: 'Agent turns, commands and mail. Unread work has a tinted background, bold title and Unread label. Check records to mark them read or archive them together.',
     rows: () => store.state.items.filter(i => !i.archived),
     list: itemList('inbox', itemFields, false, 'Nothing here. A row appears when an agent gets a prompt, a shell command finishes, or mail arrives.'),
   },

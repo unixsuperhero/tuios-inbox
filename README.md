@@ -31,9 +31,15 @@ and `ps`. The former harness-status command is now `h tuios setup-status [HARNES
 
 ## Inbox
 
-The default page is the live Task workbench. A narrow Task > Agent rail stays on the left, threads and records open in the main pane, and a separate review queue stays on the right. These are real SQLite records and native TUIOS recipients, not the sample comparisons. The rail is 15% wide at desktop sizes, bounded to 200–250px.
+The default page is the live Task workbench. The left rail labels **Task groups** and explains the agents and shell panes nested under each task. **Not assigned to a task** contains recipients outside the visible task groups. The main pane shows recent work or scoped history; the right rail contains the review queue.
 
-The review queue contains unread, unarchived finished responses and sorts oldest-first or newest-first independently of task navigation. Opening a response does not mark it read. **Reviewed**, **Review next**, or a successful reply records review; a failed reply preserves the pending response and draft. Native hash links support browser Back/Forward without undoing sent work or review decisions. Live refresh preserves focused controls, drafts, text selection, expanded details, and scroll position.
+Unread records have a green-tinted background, a lighter border, a bold title, and an explicit **Unread** label with a dot. Read records have a neutral background, normal-weight title, and **Read** label. Checking a record adds an outline without replacing its read-state styling.
+
+Checkboxes and **Select all** are available in Recent work, task and agent histories, the review queue, task member lists, the left task/agent rail, and all indexes. Selecting work records reveals **Mark as read**, **Mark as unread**, and **Archive**. Use **Restore to inbox** in Archive to bring records back. Selection is separate for each list, survives live updates, and clears from history and members when the route changes. Failed writes retain the selection and show an error; pending actions disable their controls.
+
+Task and agent rail selections can be archived independently. This hides those entries without stopping panes or archiving their work. Task member lists also support unarchiving agents. The Tasks and Agents indexes retain their status, assignment, archive, and unarchive actions; Agent profiles supports bulk deletion with confirmation.
+
+The review queue contains unread, unarchived finished responses and sorts oldest-first or newest-first independently of task navigation. Opening a response does not mark it read. **Mark as read**, **Review next**, or a successful reply records review; a failed reply preserves the pending response and draft. Native hash links support browser Back/Forward without undoing sent work or review decisions. Live refresh preserves focused controls, drafts, text selection, expanded details, and scroll position.
 
 Turns, Tasks, Agents, Archive, and Agent profiles remain available in the top navigation. Their indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Tasks, Content, and Review buttons switch between the three work areas.
 

@@ -24,7 +24,7 @@ function composerRecipients() {
   if (route?.kind === 'agent') return recipients().filter(r => r.value === route.id);
   return recipients();
 }
-const workbench = createWorkbench({ root, navigate, load, review: reviewItem, report: error });
+const workbench = createWorkbench({ root, navigate, load, review: reviewItem, refresh, report: error });
 async function reviewItem(id) {
   await api('/items/update', { ids: [id], set: { unread: false } });
   await refresh();
@@ -101,6 +101,7 @@ function render() {
   updateMenus();
   if (!route) return;
   const nextPage = routePage(route);
+  if (nextPage && ['task', 'agent'].includes(route.kind)) patchHTML(metadata, metadataForRoute(route));
   workbench.render(route);
   if (!nextPage) {
     list?.destroy(); list = null; page = null; metadata.hidden = true;
@@ -115,7 +116,6 @@ function render() {
   $('#page-title').textContent = page.title;
   $('#page-description').textContent = page.description;
   document.title = `tuios inbox · ${page.title}`;
-  if (['task', 'agent'].includes(route.kind)) patchHTML(metadata, metadataForRoute(route));
   if (workbench.supports(route)) return;
   list.setRows(page.rows());
   if (page.items) for (const el of root.querySelectorAll('.list-rows > .item[open]')) load(el.dataset.id).catch(error);

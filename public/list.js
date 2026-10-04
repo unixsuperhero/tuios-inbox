@@ -77,7 +77,7 @@ export function createList(root, config) {
   const creatorButtons = (source, action) => creationOptions(source).map((o, i) => `<button type="button" class="${action ? 'list-create-action' : 'list-create-option'}"${action ? ` data-create-action="${esc(action)}"` : ''} data-create-index="${i}">${esc(o.label)}</button>`).join('');
 
   root.innerHTML = `<div class="list"><div class="list-toolbar">
-    <input type="checkbox" class="list-select-all" aria-label="Select all shown" title="Select all shown">
+    <label class="list-select-label"><input type="checkbox" class="list-select-all" aria-label="Select all shown" title="Select all shown">Select all shown</label>
     <input class="list-search" type="search" placeholder="Search" aria-label="Search">
     ${config.typeFilters ? '<span class="list-types" role="group" aria-label="Item types"><button type="button" data-type="all">All</button><button type="button" data-type="turn">Turns</button><button type="button" data-type="command">Commands</button></span>' : ''}
     <span class="list-filter">

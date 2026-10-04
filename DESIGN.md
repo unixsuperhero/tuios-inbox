@@ -23,6 +23,8 @@ colors:
   detail-line: "#526570"
   data-ink: "#c8dae3"
   unread-ink: "#fff"
+  unread-background: "#303b2b"
+  unread-border: "#81965c"
 typography:
   headline:
     fontFamily: "Arial, Helvetica, sans-serif"
@@ -131,12 +133,12 @@ components:
     rounded: "{rounded.control}"
     padding: "6px 10px"
   record-read:
-    backgroundColor: "{colors.white}"
+    backgroundColor: "{colors.paper}"
     textColor: "{colors.ink}"
     rounded: "{rounded.record}"
     padding: "18px 16px"
   record-unread:
-    backgroundColor: "{colors.surface-raised}"
+    backgroundColor: "{colors.unread-background}"
     textColor: "{colors.unread-ink}"
     typography: "{typography.record-title-unread}"
   composer:
@@ -162,7 +164,7 @@ The tokens above describe [style.css](public/style.css) and [list.css](public/li
 
 ## Colors
 
-`paper` is the page ground and expanded output background. `white` is the read-record and dialog background; the token retains the production CSS name despite its dark value. `surface-raised` is the unread-record, input, rail, and bulk-action background. `ink` carries ordinary text, `muted` carries secondary labels, and `data-ink` carries record identifiers and times. `unread-ink` strengthens unread titles.
+`paper` is the page ground, read-record background, and expanded output background. `white` is the main pane and dialog background; the token retains the production CSS name despite its dark value. `surface-raised` is the input and bulk-action background. Unread records use `unread-background` with `unread-border`, bold white titles, and an explicit lime Unread label and dot. `ink` carries ordinary text, `muted` carries secondary labels, and `data-ink` carries record identifiers and times.
 
 `accent` marks actions, selected type controls, active navigation, focus, unread dots, and selection outlines. `accent-soft` supports button hover, selected type controls, and query chips. `accent-hover` is the primary-button hover color. `nav-hover` supports navigation and type-control hover. The production `forest` custom property is an alias of `accent`, not a second palette color.
 
@@ -196,7 +198,7 @@ Below 900px, bottom Tasks, Content, and Review buttons select one work area at a
 
 Separators and backgrounds define ordinary content hierarchy. Agent state rows add distinct borders and soft offset shadows: Working is light, Needs input is stronger, Stopped is strongest, while Idle and Offline have no shadow.
 
-Native HTML dialogs use the one large blurred shadow and a dim backdrop. Toasts and the sticky bulk-action bar share the smaller blurred shadow. These exact values live in the sidecar rather than unsupported frontmatter properties. The bulk bar remains near the viewport bottom, and the toast appears above ordinary content.
+Native HTML dialogs use the one large blurred shadow and a dim backdrop. Toasts and the shared index bulk-action bar use the smaller blurred shadow. Selection controls sit above records; workbench and index action bars stick to the top of their scrolling area so bulk actions remain available below long lists.
 
 Selection and focus outlines remain independent of execution state. No gradient or halo is used.
 
@@ -219,6 +221,10 @@ Navigation is a native link set with `aria-current` on the active page. Active l
 ### Records and mobile fields
 
 Read and unread records share field geometry. Unread titles use unread-ink and the heavier title role, with an explicit Unread label. Index selection keeps its read-state background. Record links open full main-pane details with Markdown, provenance, editable properties, and threaded continuation. Opening alone never clears unread state.
+
+Recent work, task and agent histories, the review queue, left-rail task/agent groups, and task members use native checkboxes separate from navigation links. Each list owns its selection and shows a selected count, select-all control with a mixed state, and contextual bulk actions. Selection uses an outline without changing read-state backgrounds. In-flight controls are disabled, failures retain selection, and live updates preserve checked state. History and member selections reset on route changes.
+
+The left rail is titled Task groups, with a short hierarchy explanation, Manage tasks and Manage agents links, Agents & panes labels beneath tasks, and a Not assigned to a task group. Task and agent archiving hides navigation entries but does not stop panes or archive their records.
 
 ### Metadata and composer
 

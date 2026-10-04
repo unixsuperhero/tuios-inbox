@@ -30,7 +30,7 @@
 .list-toolbar .chip { min-height: 32px; padding: 6px 10px; color: var(--accent); background: #203a3a; border-color: var(--control-line); white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .list-toolbar .chip:hover { color: var(--danger); background: #38292c; border-color: var(--danger); }
 .chip span { margin-left: 6px; font-size: 14px; }
-.list-bulk { order: 1; position: sticky; bottom: 16px; z-index: 2; align-self: center; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; margin-top: 14px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 3px; background: var(--surface-raised); box-shadow: 0 8px 28px #050d1680; }
+.list-bulk { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; margin: 8px 0; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 3px; background: var(--surface-raised); box-shadow: 0 8px 28px #050d1680; }
 .list-selected { color: var(--accent); margin-right: 8px; }
 .list-bulk select { max-width: min(240px, 100%); }
 .list-empty { padding: 42px 16px; color: var(--muted); font-size: 14px; line-height: 1.8; border-bottom: 1px solid var(--line); text-align: center; overflow-wrap: anywhere; }
@@ -39,16 +39,15 @@
 .list-columns { padding: 12px 93px 12px 46px; color: var(--muted); font-size: 12px; border-bottom: 1px solid #526570; }
 .list-columns > span { min-width: 0; overflow-wrap: anywhere; }
 .list-rows { min-width: 0; }
-.item { margin: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: #15232b; color: var(--ink); }
-.item.is-unread { background: #1c2b34; }
+.item { margin: 6px 0; border: 1px solid var(--line); border-radius: 0; background: var(--paper); color: var(--ink); }
+.item.is-unread { background: #303b2b; border-color: #81965c; }
 .item > summary, .item-row { display: flex; align-items: center; gap: 13px; min-width: 0; padding: 18px 16px; }
 .item > summary { list-style: none; cursor: pointer; }
 .item > summary::-webkit-details-marker { display: none; }
 .item > summary::marker { content: ''; }
 .item > summary:hover, .item-row:has(.item-link:hover) { box-shadow: inset 0 -1px 0 var(--control-line); }
 .item > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.item:has(.item-select:checked) { box-shadow: inset 0 0 0 1px var(--accent); }
-.item:has(.item-select:checked) .record-title :is(h2, h3) { color: var(--accent); }
+.item:has(.item-select:checked) { outline: 2px solid var(--accent); outline-offset: -2px; }
 .item[open] > summary { box-shadow: inset 0 -1px 0 var(--accent); }
 .item-summary { flex: 1; min-width: 0; }
 .item-link { display: flex; align-items: center; gap: 13px; color: var(--ink); text-decoration: none; }
