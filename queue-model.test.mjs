@@ -11,6 +11,8 @@ const items = [
   t('turn:working', '2026-01-01T00:00:00Z', { status: 'working' }),
   t('thread:b', '2026-02-15T00:00:00Z', { type: 'system', task_id: 'B', agent_id: null, agent_name: '' }),
   t('thread:none', '2026-02-20T00:00:00Z', { type: 'mail', task_id: null }),
+  t('thread:cmd', '2026-01-15T00:00:00Z', { type: 'command', task_id: 'A' }),
+  t('thread:cmd2', '2026-01-16T00:00:00Z', { type: 'command', task_id: null }),
 ];
 const tasks = [{ id: 'A', title: 'Alpha' }, { id: 'B', title: 'Beta' }, { id: 'C', title: 'Quiet' }, { id: 'D', title: 'Gone', archived: 1 }];
 const reviewable = row => row.status !== 'working';
@@ -24,6 +26,14 @@ test('one bucket per task plus unassigned; busy buckets first by longest wait, e
   const { buckets } = buildBuckets({ tasks, items, reviewable });
   expect(buckets.map(b => [b.id, b.count])).toEqual([['B', 1], [UNASSIGNED, 1], ['A', 3], ['C', 0]]);
   expect(buckets.find(b => b.id === 'A').rows.map(r => r.id)).toEqual(['turn:1', 'turn:2', 'turn:3']);
+});
+
+test('shell commands are split into their own sub-bucket and never count toward the queue', () => {
+  const { all, buckets } = buildBuckets({ tasks, items, reviewable });
+  expect(all.commands.map(r => r.id)).toEqual(['thread:cmd', 'thread:cmd2']);
+  expect(all.rows.some(r => r.type === 'command')).toBe(false);
+  expect(buckets.find(b => b.id === 'A')).toMatchObject({ count: 3, commandCount: 1 });
+  expect(buckets.find(b => b.id === UNASSIGNED)).toMatchObject({ count: 1, commandCount: 1 });
 });
 
 test('agents inside a bucket are counted and the top one comes first', () => {

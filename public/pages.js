@@ -192,7 +192,7 @@ const protocol = p => p.protocol || 'native';
 export const pages = {
   queues: {
     title: 'Queues', items: true,
-    description: 'Unread work grouped by task and ordered oldest first. Mark a record reviewed or reply to it and the next one opens.',
+    description: 'Unread work grouped by task, oldest first. Opening a record marks it read; shell commands sit in their own bucket until you ask for them.',
     rows: () => [], list: null,
   },
   inbox: {

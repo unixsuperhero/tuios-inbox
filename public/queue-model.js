@@ -6,21 +6,24 @@ const stamp = row => Date.parse(row.updated) || Date.parse(row.created) || 0;
 export const byOldest = (a, b) => stamp(a) - stamp(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /**
- * @param {{tasks: object[], items: object[], reviewable: (row: object) => boolean, label?: (row: object) => string}} input
- *   `reviewable` decides which unread rows belong in a queue; `label` names a row's agent.
+ * @param {{tasks: object[], items: object[], reviewable: (row: object) => boolean, noise?: (row: object) => boolean, label?: (row: object) => string}} input
+ *   `reviewable` decides which unread rows belong in a queue; `noise` splits off the rows hidden by default
+ *   (shell commands) into each bucket's `commands`; `label` names a row's agent.
  * @returns {{all: object, buckets: object[]}} buckets with rows ordered oldest first; busy buckets first,
  *   then the one whose oldest row has waited longest; empty buckets last, alphabetically.
  */
-export function buildBuckets({ tasks, items, reviewable, label = row => row.agent_name || row.agent_id || '' }) {
-  const rows = items.filter(i => i.unread && !i.archived && reviewable(i)).sort(byOldest);
-  const bucket = (id, title) => ({ id, title, rows: [] });
+export function buildBuckets({ tasks, items, reviewable, noise = row => row.type === 'command', label = row => row.agent_name || row.agent_id || '' }) {
+  const all = items.filter(i => i.unread && !i.archived && reviewable(i)).sort(byOldest);
+  const rows = all.filter(r => !noise(r)), commands = all.filter(noise);
+  const bucket = (id, title) => ({ id, title, rows: [], commands: [] });
   const buckets = tasks.filter(t => !t.archived).map(t => bucket(t.id, t.title));
   const unassigned = bucket(UNASSIGNED, 'Not assigned to a task');
   const index = new Map(buckets.map(b => [b.id, b]));
   for (const row of rows) (index.get(row.task_id) || unassigned).rows.push(row);
+  for (const row of commands) (index.get(row.task_id) || unassigned).commands.push(row);
   buckets.push(unassigned);
   const finish = b => {
-    b.count = b.rows.length; b.oldest = b.rows[0] ? stamp(b.rows[0]) : null;
+    b.count = b.rows.length; b.commandCount = b.commands.length; b.oldest = b.rows[0] ? stamp(b.rows[0]) : null;
     const agents = new Map();
     for (const row of b.rows) {
       const key = row.agent_id || '', entry = agents.get(key) || { id: key, name: label(row) || 'No agent', count: 0 };
@@ -31,8 +34,7 @@ export function buildBuckets({ tasks, items, reviewable, label = row => row.agen
   };
   buckets.forEach(finish);
   buckets.sort((a, b) => (b.count > 0) - (a.count > 0) || (a.oldest ?? Infinity) - (b.oldest ?? Infinity) || a.title.localeCompare(b.title));
-  const all = finish({ id: ALL, title: 'Everything', rows });
-  return { all, buckets };
+  return { all: finish({ id: ALL, title: 'Everything', rows, commands }), buckets };
 }
 
 /** The row to read after `id` leaves the queue: the next older-to-newer one, else the previous, else none. */

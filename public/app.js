@@ -27,9 +27,14 @@ function composerRecipients() {
 }
 const workbench = createWorkbench({ root, navigate, load, review: reviewItem, refresh, report: error });
 const queues = createQueues({ root, navigate, load, review: reviewItem, refresh, report: error });
-async function reviewItem(id) {
-  await api('/items/update', { ids: [id], set: { unread: false } });
+async function reviewItem(id, unread = false) {
+  await api('/items/update', { ids: [id], set: { unread } });
   await refresh();
+}
+// Opening a record is reading it. Commands are counted apart from everything else.
+function openRead(id) {
+  const row = store.state.items.find(i => i.id === id);
+  if (row?.unread) act(() => reviewItem(id));
 }
 function routePage(r) {
   if (r.kind === 'queue') return pages.queues;
@@ -101,7 +106,9 @@ function updateMenus() {
   }
 }
 function render() {
-  $('#unread-count').textContent = store.state.items.filter(i => i.unread && !i.archived).length;
+  const unread = store.state.items.filter(i => i.unread && !i.archived), commands = unread.filter(i => i.type === 'command').length;
+  $('#unread-count').textContent = unread.length - commands;
+  $('#unread-count').title = commands ? `Unread, plus ${commands} unread command${commands === 1 ? '' : 's'}` : 'Unread';
   $('#task-count').textContent = store.state.tasks.filter(t => t.status !== 'done').length;
   $('#queue-count').textContent = queues.count();
   updateMenus();
@@ -177,6 +184,7 @@ function mount(next) {
     const cached = viewCache.get(nextKey); if (cached) root.append(cached.content);
   }
   route = next; page = routePage(route);
+  if (oldKey !== nextKey) { if (next.kind === 'item') openRead(next.id); else if (next.kind === 'queue' && next.item) openRead(next.item); }
   const index = next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : next.kind === 'queue' ? 'queues' : '';
   document.body.classList.toggle('queues-mode', queues.supports(next));
   document.querySelectorAll('[data-page]').forEach(link => {

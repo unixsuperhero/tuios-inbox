@@ -158,7 +158,7 @@ The default live UI is the Task workbench, backed by existing production APIs an
 
 Graphite backgrounds and lime controls follow the merged Rooms/Desk/Ledger comparison. Agent rows carry execution state with green Working, amber Needs input, rose Stopped, flat neutral Idle, and darker dashed Offline treatments. Selection uses a separate outline. Execution state does not determine review state.
 
-Opening a response does not mark it reviewed. Explicit review or a successful reply updates its production unread flag; failed replies retain their drafts and pending status. Native hash links change main-pane content, and Back/Forward restores prior views without rolling back writes. Live updates morph stable DOM nodes instead of replacing focused forms or reading panes.
+Opening a response marks it read; **Mark as unread** restores the unread flag, and a successful reply also clears it. Failed replies retain their drafts and pending status. Shell command output is bucketed apart from other unread work and hidden from the review queue and the Queues page until the reader asks for it. Native hash links change main-pane content, and Back/Forward restores prior views without rolling back writes. Live updates morph stable DOM nodes instead of replacing focused forms or reading panes.
 
 The tokens above describe [style.css](public/style.css) and [list.css](public/list.css). The [extension sidecar](.impeccable/design.json) and [earlier direction contract](.impeccable/planning/packet-surface.md) describe the preceding Packet list design; they are not the current workbench layout contract.
 

@@ -12,6 +12,10 @@
 .qb-queue-head p { margin: 0; }
 .qb-kbd { white-space: nowrap; }
 kbd { margin: 0 2px; padding: 0 4px; border: 1px solid var(--control-line); border-radius: 3px; font: 11px/1.6 ui-monospace, 'SFMono-Regular', Consolas, monospace; }
+.qb-kinds { display: flex; gap: 4px; margin-top: 8px; }
+.qb-kinds button { padding: 3px 10px; font-size: 12px; }
+.qb-kinds button span { color: var(--muted); font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; font-variant-numeric: tabular-nums; }
+.qb-kinds button[aria-pressed=true] { background: #303a28; color: var(--accent); border-color: #303a28; }
 .qb-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .qb-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 8px; }
 .qb-bulk button, .qb-bulk select { font-size: 12px; min-height: 28px; padding: 3px 8px; }

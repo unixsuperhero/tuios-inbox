@@ -8,7 +8,10 @@ export function terminalResponse(row) {
   return !unfinished(row) && ['turn', 'command', 'mail', 'dispatch', 'snapshot'].includes(row.type)
     && ['done', 'errored', 'error', 'stopped', 'failed', 'complete', 'captured', 'partial', 'uncertain', 'snapshot'].includes(row.status);
 }
-export const reviewRows = () => store.state.items.filter(row => row.unread && !row.archived && terminalResponse(row)).sort(chronological);
+const pendingRows = () => store.state.items.filter(row => row.unread && !row.archived && terminalResponse(row)).sort(chronological);
+// Shell commands are their own bucket, hidden unless asked for; the review queue is everything else.
+export const reviewRows = () => pendingRows().filter(row => row.type !== 'command');
+export const commandRows = () => pendingRows().filter(row => row.type === 'command');
 const stateClass = state => ['closed', 'offline'].includes(state) ? 'offline' : ['working', 'running'].includes(state) ? 'working' : ['needs_input', 'blocked'].includes(state) ? 'needs_input' : ['errored', 'error', 'failed', 'stopped'].includes(state) ? 'error' : 'idle';
 const nodeKey = node => node.nodeType === 1 ? node.id || node.dataset.wbKey || (node.matches('form[data-draft]') ? `form:${node.dataset.draft}:${node.dataset.reply || node.dataset.prompt || node.dataset.answer || ''}` : null) : null;
 
@@ -53,13 +56,14 @@ export function patchHTML(parent, html) {
 }
 
 export function createWorkbench({ root, navigate, load, review, refresh, report }) {
-  let route, order = 'oldest', reviewing = false;
+  let route, order = 'oldest', reviewing = false, showCommands = false;
+  try { showCommands = sessionStorage.getItem('workbench.queue-commands') === '1'; } catch {}
   const selections = { history: new Set(), queue: new Set(), tasks: new Set(), agents: new Set(), members: new Set() };
   const pending = new Set(), notices = new Map();
   try { order = sessionStorage.getItem('workbench.queue-order') === 'newest' ? 'newest' : 'oldest'; } catch {}
   const supports = r => r.kind === 'item' || r.kind === 'task' || r.kind === 'agent' || r.kind === 'index' && r.page === 'inbox';
   const selected = () => route?.kind === 'item' ? store.state.items.find(i => i.id === route.id) : null;
-  const queue = () => order === 'newest' ? reviewRows().reverse() : reviewRows();
+  const queue = () => { const rows = showCommands ? commandRows() : reviewRows(); return order === 'newest' ? rows.reverse() : rows; };
   const history = () => !route || !supports(route) || route.kind === 'item' ? [] : store.state.items.filter(i => !i.archived && (route.kind === 'task' ? i.task_id === route.id : route.kind === 'agent' ? i.agent_id === route.id : true)).sort(chronological).reverse();
   const rowsFor = key => key === 'queue' ? queue() : key === 'history' ? history() : key === 'members' ? (route?.kind === 'task' ? [...document.querySelectorAll('[data-wb-pick="members"]')].map(input => ({ id: input.dataset.id })) : []) : store.state[key].filter(r => !r.archived);
   const allActionsFor = key => key === 'members' || key === 'agents' ? pages.agents.list.actions : key === 'tasks' ? pages.tasks.list.actions : pages.inbox.list.actions;
@@ -107,21 +111,21 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
   function renderQueue() {
     const el = document.querySelector('#review-queue'); if (!el) return;
     const rows = queue(), current = selected();
-    patchHTML(el, `<div class="wb-queue-heading"><h2>Review queue <span>${rows.length}</span></h2><p class="hint">Finished responses you haven’t marked as read.</p><label>Order<select id="queue-order"><option value="oldest"${order === 'oldest' ? ' selected' : ''}>Oldest first</option><option value="newest"${order === 'newest' ? ' selected' : ''}>Newest first</option></select></label><button id="review-next"${reviewing || !rows.length && !(current?.unread && terminalResponse(current)) ? ' disabled' : ''}>Review next</button></div>${toolbar('queue', rows)}<div class="wb-queue-items">${rows.map(r => itemLink(r, 'queue')).join('') || '<p class="list-empty">Nothing waiting for review.</p>'}</div>`);
+    const commands = commandRows().length;
+    patchHTML(el, `<div class="wb-queue-heading"><h2>Review queue <span>${rows.length}</span></h2><p class="hint">${showCommands ? 'Unread shell command output. Hidden from the queue unless you ask for it.' : 'Finished responses you haven’t read yet. Opening one marks it read.'}</p><label class="wb-queue-commands"><input type="checkbox" id="queue-commands"${showCommands ? ' checked' : ''}>Show commands <span>${commands}</span></label><label>Order<select id="queue-order"><option value="oldest"${order === 'oldest' ? ' selected' : ''}>Oldest first</option><option value="newest"${order === 'newest' ? ' selected' : ''}>Newest first</option></select></label><button id="review-next"${reviewing || !rows.some(r => r.id !== current?.id) ? ' disabled' : ''}>Next</button></div>${toolbar('queue', rows)}<div class="wb-queue-items">${rows.map(r => itemLink(r, 'queue')).join('') || '<p class="list-empty">Nothing waiting for review.</p>'}</div>`);
   }
   function renderContent() {
     if (!supports(route)) return;
     const item = selected();
     if (route.kind === 'item') {
       if (!item) { patchHTML(root, '<p class="list-empty">This record is no longer available.</p>'); return; }
-      const pending = terminalResponse(item) && item.unread;
-      patchHTML(root, `<article class="wb-content wb-item ${item.unread ? 'is-unread' : 'is-read'}" data-wb-key="opened:${esc(item.id)}"><div class="wb-summary">${pages.inbox.list.summary(item)}</div><div class="wb-review-actions"><button data-workbench-review="${esc(item.id)}"${!pending || reviewing ? ' disabled' : ''}>${item.unread ? 'Mark as read' : 'Read'}</button>${item.task_id ? `<a href="${href('task', item.task_id)}">Task history</a>` : ''}${item.agent_id ? `<a href="${href('agent', item.agent_id)}">Agent history</a>` : ''}</div><div class="wb-item-detail">${pages.inbox.list.detail(item)}</div></article>`);
+      patchHTML(root, `<article class="wb-content wb-item ${item.unread ? 'is-unread' : 'is-read'}" data-wb-key="opened:${esc(item.id)}"><div class="wb-summary">${pages.inbox.list.summary(item)}</div><div class="wb-review-actions"><button data-workbench-review="${esc(item.id)}"${reviewing ? ' disabled' : ''}>${item.unread ? 'Mark as read' : 'Mark as unread'}</button>${item.task_id ? `<a href="${href('task', item.task_id)}">Task history</a>` : ''}${item.agent_id ? `<a href="${href('agent', item.agent_id)}">Agent history</a>` : ''}</div><div class="wb-item-detail">${pages.inbox.list.detail(item)}</div></article>`);
       load(item.id, false).catch(report); return;
     }
     const rows = history();
     const agent = route.kind === 'agent' && store.state.agents.find(a => a.id === route.id);
     const taskId = route.kind === 'task' ? route.id : agent?.task_id;
-    patchHTML(root, `<section class="wb-content"><div class="wb-history-heading"><h2>${route.kind === 'index' ? 'Recent work' : 'History'} <span>${rows.length}</span></h2>${taskId ? `<button data-do="compose" data-id="${esc(taskId)}"${agent ? ` data-agent-id="${esc(agent.id)}"` : ''}>New thread</button>` : ''}</div><p class="wb-list-hint">Check records to act on several at once. Opening a record leaves it unread.</p>${toolbar('history', rows)}<div class="wb-history">${rows.map(r => itemLink(r, 'history')).join('') || '<p class="list-empty">No work in this scope yet.</p>'}</div></section>`);
+    patchHTML(root, `<section class="wb-content"><div class="wb-history-heading"><h2>${route.kind === 'index' ? 'Recent work' : 'History'} <span>${rows.length}</span></h2>${taskId ? `<button data-do="compose" data-id="${esc(taskId)}"${agent ? ` data-agent-id="${esc(agent.id)}"` : ''}>New thread</button>` : ''}</div><p class="wb-list-hint">Check records to act on several at once. Opening a record marks it read.</p>${toolbar('history', rows)}<div class="wb-history">${rows.map(r => itemLink(r, 'history')).join('') || '<p class="list-empty">No work in this scope yet.</p>'}</div></section>`);
   }
   function render(next) {
     if (route && (next.kind !== route.kind || next.id !== route.id || next.page !== route.page)) for (const key of ['history', 'members']) { selections[key] = new Set(); notices.delete(key); }
@@ -157,6 +161,7 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
       const key = input.dataset.wbAssign, value = input.value; if (!value) return;
       input.value = ''; bulkAction(key, 'task', value === '__none' ? '' : value); return;
     }
+    if (input.id === 'queue-commands') { showCommands = input.checked; try { sessionStorage.setItem('workbench.queue-commands', showCommands ? '1' : '0'); } catch {} render(route); return; }
     if (input.id !== 'queue-order') return;
     order = input.value === 'newest' ? 'newest' : 'oldest';
     try { sessionStorage.setItem('workbench.queue-order', order); } catch {}
@@ -173,15 +178,11 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
     const button = e.target.closest('[data-workbench-review],#review-next'); if (!button || button.disabled || reviewing) return;
     const current = selected(), next = button.id === 'review-next';
     const candidates = queue().filter(r => r.id !== current?.id);
-    const target = current && terminalResponse(current) ? current : null;
     reviewing = true; render(route);
     (async () => {
-      if (target?.unread) await review(target.id);
-      if (next) {
-        const id = candidates.find(r => reviewRows().some(i => i.id === r.id))?.id;
-        if (id) navigate({ kind: 'item', id });
-        else if (target) navigate({ kind: 'index', page: 'inbox' });
-      }
+      // Opening already marked it read; the button flips it back, and Next just moves on.
+      if (!next && current) await review(current.id, !current.unread);
+      if (next) { const id = candidates[0]?.id; if (id) navigate({ kind: 'item', id }); else navigate({ kind: 'index', page: 'inbox' }); }
     })().catch(report).finally(() => { reviewing = false; render(route); });
   });
   return { supports, render };
