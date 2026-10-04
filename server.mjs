@@ -77,6 +77,7 @@ async function cli(args, timeout = 15000, json = true) {
   return json ? (value ?? { output: stdout, exit_code: code }) : stdout;
 }
 function required(value, label, max = 16000) { if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${label} is required (maximum ${max} characters)`); return value.trim(); }
+const workingDirectory = t => t.worktree || t.path || homedir();
 async function directory(value) { const p = resolve(required(value, 'Directory')); if (!(await stat(p)).isDirectory()) throw new Error('Path must be an existing directory'); return p; }
 function taskFor(key) { const t = one('SELECT * FROM tasks WHERE id=?', key); if (!t) throw new Error('Task not found'); return t; }
 function agentFor(key) { const a = one('SELECT * FROM agents WHERE id=?', key); if (!a) throw new Error('Agent not found'); return a; }
@@ -122,7 +123,7 @@ async function ensureSession(t) {
 }
 async function newShell(t, name) {
   await ensureSession(t);
-  const result = await cli(['new-window', '-s', t.session, '--cwd', t.worktree || t.path, '--no-focus', name, '--', '/bin/zsh', '-d', '-f']);
+  const result = await cli(['new-window', '-s', t.session, '--cwd', workingDirectory(t), '--no-focus', name, '--', '/bin/zsh', '-d', '-f']);
   const paneId = result.window_id || result.id;
   if (!paneId) throw new Error(`Missing window id: ${JSON.stringify(result)}`);
   run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'shell', null, 'idle', '');
@@ -360,7 +361,8 @@ async function api(req, url) {
     run('INSERT OR REPLACE INTO profiles VALUES (?,?,?,?,?,?)', key, name, executable, JSON.stringify(body.args), body.protocol || '', JSON.stringify(body.env)); changed(); return response({ id: key });
   }
   if (url.pathname === '/api/tasks' && method === 'POST') {
-    const key = id(), path = await directory(body.path), worktree = body.worktree ? await directory(body.worktree) : '';
+    // A task may start without a directory; its panes then open in the home directory until one is set.
+    const key = id(), path = body.path ? await directory(body.path) : '', worktree = body.worktree ? await directory(body.worktree) : '';
     run('INSERT INTO tasks (id,title,path,worktree,status,notes,session,created) VALUES (?,?,?,?,?,?,?,?)', key, required(body.title, 'Title', 200), path, worktree, 'open', body.notes || '', `inbox-${key.slice(0, 8)}`, now());
     changed(); return response(taskFor(key), 201);
   }
@@ -368,7 +370,8 @@ async function api(req, url) {
     const t = taskFor(parts[2]);
     if (parts.length === 3 && method === 'PATCH') {
       if (!['open', 'active', 'done'].includes(body.status || t.status)) throw new Error('Unknown task status');
-      run('UPDATE tasks SET title=?,status=?,notes=? WHERE id=?', required(body.title || t.title, 'Title', 200), body.status || t.status, body.notes ?? t.notes, t.id); changed(); return response(taskFor(t.id));
+      const path = body.path === undefined ? t.path : body.path ? await directory(body.path) : '', worktree = body.worktree === undefined ? t.worktree : body.worktree ? await directory(body.worktree) : '';
+      run('UPDATE tasks SET title=?,status=?,notes=?,path=?,worktree=? WHERE id=?', required(body.title || t.title, 'Title', 200), body.status || t.status, body.notes ?? t.notes, path, worktree, t.id); changed(); return response(taskFor(t.id));
     }
     if (parts[3] === 'panes' && method === 'POST') {
       const name = required(body.name || `shell-${id().slice(0, 6)}`, 'Pane name', 120);
@@ -378,7 +381,7 @@ async function api(req, url) {
       const mid = message(tid, 'system', 'Starting agent…', 'running');
       background((async () => {
         try {
-          const args = ['start-agent', '-s', t.session, '--cwd', t.worktree || t.path, '--name', name, '--grants', 'read,write,fan', '--ready-timeout', '120000'];
+          const args = ['start-agent', '-s', t.session, '--cwd', workingDirectory(t), '--name', name, '--grants', 'read,write,fan', '--ready-timeout', '120000'];
           if (profile.protocol) args.push('--protocol', profile.protocol);
           for (const [k,v] of Object.entries(JSON.parse(profile.env))) args.push('--env', `${k}=${v}`);
           args.push(profile.executable, '--', ...JSON.parse(profile.args));

@@ -165,7 +165,8 @@ function taskDetail(t) {
   return `<section class="entity-metadata" aria-label="Task details">
     <div class="metadata-heading"><a href="#tasks">← Tasks</a>${archivedTag(t)}</div>
     <div class="props"><label class="grow">Title<input data-set="task-title" data-id="${esc(t.id)}" value="${esc(t.title)}" maxlength="200"></label>${select('task-status', t.id, t.status, statuses, 'Status')}</div>
-    <dl class="metadata-facts"><div><dt>Project path</dt><dd>${esc(t.path)}</dd></div>${t.worktree ? `<div><dt>Existing worktree</dt><dd>${esc(t.worktree)}</dd></div>` : ''}<div><dt>TUIOS session</dt><dd>${esc(t.session)}</dd></div><div><dt>Created</dt><dd>${esc(time(t.created))}</dd></div><div><dt>Task ID</dt><dd>${esc(t.id)}</dd></div></dl>
+    <div class="props"><label class="grow">Project path <small>Optional</small><span class="browse"><input id="task-path-${esc(t.id)}" data-set="task-path" data-id="${esc(t.id)}" value="${esc(t.path)}" list="path-options" placeholder="Not set · panes open in your home directory"><button type="button" data-do="browse" data-id="task-path-${esc(t.id)}">Browse…</button></span></label><label class="grow">Existing worktree <small>Optional</small><span class="browse"><input id="task-worktree-${esc(t.id)}" data-set="task-worktree" data-id="${esc(t.id)}" value="${esc(t.worktree)}" list="path-options" placeholder="Leave empty to use the project path"><button type="button" data-do="browse" data-id="task-worktree-${esc(t.id)}">Browse…</button></span></label></div>
+    <dl class="metadata-facts"><div><dt>TUIOS session</dt><dd>${esc(t.session)}</dd></div><div><dt>Created</dt><dd>${esc(time(t.created))}</dd></div><div><dt>Task ID</dt><dd>${esc(t.id)}</dd></div></dl>
     <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}">Compose work</button><button data-do="open-pane" data-kind="agent" data-id="${esc(t.id)}">New Agent…</button><button data-do="open-pane" data-kind="pane" data-id="${esc(t.id)}">New Pane…</button><button data-do="open-mail" data-id="${esc(t.id)}">Send mail</button>${archiveButton('task-archive', t)}</div>
     <label>Task notes<textarea data-notes="${esc(t.id)}" rows="3">${esc(store.drafts.get(`notes:${t.id}`) ?? t.notes)}</textarea></label><button data-do="save-notes" data-id="${esc(t.id)}" class="subtle">Save notes</button>
     <div class="metadata-members"><h2 class="section-title">Agents and panes <span>${members.length}</span></h2><div id="member-selection" data-workbench-controls></div>
@@ -227,7 +228,7 @@ export const pages = {
       rowId: t => t.id, rowHref: t => taskHref(t.id), rowClass: t => t.unread_count ? 'is-unread' : 'is-read',
       summary: t => `<div class="record-summary">
         <span class="record-type" data-label="Type">Task</span>
-        <div class="record-title" data-label="Work"><h3>${esc(t.title)}</h3><span class="record-reference">${esc(basename(t.path))}${archivedTag(t)}</span></div>
+        <div class="record-title" data-label="Work"><h3>${esc(t.title)}</h3><span class="record-reference">${t.path ? esc(basename(t.path)) : 'no directory'}${archivedTag(t)}</span></div>
         <span class="record-agent" data-label="Agents">${t.agent_count} observed</span>
         <span class="record-task" data-label="Unread"><span class="unread-indicator">${t.unread_count} unread</span></span>
         <span class="record-status" data-label="State">${badge(t.status)}</span>

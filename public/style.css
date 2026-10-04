@@ -221,6 +221,11 @@ dialog form { display: grid; gap: 18px; }
 .wb-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--muted); font-size: 12px; }
 .wb-summary :is(p, h2) { margin: 0; }
 .wb-summary > .record-summary { --record-columns: minmax(65px, .7fr) minmax(0, 2.8fr) minmax(0, 1.2fr) minmax(0, 1.1fr) minmax(70px, .9fr) minmax(85px, .9fr); width: 100%; }
+.path-picks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.path-picks[hidden] { display: none; }
+.path-picks button { max-width: 100%; padding: 2px 7px; font: 12px/1.6 ui-monospace, 'SFMono-Regular', Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.props .browse { display: flex; gap: 6px; }
+.props .browse input { flex: 1; min-width: 0; }
 .wb-queue-commands { gap: 6px !important; justify-content: flex-start !important; }
 .wb-queue-commands input { margin: 0; }
 .wb-queue-commands span { font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; color: var(--data-ink); }

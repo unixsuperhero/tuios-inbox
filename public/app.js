@@ -108,6 +108,7 @@ function updateMenus() {
 function render() {
   const unread = store.state.items.filter(i => i.unread && !i.archived), commands = unread.filter(i => i.type === 'command').length;
   $('#unread-count').textContent = unread.length - commands;
+  fillPathOptions();
   $('#unread-count').title = commands ? `Unread, plus ${commands} unread command${commands === 1 ? '' : 's'}` : 'Unread';
   $('#task-count').textContent = store.state.tasks.filter(t => t.status !== 'done').length;
   $('#queue-count').textContent = queues.count();
@@ -233,12 +234,38 @@ function paneKind() {
   form.elements.profileId.disabled = shell;
   form.querySelector('button.primary').textContent = shell ? 'Create pane' : 'Create agent';
 }
+// The paths this machine's tasks already use, most used first, plus their parent folders: a native
+// datalist for typing and quick picks for the top few. Browse… remains the picker for anything else.
+function knownPaths() {
+  const counts = new Map();
+  for (const t of store.state.tasks) for (const p of [t.path, t.worktree]) if (p) counts.set(p, (counts.get(p) || 0) + 1);
+  const parents = new Map();
+  for (const p of counts.keys()) { const parent = p.replace(/\/[^/]+\/?$/, ''); if (parent && parent !== p) parents.set(parent, (parents.get(parent) || 0) + 1); }
+  const rank = m => [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([p]) => p);
+  return { used: rank(counts), parents: rank(parents).filter(p => !counts.has(p)) };
+}
+const homePrefix = () => (store.state.dataDir || '').replace(/\/\.local\/share\/tuios-inbox$/, '');
+const shortPath = p => homePrefix() && p.startsWith(homePrefix() + '/') ? '~' + p.slice(homePrefix().length) : p;
+function fillPathOptions() {
+  const { used, parents } = knownPaths();
+  $('#path-options').replaceChildren(...[...used, ...parents].map(p => Object.assign(document.createElement('option'), { value: p })));
+}
+function suggestPaths(form) {
+  fillPathOptions();
+  const { used } = knownPaths(), worktrees = store.state.tasks.map(t => t.worktree).filter(Boolean);
+  for (const box of form.querySelectorAll('[data-picks]')) {
+    const picks = [...(box.dataset.picks === 'worktree' ? worktrees : []), ...used].filter((p, i, a) => a.indexOf(p) === i).slice(0, 4);
+    box.replaceChildren(...picks.map(p => { const b = document.createElement('button'); b.type = 'button'; b.textContent = shortPath(p); b.title = p; b.dataset.do = 'fill'; b.dataset.id = box.dataset.picks; b.dataset.value = p; return b; }));
+    box.hidden = !picks.length;
+  }
+}
 store.createEntity = ({ kind, taskId, owner } = {}) => {
   const dialog = kind === 'task' ? $('#task-dialog') : $('#pane-dialog');
   if (!['task', 'agent', 'pane'].includes(kind) || creations.has(dialog)) return Promise.resolve(null);
   const parent = activeDialog();
   const returnFocus = document.activeElement;
   const notice = dialog.querySelector('.form-error'); if (notice) notice.remove();
+  if (kind === 'task') suggestPaths($('#task-form'));
   if (kind !== 'task') {
     const form = $('#pane-form');
     form.elements.kind.value = kind === 'pane' ? 'shell' : 'agent';
@@ -365,7 +392,8 @@ document.addEventListener('click', e => {
         await saved(); toast('Notes saved'); break;
       }
       case 'edit-profile': openProfile(store.state.profiles.find(p => p.id === d.id)); break;
-      case 'browse': { button.disabled = true; try { const { path } = await api(d.picker === 'file' ? '/pick-file' : '/pick-directory', {}); if (path) button.form.elements[d.id].value = path; } finally { button.disabled = false; } break; }
+      case 'browse': { button.disabled = true; try { const { path } = await api(d.picker === 'file' ? '/pick-file' : '/pick-directory', {}); const field = button.form ? button.form.elements[d.id] : $(`#${d.id}`); if (path && field) { field.value = path; if (!button.form) field.dispatchEvent(new Event('change', { bubbles: true })); } } finally { button.disabled = false; } break; }
+      case 'fill': { const field = button.form.elements[d.id]; field.value = d.value; field.focus(); break; }
       case 'new-task': { const choice = await store.createEntity({ kind: 'task' }); if (choice) navigate({ kind: 'task', id: choice.value }); break; }
       case 'add-profile': openProfile(); break;
       case 'capture': $('#terminal-output').textContent = (await api(`/panes/${terminalPane.id}/capture`)).text; break;
@@ -399,6 +427,8 @@ document.addEventListener('change', e => {
     if (set === 'agent-task') await api('/agents/update', { ids: [id], set: { task_id: value || null } });
     if (set === 'task-status') await api(`/tasks/${id}`, { status: value }, 'PATCH');
     if (set === 'task-title') await api(`/tasks/${id}`, { title: value }, 'PATCH');
+    if (set === 'task-path') await api(`/tasks/${id}`, { path: value.trim() }, 'PATCH');
+    if (set === 'task-worktree') await api(`/tasks/${id}`, { worktree: value.trim() }, 'PATCH');
     await saved();
   });
 });

@@ -75,6 +75,15 @@ test('a remote web page cannot create tasks through the local command server', a
   expect((await (await call('/state')).json()).tasks.map(t => t.id)).toEqual(before);
 });
 
+test('a task may be created without a project directory and given one later', async () => {
+  const created = await (await call('/tasks', { title: 'No directory yet' })).json();
+  expect(created).toMatchObject({ title: 'No directory yet', path: '', worktree: '' });
+  expect((await call(`/tasks/${created.id}`, { path: join(home, 'missing') }, 'PATCH')).status).toBe(400);
+  const updated = await (await call(`/tasks/${created.id}`, { path: home }, 'PATCH')).json();
+  expect(updated).toMatchObject({ path: home, title: 'No directory yet' });
+  expect((await (await call(`/tasks/${created.id}`, { path: '' }, 'PATCH')).json()).path).toBe('');
+});
+
 test('invalid working directories and non-argv agent arguments are rejected', async () => {
   expect((await call('/tasks', { title: 'Invalid', path: join(home, 'missing') })).status).toBe(400);
   expect((await call('/profiles', { name: 'Bad argv', executable: 'codex', args: '--model x', env: {}, protocol: '' })).status).toBe(400);
