@@ -13,7 +13,24 @@ export const agentName = (name, key) => String(name || '').replace(/^(π\s+)?[^\
 const hint = text => `<p class="hint">${text}</p>`;
 const createChoice = (kind, taskId) => ({ owner } = {}) => store.createEntity({ kind, taskId, owner });
 const newChoice = kind => ({ value: `__new_${kind}`, label: `New ${kind[0].toUpperCase() + kind.slice(1)}…`, createKind: kind });
-const taskOptions = () => store.state.tasks.map(t => ({ value: t.id, label: t.title }));
+/**
+ * Orders tasks as a tree for every list that shows them: the workbench rail, the Queues rail, and
+ * the task selects. Returns the same task objects, each with a `depth` (0 for a root), in the order
+ * they should be displayed.
+ * @param {object[]} tasks - rows from store.state.tasks (each has id, parent_id, title, created, archived)
+ * @returns {Array<object & {depth: number}>}
+ */
+export function taskTree(tasks = store.state.tasks) {
+  // TODO(human): order the tasks depth-first so each subtask follows its parent, and set `depth`.
+  // Things to decide: how siblings are ordered (created, title, status?), what to do with a task whose
+  // parent is missing or archived (promote it to a root, or hide it?), and guarding against a cycle
+  // in the data so this never loops. The placeholder below keeps everything flat and working.
+  return tasks.map(t => ({ ...t, depth: 0 }));
+}
+const indent = depth => '\u2014 '.repeat(depth);
+const taskOptions = (exclude = null) => taskTree().filter(t => !exclude || !exclude.has(t.id)).map(t => ({ value: t.id, label: indent(t.depth) + t.title }));
+/** A task and everything beneath it, which is what it may not be moved under. */
+export const subtree = id => { const found = new Set([id]); let grew = true; while (grew) { grew = false; for (const t of store.state.tasks) if (t.parent_id && found.has(t.parent_id) && !found.has(t.id)) { found.add(t.id); grew = true; } } return found; };
 const taskChoices = () => [{ value: '', label: 'No task' }, ...taskOptions(), newChoice('task')];
 const taskHref = id => `#task/${encodeURIComponent(id)}`;
 const agentHref = id => `#agent/${encodeURIComponent(id)}`;
@@ -166,6 +183,8 @@ function taskDetail(t) {
     <div class="metadata-heading"><a href="#tasks">← Tasks</a>${archivedTag(t)}</div>
     <div class="props"><label class="grow">Title<input data-set="task-title" data-id="${esc(t.id)}" value="${esc(t.title)}" maxlength="200"></label>${select('task-status', t.id, t.status, statuses, 'Status')}</div>
     <div class="props"><label class="grow">Project path <small>Optional</small><span class="browse"><input id="task-path-${esc(t.id)}" data-set="task-path" data-id="${esc(t.id)}" value="${esc(t.path)}" list="path-options" placeholder="Not set · panes open in your home directory"><button type="button" data-do="browse" data-id="task-path-${esc(t.id)}">Browse…</button></span></label><label class="grow">Existing worktree <small>Optional</small><span class="browse"><input id="task-worktree-${esc(t.id)}" data-set="task-worktree" data-id="${esc(t.id)}" value="${esc(t.worktree)}" list="path-options" placeholder="Leave empty to use the project path"><button type="button" data-do="browse" data-id="task-worktree-${esc(t.id)}">Browse…</button></span></label></div>
+    <div class="props">${select('task-parent', t.id, t.parent_id, [{ value: '', label: 'No parent · top-level task' }, ...taskOptions(subtree(t.id))], 'Parent task')}</div>
+    ${(() => { const children = store.state.tasks.filter(c => c.parent_id === t.id && !c.archived), parent = store.state.tasks.find(p => p.id === t.parent_id); return `<div class="metadata-subtasks">${parent ? `<p class="hint">Subtask of <a href="${taskHref(parent.id)}">${esc(parent.title)}</a>.</p>` : ''}<h2 class="section-title">Subtasks <span>${children.length}</span></h2>${children.length ? `<ul class="subtask-list">${children.map(c => `<li><a href="${taskHref(c.id)}">${esc(c.title)}</a> ${badge(c.status)}</li>`).join('')}</ul>` : ''}<div class="actions"><button data-do="new-subtask" data-id="${esc(t.id)}">New subtask…</button></div></div>`; })()}
     <dl class="metadata-facts"><div><dt>TUIOS session</dt><dd>${esc(t.session)}</dd></div><div><dt>Created</dt><dd>${esc(time(t.created))}</dd></div><div><dt>Task ID</dt><dd>${esc(t.id)}</dd></div></dl>
     <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}">Compose work</button><button data-do="open-pane" data-kind="agent" data-id="${esc(t.id)}">New Agent…</button><button data-do="open-pane" data-kind="pane" data-id="${esc(t.id)}">New Pane…</button><button data-do="open-mail" data-id="${esc(t.id)}">Send mail</button>${archiveButton('task-archive', t)}</div>
     <label>Task notes<textarea data-notes="${esc(t.id)}" rows="3">${esc(store.drafts.get(`notes:${t.id}`) ?? t.notes)}</textarea></label><button data-do="save-notes" data-id="${esc(t.id)}" class="subtle">Save notes</button>
@@ -228,7 +247,7 @@ export const pages = {
       rowId: t => t.id, rowHref: t => taskHref(t.id), rowClass: t => t.unread_count ? 'is-unread' : 'is-read',
       summary: t => `<div class="record-summary">
         <span class="record-type" data-label="Type">Task</span>
-        <div class="record-title" data-label="Work"><h3>${esc(t.title)}</h3><span class="record-reference">${t.path ? esc(basename(t.path)) : 'no directory'}${archivedTag(t)}</span></div>
+        <div class="record-title" data-label="Work"><h3>${esc(t.title)}</h3><span class="record-reference">${t.parent_id ? `↳ ${esc(store.state.tasks.find(p => p.id === t.parent_id)?.title || 'parent')} · ` : ''}${t.path ? esc(basename(t.path)) : 'no directory'}${archivedTag(t)}</span></div>
         <span class="record-agent" data-label="Agents">${t.agent_count} observed</span>
         <span class="record-task" data-label="Unread"><span class="unread-indicator">${t.unread_count} unread</span></span>
         <span class="record-status" data-label="State">${badge(t.status)}</span>

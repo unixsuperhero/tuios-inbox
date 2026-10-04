@@ -39,6 +39,8 @@ function seeAgent(key, { session, name, harness, kind = 'agent', state, task = n
 // The task a pane's new turns and commands inherit.
 function agentTask(key) { return one('SELECT task_id FROM agents WHERE id=?', key || '')?.task_id ?? null; }
 if (!all("SELECT name FROM pragma_table_info('turns')").some(c => c.name === 'archived')) db.transaction(() => db.exec('ALTER TABLE turns ADD COLUMN task_id TEXT REFERENCES tasks(id); ALTER TABLE turns ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;'))();
+// Subtasks: a task may point at a parent task in the same table; depth is unbounded and cycles are refused.
+if (!all("SELECT name FROM pragma_table_info('tasks')").some(c => c.name === 'parent_id')) db.exec('ALTER TABLE tasks ADD COLUMN parent_id TEXT REFERENCES tasks(id)');
 for (const table of ['tasks', 'agents']) if (!all(`SELECT name FROM pragma_table_info('${table}')`).some(c => c.name === 'archived')) db.exec(`ALTER TABLE ${table} ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`);
 // Runs once: a later start must not re-archive a snapshot the user moved back, or reassign an item they moved.
 if (!one("SELECT 1 FROM settings WHERE key='migrated_items'")) db.transaction(() => {
@@ -77,7 +79,25 @@ async function cli(args, timeout = 15000, json = true) {
   return json ? (value ?? { output: stdout, exit_code: code }) : stdout;
 }
 function required(value, label, max = 16000) { if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${label} is required (maximum ${max} characters)`); return value.trim(); }
-const workingDirectory = t => t.worktree || t.path || homedir();
+// A subtask without its own directory works where its nearest ancestor does.
+function workingDirectory(t) {
+  const seen = new Set();
+  for (let cur = t; cur && !seen.has(cur.id); cur = cur.parent_id ? one('SELECT * FROM tasks WHERE id=?', cur.parent_id) : null) {
+    seen.add(cur.id);
+    if (cur.worktree || cur.path) return cur.worktree || cur.path;
+  }
+  return homedir();
+}
+// The parent a task may have: an existing task that is not itself and not one of its own descendants.
+function parentFor(key, selfId = null) {
+  const parent = taskFor(key);
+  const seen = new Set();
+  for (let cur = parent; cur && !seen.has(cur.id); cur = cur.parent_id ? one('SELECT id,parent_id FROM tasks WHERE id=?', cur.parent_id) : null) {
+    if (cur.id === selfId) throw new Error('A task cannot be placed inside itself or one of its subtasks');
+    seen.add(cur.id);
+  }
+  return parent;
+}
 async function directory(value) { const p = resolve(required(value, 'Directory')); if (!(await stat(p)).isDirectory()) throw new Error('Path must be an existing directory'); return p; }
 function taskFor(key) { const t = one('SELECT * FROM tasks WHERE id=?', key); if (!t) throw new Error('Task not found'); return t; }
 function agentFor(key) { const a = one('SELECT * FROM agents WHERE id=?', key); if (!a) throw new Error('Agent not found'); return a; }
@@ -363,7 +383,8 @@ async function api(req, url) {
   if (url.pathname === '/api/tasks' && method === 'POST') {
     // A task may start without a directory; its panes then open in the home directory until one is set.
     const key = id(), path = body.path ? await directory(body.path) : '', worktree = body.worktree ? await directory(body.worktree) : '';
-    run('INSERT INTO tasks (id,title,path,worktree,status,notes,session,created) VALUES (?,?,?,?,?,?,?,?)', key, required(body.title, 'Title', 200), path, worktree, 'open', body.notes || '', `inbox-${key.slice(0, 8)}`, now());
+    const parent = body.parent_id ? parentFor(body.parent_id).id : null;
+    run('INSERT INTO tasks (id,title,path,worktree,status,notes,session,created,parent_id) VALUES (?,?,?,?,?,?,?,?,?)', key, required(body.title, 'Title', 200), path, worktree, 'open', body.notes || '', `inbox-${key.slice(0, 8)}`, now(), parent);
     changed(); return response(taskFor(key), 201);
   }
   if (parts[1] === 'tasks' && parts[2]) {
@@ -371,7 +392,8 @@ async function api(req, url) {
     if (parts.length === 3 && method === 'PATCH') {
       if (!['open', 'active', 'done'].includes(body.status || t.status)) throw new Error('Unknown task status');
       const path = body.path === undefined ? t.path : body.path ? await directory(body.path) : '', worktree = body.worktree === undefined ? t.worktree : body.worktree ? await directory(body.worktree) : '';
-      run('UPDATE tasks SET title=?,status=?,notes=?,path=?,worktree=? WHERE id=?', required(body.title || t.title, 'Title', 200), body.status || t.status, body.notes ?? t.notes, path, worktree, t.id); changed(); return response(taskFor(t.id));
+      const parent = body.parent_id === undefined ? t.parent_id : body.parent_id ? parentFor(body.parent_id, t.id).id : null;
+      run('UPDATE tasks SET title=?,status=?,notes=?,path=?,worktree=?,parent_id=? WHERE id=?', required(body.title || t.title, 'Title', 200), body.status || t.status, body.notes ?? t.notes, path, worktree, parent, t.id); changed(); return response(taskFor(t.id));
     }
     if (parts[3] === 'panes' && method === 'POST') {
       const name = required(body.name || `shell-${id().slice(0, 6)}`, 'Pane name', 120);

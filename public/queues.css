@@ -25,7 +25,7 @@ kbd { margin: 0 2px; padding: 0 4px; border: 1px solid var(--control-line); bord
 .qb-chips button span { color: var(--muted); font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; font-variant-numeric: tabular-nums; }
 .qb-chips button[aria-pressed=true] { background: #303a28; color: var(--accent); border-color: #303a28; }
 .qb-count { font: 600 12px/1.6 ui-monospace, 'SFMono-Regular', Consolas, monospace; color: var(--accent); font-variant-numeric: tabular-nums; }
-.qb-bucket { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; padding: 8px 6px; border: 1px solid transparent; color: var(--ink); text-decoration: none; }
+.qb-bucket { margin-left: calc(var(--depth, 0) * 14px); display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; padding: 8px 6px; border: 1px solid transparent; color: var(--ink); text-decoration: none; }
 .qb-bucket > span:first-child { min-width: 0; }
 .qb-bucket strong { display: block; font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
 .qb-bucket small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }

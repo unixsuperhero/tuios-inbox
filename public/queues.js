@@ -1,7 +1,7 @@
 // Queues page: one bucket per task, oldest at the top, read on the right. Records, actions, drafts
 // and forms are the workbench's own (pages.js detail + app.js handlers); this module only lays
 // them out as a queue and moves you to the next one.
-import { store, pages, esc, agentName, unfinished, api } from '/pages.js';
+import { store, pages, esc, agentName, unfinished, api, taskTree } from '/pages.js';
 import { patchHTML } from '/workbench.js';
 import { buildBuckets, nextAfter, waitingFor, byOldest, ALL } from '/queue-model.js';
 
@@ -35,8 +35,8 @@ export function createQueues({ root, navigate, load, review, refresh, report }) 
 
   function renderRail({ all, buckets, bucket }) {
     const rail = document.querySelector('#task-rail'); if (!rail) return;
-    const link = b => `<a class="qb-bucket${b.count ? '' : ' is-empty'}" href="${href(b.id)}" data-wb-key="bucket:${esc(b.id)}"${b.id === bucket?.id ? ' aria-current="page"' : ''}><span><strong>${esc(b.title)}</strong>${b.count ? `<small>oldest waiting ${waitingFor(b.rows[0])}${b.commandCount ? ` · ${b.commandCount} command${b.commandCount === 1 ? '' : 's'}` : ''}</small>` : `<small>${b.commandCount ? `${b.commandCount} command${b.commandCount === 1 ? '' : 's'} only` : 'nothing to review'}</small>`}</span><span class="qb-count">${b.count}</span></a>`;
-    patchHTML(rail, `<div class="wb-rail-heading"><h2>Queues</h2><p class="hint">One queue per task. Unread work waits here, oldest at the top, until you mark it reviewed or reply.</p></div>${link(all)}<p class="wb-members-label">By task</p>${buckets.map(link).join('')}`);
+    const link = (b, depth = 0) => `<a class="qb-bucket${b.count ? '' : ' is-empty'}" href="${href(b.id)}" data-wb-key="bucket:${esc(b.id)}" style="--depth:${depth}"${b.id === bucket?.id ? ' aria-current="page"' : ''}><span><strong>${esc(b.title)}</strong>${b.count ? `<small>oldest waiting ${waitingFor(b.rows[0])}${b.commandCount ? ` · ${b.commandCount} command${b.commandCount === 1 ? '' : 's'}` : ''}</small>` : `<small>${b.commandCount ? `${b.commandCount} command${b.commandCount === 1 ? '' : 's'} only` : 'nothing to review'}</small>`}</span><span class="qb-count">${b.count}</span></a>`;
+    patchHTML(rail, `<div class="wb-rail-heading"><h2>Queues</h2><p class="hint">One queue per task. Unread work waits here, oldest at the top, until you mark it reviewed or reply.</p></div>${link(all)}<p class="wb-members-label">By task</p>${taskTree(store.state.tasks.filter(t => !t.archived)).map(t => { const b = buckets.find(x => x.id === t.id); return b ? link(b, t.depth) : ''; }).join('')}${link(buckets.find(b => b.id === 'unassigned'))}`);
   }
 
   function row(r, bucket, item, position, total) {

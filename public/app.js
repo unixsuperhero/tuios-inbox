@@ -2,7 +2,7 @@
 import { createList } from '/list.js';
 import { createWorkbench, patchHTML, terminalResponse } from '/workbench.js';
 import { createQueues } from '/queues.js';
-import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, unfinished } from '/pages.js';
+import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, unfinished, taskTree } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
 const previousValues = new WeakMap(), creations = new Map(), draftRevisions = new Map(), submissions = new WeakMap();
@@ -261,13 +261,18 @@ function suggestPaths(form) {
     box.hidden = !picks.length;
   }
 }
-store.createEntity = ({ kind, taskId, owner } = {}) => {
+function suggestParent(select, parentId) {
+  const options = taskTree().filter(t => !t.archived).map(t => ({ value: t.id, label: '\u2014 '.repeat(t.depth) + t.title }));
+  setChoices(select, options, options.some(o => o.value === parentId) ? parentId : '', 'No parent · top-level task');
+}
+store.createEntity = ({ kind, taskId, owner, parentId } = {}) => {
   const dialog = kind === 'task' ? $('#task-dialog') : $('#pane-dialog');
   if (!['task', 'agent', 'pane'].includes(kind) || creations.has(dialog)) return Promise.resolve(null);
   const parent = activeDialog();
   const returnFocus = document.activeElement;
   const notice = dialog.querySelector('.form-error'); if (notice) notice.remove();
-  if (kind === 'task') suggestPaths($('#task-form'));
+  // A task page's "+ New task" or "New subtask…" proposes that task as the parent; it can be cleared.
+  if (kind === 'task') { suggestPaths($('#task-form')); suggestParent($('#task-parent'), parentId ?? (route?.kind === 'task' ? route.id : '')); }
   if (kind !== 'task') {
     const form = $('#pane-form');
     form.elements.kind.value = kind === 'pane' ? 'shell' : 'agent';
@@ -398,6 +403,7 @@ document.addEventListener('click', e => {
       case 'browse': { button.disabled = true; try { const { path } = await api(d.picker === 'file' ? '/pick-file' : '/pick-directory', {}); const field = button.form ? button.form.elements[d.id] : $(`#${d.id}`); if (path && field) { field.value = path; if (!button.form) field.dispatchEvent(new Event('change', { bubbles: true })); } } finally { button.disabled = false; } break; }
       case 'fill': { const field = button.form.elements[d.id]; field.value = d.value; field.focus(); break; }
       case 'new-task': { const choice = await store.createEntity({ kind: 'task' }); if (choice) navigate({ kind: 'task', id: choice.value }); break; }
+      case 'new-subtask': { const choice = await store.createEntity({ kind: 'task', parentId: d.id }); if (choice) navigate({ kind: 'task', id: choice.value }); break; }
       case 'add-profile': openProfile(); break;
       case 'capture': $('#terminal-output').textContent = (await api(`/panes/${terminalPane.id}/capture`)).text; break;
       case 'interrupt': if (confirm(`Interrupt ${terminalPane.name} with Ctrl+C?`)) { await api(`/panes/${terminalPane.id}/interrupt`, {}); toast('Interrupt sent'); } break;
@@ -432,6 +438,7 @@ document.addEventListener('change', e => {
     if (set === 'task-title') await api(`/tasks/${id}`, { title: value }, 'PATCH');
     if (set === 'task-path') await api(`/tasks/${id}`, { path: value.trim() }, 'PATCH');
     if (set === 'task-worktree') await api(`/tasks/${id}`, { worktree: value.trim() }, 'PATCH');
+    if (set === 'task-parent') await api(`/tasks/${id}`, { parent_id: value }, 'PATCH');
     await saved();
   });
 });
@@ -483,7 +490,7 @@ document.addEventListener('submit', e => {
           context.created = task;
           form.elements.title.value = ''; form.elements.notes.value = '';
           const note = $('#task-created'); note.textContent = `Created “${task.title}”. Next one?`; note.hidden = false;
-          suggestPaths(form); form.elements.title.focus();
+          suggestPaths(form); suggestParent($('#task-parent'), form.elements.parent_id.value); form.elements.title.focus();
           break;
         }
         context.accepted = true; form.reset(); finishCreation(context, { value: task.id, label: task.title });

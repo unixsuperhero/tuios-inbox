@@ -84,6 +84,20 @@ test('a task may be created without a project directory and given one later', as
   expect((await (await call(`/tasks/${created.id}`, { path: '' }, 'PATCH')).json()).path).toBe('');
 });
 
+test('a task can be a subtask of another; cycles and self-parenting are refused', async () => {
+  const parent = await (await call('/tasks', { title: 'Parent', path: home })).json();
+  const child = await (await call('/tasks', { title: 'Child', parent_id: parent.id })).json();
+  expect(child).toMatchObject({ parent_id: parent.id, path: '' });
+  const grandchild = await (await call('/tasks', { title: 'Grandchild', parent_id: child.id })).json();
+  expect(grandchild.parent_id).toBe(child.id);
+  expect((await call(`/tasks/${parent.id}`, { parent_id: grandchild.id }, 'PATCH')).status).toBe(400);
+  expect((await call(`/tasks/${child.id}`, { parent_id: child.id }, 'PATCH')).status).toBe(400);
+  expect((await call('/tasks', { title: 'Orphan', parent_id: 'no-such-task' })).status).toBe(400);
+  expect((await (await call(`/tasks/${child.id}`, { parent_id: '' }, 'PATCH')).json()).parent_id).toBe(null);
+  expect((await (await call(`/tasks/${child.id}`, { parent_id: parent.id }, 'PATCH')).json()).parent_id).toBe(parent.id);
+  expect((await state()).tasks.find(t => t.id === grandchild.id)).toMatchObject({ parent_id: child.id });
+});
+
 test('invalid working directories and non-argv agent arguments are rejected', async () => {
   expect((await call('/tasks', { title: 'Invalid', path: join(home, 'missing') })).status).toBe(400);
   expect((await call('/profiles', { name: 'Bad argv', executable: 'codex', args: '--model x', env: {}, protocol: '' })).status).toBe(400);
