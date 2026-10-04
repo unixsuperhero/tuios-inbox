@@ -220,7 +220,9 @@ function ownerActive(context) {
 function finishCreation(context, choice) {
   if (creations.get(context.dialog) !== context) return;
   clearTimeout(context.timer); creations.delete(context.dialog);
-  const result = choice && ownerActive(context) ? choice : null;
+  const last = context.created ? { value: context.created.id, label: context.created.title } : null;
+  const result = choice && ownerActive(context) ? choice : last;
+  if (context.multi) { $('#task-created').hidden = true; $('#task-form').reset(); }
   context.dialog.close();
   submissions.delete(context.dialog.querySelector('form'));
   const submit = context.dialog.querySelector('button.primary'); submit.disabled = false;
@@ -277,7 +279,8 @@ store.createEntity = ({ kind, taskId, owner } = {}) => {
     $('#pane-startup-status').textContent = ''; paneKind();
   }
   return new Promise(resolve => {
-    const context = { kind, taskId, owner, parent, returnFocus, dialog, resolve, routeKey: routeKey(route), accepted: false };
+    // "+ New task" is a batch entry: the dialog stays open after each task. A "New Task…" choice inside a select creates one and returns to it.
+  const context = { kind, taskId, owner, parent, returnFocus, dialog, resolve, routeKey: routeKey(route), accepted: false, multi: kind === 'task' && !owner && !parent, created: null };
     creations.set(dialog, context); openDialog(dialog);
   });
 };
@@ -471,10 +474,19 @@ document.addEventListener('submit', e => {
       }
       case 'task-form': {
         if (!context) return;
-        const task = await api('/tasks', data); context.accepted = true;
+        const task = await api('/tasks', data);
         if (!store.state.tasks.some(t => t.id === task.id)) store.state.tasks.unshift(task);
         try { await refresh(); } catch (e) { error(e); render(); }
-        if (creations.get(context.dialog) === context) { form.reset(); finishCreation(context, { value: task.id, label: task.title }); }
+        if (creations.get(context.dialog) !== context) break;
+        if (context.multi) {
+          // Stay open for the next task: clear what is task-specific, keep the directories, go back to the title.
+          context.created = task;
+          form.elements.title.value = ''; form.elements.notes.value = '';
+          const note = $('#task-created'); note.textContent = `Created “${task.title}”. Next one?`; note.hidden = false;
+          suggestPaths(form); form.elements.title.focus();
+          break;
+        }
+        context.accepted = true; form.reset(); finishCreation(context, { value: task.id, label: task.title });
         break;
       }
       case 'pane-form': {
