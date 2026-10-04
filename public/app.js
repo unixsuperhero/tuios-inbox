@@ -1,6 +1,7 @@
 // State, hash routes, modal continuations and native-session work dispatch.
 import { createList } from '/list.js';
 import { createWorkbench, patchHTML, terminalResponse } from '/workbench.js';
+import { createQueues } from '/queues.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, unfinished } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
@@ -25,11 +26,13 @@ function composerRecipients() {
   return recipients();
 }
 const workbench = createWorkbench({ root, navigate, load, review: reviewItem, refresh, report: error });
+const queues = createQueues({ root, navigate, load, review: reviewItem, report: error });
 async function reviewItem(id) {
   await api('/items/update', { ids: [id], set: { unread: false } });
   await refresh();
 }
 function routePage(r) {
+  if (r.kind === 'queue') return pages.queues;
   if (r.kind !== 'item') return pageForRoute(r);
   const row = store.state.items.find(i => i.id === r.id);
   return row ? { ...pages.inbox, title: row.title || 'Work record', description: `${row.type} · ${row.status}` } : null;
@@ -47,16 +50,18 @@ function compose(taskId, agentId) {
   openDialog($('#compose-dialog'));
 }
 let route, page, list, terminalPane = null, refreshTimer, refreshVersion = 0;
-const routeKey = r => r?.kind === 'index' ? r.page : `${r?.kind}/${r?.id}`;
+const routeKey = r => r?.kind === 'index' ? r.page : r?.kind === 'queue' ? `queue/${r.bucket}/${r.item || ''}` : `${r?.kind}/${r?.id}`;
 function parseRoute(hash) {
   const path = hash.replace(/^#\/?/, '');
   if (!path) return { kind: 'index', page: 'inbox' };
   if (Object.hasOwn(pages, path)) return { kind: 'index', page: path };
   const match = /^(task|agent|item)\/([^/]+)$/.exec(path);
   if (match) { try { return { kind: match[1], id: decodeURIComponent(match[2]) }; } catch {} }
+  const queue = /^queue\/([^/]+)(?:\/(.+))?$/.exec(path);
+  if (queue) { try { return { kind: 'queue', bucket: decodeURIComponent(queue[1]), item: queue[2] ? decodeURIComponent(queue[2]) : undefined }; } catch {} }
   return { kind: 'invalid' };
 }
-const routeHash = r => r.kind === 'index' ? `#${r.page}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
+const routeHash = r => r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
 function navigate(next) {
   const hash = routeHash(next);
   if (location.hash === hash) mount(next); else location.hash = hash;
@@ -98,6 +103,7 @@ function updateMenus() {
 function render() {
   $('#unread-count').textContent = store.state.items.filter(i => i.unread && !i.archived).length;
   $('#task-count').textContent = store.state.tasks.filter(t => t.status !== 'done').length;
+  $('#queue-count').textContent = queues.count();
   updateMenus();
   if (!route) return;
   const nextPage = routePage(route);
@@ -111,6 +117,7 @@ function render() {
     root.innerHTML = '<p class="list-empty">No record at this address.</p>';
     return;
   }
+  if (queues.supports(route)) { page = nextPage; $('#page-title').textContent = page.title; $('#page-description').textContent = page.description; document.title = `tuios inbox · ${page.title}`; queues.render(route); return; }
   if (!list && !workbench.supports(route)) { mount(route); return; }
   page = nextPage;
   $('#page-title').textContent = page.title;
@@ -170,7 +177,8 @@ function mount(next) {
     const cached = viewCache.get(nextKey); if (cached) root.append(cached.content);
   }
   route = next; page = routePage(route);
-  const index = next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : '';
+  const index = next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : next.kind === 'queue' ? 'queues' : '';
+  document.body.classList.toggle('queues-mode', queues.supports(next));
   document.querySelectorAll('[data-page]').forEach(link => {
     const active = link.dataset.page === index; link.classList.toggle('active', active);
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
@@ -189,7 +197,7 @@ function mount(next) {
   if (oldKey !== nextKey) metadata.replaceChildren();
   if (!metadata.hidden) patchHTML(metadata, metadataForRoute(next));
   list?.destroy(); list = null;
-  if (page && !workbench.supports(route)) list = createList(root, { ...page.list,
+  if (page && !workbench.supports(route) && !queues.supports(route)) list = createList(root, { ...page.list,
     onOpen: page.items ? row => navigate({ kind: 'item', id: row.id }) : undefined,
     actions: (page.list.actions || []).map(a => ({ ...a, run: async (ids, value) => { $('#error').hidden = true; await a.run(ids, value); await refresh(); } })) });
   render();

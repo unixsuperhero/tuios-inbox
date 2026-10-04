@@ -190,6 +190,11 @@ const protocols = [{ value: 'native', label: 'Native terminal' }, { value: 'code
 const protocol = p => p.protocol || 'native';
 
 export const pages = {
+  queues: {
+    title: 'Queues', items: true,
+    description: 'Unread work grouped by task and ordered oldest first. Mark a record reviewed or reply to it and the next one opens.',
+    rows: () => [], list: null,
+  },
   inbox: {
     title: 'Inbox', items: true,
     description: 'Agent turns, commands and mail. Unread work has a tinted background, bold title and Unread label. Check records to mark them read or archive them together.',

@@ -1,0 +1,50 @@
+{
+  "url": "http://127.0.0.1:4399/#queues",
+  "dir": null,
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "ready_flag": "none",
+  "ready_timeout": false,
+  "motion": null,
+  "gpu_requested": false,
+  "capture_mode": "swiftshader",
+  "webgl_renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)",
+  "image_format": "png",
+  "views": [
+    {
+      "name": "default",
+      "file": "default.png",
+      "sha256": "6c067265dc06fb67d26402e8a61e8c5394ef7c1b9ef18ad0f4467ccb96ad5424",
+      "view_quality": {
+        "measured": false,
+        "usable": null,
+        "reason": "not-measured",
+        "error": "Page.evaluate: EncodingError: The source image cannot be decoded."
+      }
+    }
+  ],
+  "clicks": [],
+  "unusable_views": [],
+  "view_quality_thresholds": {
+    "dark_luma": 0.06,
+    "near_black_luma_mean": 0.04,
+    "near_black_dark_fraction": 0.85,
+    "flat_min_fraction": 0.3,
+    "flat_luma_gap": 0.25,
+    "wall_min_fraction": 0.2,
+    "wall_column_std": 0.03,
+    "low_contrast_luma_std": 0.04,
+    "grid_cols": 32,
+    "grid_rows": 18
+  },
+  "measured_region": null,
+  "console_errors": [
+    "Loading the image 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABkAAAAPoCAIAAAAJGaXUAAAQAElEQVR4nOzdBVwU298G8GHp7u4QQQnFIgQUu7u7u7u7u7u7uxMDFZEOsZHu7gXe3+7guncJ8ar3ct//87189p49e+ZMrzvPzsxKaOoYMQAAAAAAAAAAANUVhwEAAAAAAAAAAKjGEGABAAAAAAAAAEC1hgALAAAAAAAAAACqNQRYAAAAAAAAAABQrSHAAgAAAAAAAACAag0BFgAAAAAAAAAAVGsIsAAAAAAAAAAAoFpDgAUAAAAAAAAAANUaAiwAAAAAAAAAAKjWEGABAAAAAAAAAEC1hgALAAAAAAAAAACqNQRYAAAAAAAAAABQrSHAAgAAAAAAAACAak2Cgd9BXUNTRUXl44f3FTWQkpI0MTX/+uVLXn4e89/BERerXVdLSVXG1ysmN7uQ+R+gr28gr6BQtj4mOiorK4upHlTV1DQ1tcrWp6WmJiTEM...QsAAAAAKImYAEAAAAQNQELAAAAgKgJWAAAAABETcACAAAAIGoCFgAAAABRE7AAAAAAiJqABQAAAEDUBCwAAAAAoiZgAQAAABA1AQsAAACAqAlYAAAAAERNwAIAAAAgagIWAAAAAFETsAAAAACImoAFAAAAQNQELAAAAACiJmABAAAAEDUBCwAAAICoCVgAAAAARE3AAgAAACBqAhYAAAAAUROwAAAAAIiagAUAAABA1AQsAAAAAKKWlgAAiMn4MV8nAACgGGdgAQAAABA1AQsAAACAqAlYAAAAAERNwAIAAAAgagIWAAAAAFETsAAAAACImoAFAAAAQNQELAAAAACiJmABAAAAEDUBCwAAAICoCVgAAAAARE3AAgAAACBqAhYAAAAAUROwAAAAAIiagAUAAABA1EpVrVEvAQAAAACxcgYWAAAAAFETsAAAAACImoAFAAAAQNT+DwAA//9L8eDyAAAABklEQVQDANBHeRAGqZtpAAAAAElFTkSuQmCC' violates the following Content Security Policy directive: \"default-src 'self'\". Note that 'img-src' was not explicitly set, so 'default-src' is used as a fallback. The action has been blocked."
+  ],
+  "page_errors": [],
+  "started": "2026-10-04T22:07:44+00:00",
+  "finished": "2026-10-04T22:07:47+00:00",
+  "playwright_version": "1.63.0"
+}
