@@ -9,6 +9,26 @@ bun start
 
 Open http://127.0.0.1:4399. The server binds only to loopback and rejects foreign origins, foreign Host headers, and mutations without its same-origin JSON header. Do not expose it through a public proxy. It can execute commands as your user.
 
+Manage the background server from any directory with the local CLI:
+
+```sh
+h tuios start
+h tuios status
+h tuios stop
+```
+
+`h-tuios` accepts the same commands directly. Start waits for HTTP readiness and
+reuses an existing Bun server in this project. Stop sends SIGTERM only after
+checking the listener's executable, script, and working directory; it never
+stops the TUIOS daemon or its panes. Repeated starts and stops are safe. Status
+exits 0 when ready and 1 when stopped, unresponsive, or another process owns the
+port. Use `PORT=4400 h tuios start` for another port and pass the same `PORT` to
+status and stop. The server inherits the starting shell's environment and grants,
+including `TUIOS_BIN`, `TUIOS_INBOX_DATA`, and `TUIOS_INBOX_SPOOL`. No permissions
+are changed, and no login service or automatic restart is installed. Logs append
+to `~/.local/state/h-tuios/server-PORT.log`. These commands require Bun, `lsof`,
+and `ps`. The former harness-status command is now `h tuios setup-status [HARNESS...]`.
+
 ## Inbox
 
 The default page is the live Task workbench. A narrow Task > Agent rail stays on the left, threads and records open in the main pane, and a separate review queue stays on the right. These are real SQLite records and native TUIOS recipients, not the sample comparisons. The rail is 15% wide at desktop sizes, bounded to 200–250px.
@@ -125,7 +145,7 @@ Native setup is managed by `~/bin/h-tuios`, independently of this app:
 h tuios setup --dry-run       # preview skill links, startup rules, and native hooks
 h tuios setup                # detected harnesses; preserves unrelated instructions
 h tuios setup codex omp      # select harnesses
-h tuios status
+h tuios setup-status
 h tuios integrations-status
 h tuios doctor
 h tuios help                 # full command list
