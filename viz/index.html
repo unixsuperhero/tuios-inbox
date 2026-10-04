@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tuios inbox · spatial</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="bar">
+        <div class="brand"><span class="eyebrow">tuios inbox</span><h1 id="headline">Loading…</h1><p id="since" class="hint"></p></div>
+        <nav id="scenes" class="toggles" aria-label="Scene">
+          <button type="button" data-scene="pedestals" aria-pressed="true">Studio pedestals</button>
+          <button type="button" data-scene="river" aria-pressed="false">Time river</button>
+        </nav>
+        <nav id="windows" class="toggles" aria-label="Time window" hidden>
+          <button type="button" data-hours="6" aria-pressed="false">6h</button>
+          <button type="button" data-hours="24" aria-pressed="true">24h</button>
+          <button type="button" data-hours="168" aria-pressed="false">7d</button>
+          <button type="button" data-hours="0" aria-pressed="false">All</button>
+        </nav>
+        <nav id="views" class="toggles" aria-label="Camera views"></nav>
+        <p class="controls">
+          <button id="control" type="button" aria-pressed="false">Pause motion</button>
+          <button id="reset" type="button">Reset view</button>
+        </p>
+      </header>
+      <div class="viewport" aria-busy="true">
+        <canvas id="world" aria-label="Three-dimensional inbox"></canvas>
+        <p id="error" role="alert" hidden></p>
+        <div id="tooltip" class="tooltip" hidden></div>
+        <dl id="legend" class="legend" aria-label="What the shapes mean"></dl>
+      </div>
+      <aside id="panel" class="panel" aria-live="polite"></aside>
+    </main>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,100 @@
+{
+  "url": "http://127.0.0.1:4399/viz/?item=thread:ff46f50d-c1aa-4082-bde6-3479fc89748e",
+  "dir": null,
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "ready_flag": "__sceneReady",
+  "ready_timeout": false,
+  "motion": null,
+  "gpu_requested": true,
+  "capture_mode": "gpu",
+  "webgl_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)",
+  "image_format": "png",
+  "views": [
+    {
+      "name": "default",
+      "file": "default.png",
+      "sha256": "d18afea6b53aaf8e61d9bbf9b861dfc471ef76f884babbf6aab954d607107b64",
+      "view_quality": {
+        "region": {
+          "x": 5,
+          "y": 93,
+          "width": 1146,
+          "height": 902
+        },
+        "wall_fraction": 0,
+        "wall_columns": 0,
+        "wall_luma": null,
+        "wall_rest_luma": 0.1546,
+        "luma_mean": 0.1547,
+        "luma_std": 0.0921,
+        "luma_median_cell": 0.1621,
+        "dark_fraction": 0,
+        "flat_fraction": 0.0035,
+        "flat_cells": 2,
+        "flat_luma": 0.638,
+        "rest_luma": 0.1529,
+        "measured": true,
+        "usable": true,
+        "reason": "usable"
+      }
+    },
+    {
+      "name": "front",
+      "file": "front.png",
+      "sha256": "1110f8209c0fe0abc04539efb2028ad23386a047f0d766ae846959d07208bfe8",
+      "requested": "front",
+      "applied": true,
+      "view_quality": {
+        "region": {
+          "x": 5,
+          "y": 93,
+          "width": 1146,
+          "height": 902
+        },
+        "wall_fraction": 0,
+        "wall_columns": 0,
+        "wall_luma": null,
+        "wall_rest_luma": 0.1576,
+        "luma_mean": 0.1577,
+        "luma_std": 0.0975,
+        "luma_median_cell": 0.1572,
+        "dark_fraction": 0,
+        "flat_fraction": 0.0017,
+        "flat_cells": 1,
+        "flat_luma": 0.5037,
+        "rest_luma": 0.157,
+        "measured": true,
+        "usable": true,
+        "reason": "usable"
+      }
+    }
+  ],
+  "clicks": [],
+  "unusable_views": [],
+  "view_quality_thresholds": {
+    "dark_luma": 0.06,
+    "near_black_luma_mean": 0.04,
+    "near_black_dark_fraction": 0.85,
+    "flat_min_fraction": 0.3,
+    "flat_luma_gap": 0.25,
+    "wall_min_fraction": 0.2,
+    "wall_column_std": 0.03,
+    "low_contrast_luma_std": 0.04,
+    "grid_cols": 32,
+    "grid_rows": 18
+  },
+  "measured_region": {
+    "x": 5,
+    "y": 92.53125,
+    "width": 1146,
+    "height": 902.46875
+  },
+  "console_errors": [],
+  "page_errors": [],
+  "started": "2026-10-04T21:38:18+00:00",
+  "finished": "2026-10-04T21:38:22+00:00",
+  "playwright_version": "1.63.0"
+}

@@ -488,6 +488,13 @@ const server = Bun.serve({ hostname: '127.0.0.1', port, idleTimeout: 0, maxReque
     }
     if (url.pathname.startsWith('/api/')) return await api(req, url);
     const files = { '/': 'index.html', '/app.js': 'app.js', '/workbench.js': 'workbench.js', '/pages.js': 'pages.js', '/list.js': 'list.js', '/markdown.js': 'markdown.js', '/style.css': 'style.css', '/list.css': 'list.css', '/markdown.css': 'markdown.css' };
+    // The spatial prototype is a Vite build under viz/dist, served from this origin so its API calls pass the same checks.
+    if (url.pathname === '/viz' || url.pathname.startsWith('/viz/')) {
+      const rel = url.pathname.length <= 5 ? 'index.html' : url.pathname.slice(5);
+      const file = rel.includes('..') ? null : Bun.file(join(root, 'viz', 'dist', rel));
+      if (file && await file.exists()) return new Response(file, { headers: { 'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' } });
+      return new Response('Build the prototype first: cd viz && pnpm install && pnpm build', { status: 404 });
+    }
     if (!files[url.pathname]) return new Response('Not found', { status: 404 });
     return new Response(Bun.file(join(root, 'public', files[url.pathname])), { headers: { 'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' } });
   } catch (e) { return response({ error: e.message }, 400); }

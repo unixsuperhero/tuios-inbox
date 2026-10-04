@@ -1,0 +1,100 @@
+{
+  "url": "http://127.0.0.1:4399/viz/?item=thread:ff46f50d-c1aa-4082-bde6-3479fc89748e",
+  "dir": null,
+  "viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "ready_flag": "__sceneReady",
+  "ready_timeout": false,
+  "motion": null,
+  "gpu_requested": true,
+  "capture_mode": "gpu",
+  "webgl_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)",
+  "image_format": "png",
+  "views": [
+    {
+      "name": "default",
+      "file": "default.png",
+      "sha256": "6c85e8b7200dc7f78a8e8beac1e9f801f9e6cfef82d582639a020f50a6e006ed",
+      "view_quality": {
+        "region": {
+          "x": 5,
+          "y": 93,
+          "width": 1146,
+          "height": 902
+        },
+        "wall_fraction": 0,
+        "wall_columns": 0,
+        "wall_luma": null,
+        "wall_rest_luma": 0.1693,
+        "luma_mean": 0.1693,
+        "luma_std": 0.0976,
+        "luma_median_cell": 0.1846,
+        "dark_fraction": 0,
+        "flat_fraction": 0.0035,
+        "flat_cells": 2,
+        "flat_luma": 0.6577,
+        "rest_luma": 0.1676,
+        "measured": true,
+        "usable": true,
+        "reason": "usable"
+      }
+    },
+    {
+      "name": "front",
+      "file": "front.png",
+      "sha256": "ef3ff4b909ec5f6d296adb3e2ba3613f3b3a6d09ab889787192dfc33b8c2057f",
+      "requested": "front",
+      "applied": true,
+      "view_quality": {
+        "region": {
+          "x": 5,
+          "y": 93,
+          "width": 1146,
+          "height": 902
+        },
+        "wall_fraction": 0,
+        "wall_columns": 0,
+        "wall_luma": null,
+        "wall_rest_luma": 0.1726,
+        "luma_mean": 0.1726,
+        "luma_std": 0.1085,
+        "luma_median_cell": 0.165,
+        "dark_fraction": 0,
+        "flat_fraction": 0.0035,
+        "flat_cells": 2,
+        "flat_luma": 0.4774,
+        "rest_luma": 0.1715,
+        "measured": true,
+        "usable": true,
+        "reason": "usable"
+      }
+    }
+  ],
+  "clicks": [],
+  "unusable_views": [],
+  "view_quality_thresholds": {
+    "dark_luma": 0.06,
+    "near_black_luma_mean": 0.04,
+    "near_black_dark_fraction": 0.85,
+    "flat_min_fraction": 0.3,
+    "flat_luma_gap": 0.25,
+    "wall_min_fraction": 0.2,
+    "wall_column_std": 0.03,
+    "low_contrast_luma_std": 0.04,
+    "grid_cols": 32,
+    "grid_rows": 18
+  },
+  "measured_region": {
+    "x": 5,
+    "y": 92.53125,
+    "width": 1146,
+    "height": 902.46875
+  },
+  "console_errors": [],
+  "page_errors": [],
+  "started": "2026-10-04T21:38:54+00:00",
+  "finished": "2026-10-04T21:38:58+00:00",
+  "playwright_version": "1.63.0"
+}
