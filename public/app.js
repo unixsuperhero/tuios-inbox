@@ -176,6 +176,7 @@ async function saved() {
 function mount(next) {
   const oldKey = route && routeKey(route), nextKey = routeKey(next), main = root.closest('main');
   if (oldKey !== nextKey) {
+    document.body.dataset.workbenchView = 'content';
     list?.destroy(); list = null;
     if (oldKey) {
       const content = document.createDocumentFragment(); content.append(...root.childNodes);
@@ -195,6 +196,7 @@ function mount(next) {
   $('#section-name').textContent = (index || 'Unavailable').toUpperCase();
   $('#add-profile').hidden = index !== 'profiles';
   $('#inbox-composer').hidden = !(['task', 'agent'].includes(next.kind) || next.kind === 'index' && next.page === 'inbox');
+  $('#work-composer').hidden = $('#inbox-composer').hidden;
   const composer = $('#inbox-composer');
   composer.elements.body.value = composerDraft().body;
   if (next.kind === 'task') { composer.dataset.taskId = next.id; $('#inbox-recipient').dataset.taskScope = ''; }

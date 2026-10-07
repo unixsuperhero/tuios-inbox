@@ -44,7 +44,7 @@ const archiveActions = path => [{ id: 'archive', label: 'Archive', run: update(p
 const archiveButton = (name, row) => `<button data-do="${name}" data-id="${esc(row.id)}" data-value="${row.archived ? '' : '1'}">${row.archived ? 'Unarchive' : 'Archive'}</button>`;
 const archivedTag = row => row.archived ? ' <span class="tag">archived</span>' : '';
 const liveAgent = key => store.state.agents.find(a => a.id === key && a.state !== 'closed');
-const taskField = { key: 'task_id', label: 'Task', type: 'enum', options: taskOptions, createOption: createChoice('task'), createLabel: 'New Task…', filter: true, sort: true, search: true };
+const taskField = { key: 'task_id', label: 'Task', type: 'enum', options: () => taskOptions(), createOption: createChoice('task'), createLabel: 'New Task…', filter: true, sort: true, search: true };
 
 export function recipients(context = {}) {
   const { agents, panes } = store.state;

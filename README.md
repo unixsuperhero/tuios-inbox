@@ -9,6 +9,8 @@ bun start
 
 Open http://127.0.0.1:4399. The server binds only to loopback and rejects foreign origins, foreign Host headers, and mutations without its same-origin JSON header. Do not expose it through a public proxy. It can execute commands as your user.
 
+For port 4401, run `PORT=4401 bun start`. This serves the actual application with the Flight deck layout; the historical visual comparison under `.impeccable/prototypes/` is not part of the app and has no real task actions.
+
 Manage the background server from any directory with the local CLI:
 
 ```sh
@@ -31,21 +33,21 @@ and `ps`. The former harness-status command is now `h tuios setup-status [HARNES
 
 ## Inbox
 
-The default page is the live Task workbench. The left rail labels **Task groups** and explains the agents and shell panes nested under each task. **Not assigned to a task** contains recipients outside the visible task groups. The main pane shows recent work or scoped history; the right rail contains the review queue.
+The default page is the live Flight deck inbox: a dark blue workspace with a left navigation rail, condensed headings, amber actions, and searchable work records. It uses the real SQLite/TUIOS data and APIs, not sample data. **Task groups**, **Work**, and **Review** switch the main work area; task groups list the agents and shell panes assigned to each task. **Not assigned to a task** contains recipients outside the visible task groups. Task and agent pages show their scoped history.
 
-Unread records have a green-tinted background, a lighter border, a bold title, and an explicit **Unread** label with a dot. Read records have a neutral background, normal-weight title, and **Read** label. Checking a record adds an outline without replacing its read-state styling.
+Unread records have a lighter blue background, a bold title, and an explicit **Unread** label with a dot. Read records have a darker background, normal-weight title, and **Read** label. Checking a record adds an outline without replacing its read-state styling.
 
-Checkboxes and **Select all** are available in Recent work, task and agent histories, the review queue, task member lists, the left task/agent rail, and all indexes. Selecting work records reveals **Mark as read**, **Mark as unread**, and **Archive**. Use **Restore to inbox** in Archive to bring records back. Selection is separate for each list, survives live updates, and clears from history and members when the route changes. Failed writes retain the selection and show an error; pending actions disable their controls.
+Checkboxes and **Select all** are available in the Inbox, task and agent histories, the review queue, task member lists, task groups, and all indexes. Selecting work records reveals **Mark as read**, **Mark as unread**, and **Archive**. Use **Restore to inbox** in Archive to bring records back. Selection is separate for each list, survives live updates, and clears from history and members when the route changes. Failed writes retain the selection and show an error; pending actions disable their controls.
 
 Task and agent rail selections can be archived independently. This hides those entries without stopping panes or archiving their work. Task member lists also support unarchiving agents. The Tasks and Agents indexes retain their status, assignment, archive, and unarchive actions; Agent profiles supports bulk deletion with confirmation.
 
 The review queue contains unread, unarchived finished responses, oldest first by default. Shell command output is bucketed apart and hidden until **Show commands** is ticked. Opening a record marks it read; **Mark as unread** puts it back. **Next** moves to the following record. A successful reply also clears the record. The **Queues** page shows the same unread work as one queue per task, oldest at the top, with a reading pane beside it.
 
-Turns, Tasks, Agents, Archive, and Agent profiles remain available in the top navigation. Their indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Tasks, Content, and Review buttons switch between the three work areas.
+Inbox, Queues, Turns, Tasks, Agents, Archive, and Agent profiles are available in the left navigation. Their indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Task groups, Work, and Review buttons switch between work areas; Queues has its own reading pane.
 
 All is the default type selection and exclusive reset. Turns and Commands toggle independently; selecting both includes either type. The type union combines with search, filters, and sort. Selecting neither returns to All. Read and unread backgrounds describe state, never alternating stripes.
 
-The global inline composer sends a prompt or shell command to a native recipient. It lists Agents once and only agentless Panes separately, deduplicated by native ID. Task, Agent, and Pane selectors offer matching New choices. Creation returns the real record to the initiating selector; cancel or failure preserves its selection context and typed draft. Agent selection waits for that startup thread and returned native pane to become ready. Failed or blocked startup is not presented as ready.
+Expand **Send work to an agent or pane** to use the inline composer. It sends a prompt or shell command to a native recipient and keeps its draft and expanded state during live updates. It lists Agents once and only agentless Panes separately, deduplicated by native ID. Task, Agent, and Pane selectors offer matching New choices. Creation returns the real record to the initiating selector; cancel or failure preserves its selection context and typed draft. Agent selection waits for that startup thread and returned native pane to become ready. Failed or blocked startup is not presented as ready.
 
 On the Agents page, assign a pane to a task. Its existing turns and commands move to that task, unless you moved one elsewhere by hand, and new ones inherit it.
 

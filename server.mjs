@@ -516,7 +516,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port, idleTimeout: 0, maxReque
       return new Response(new ReadableStream({ start(c) { controller = c; listeners.add(c); c.enqueue('data: connected\n\n'); }, cancel() { listeners.delete(controller); } }), { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' } });
     }
     if (url.pathname.startsWith('/api/')) return await api(req, url);
-    const files = { '/': 'index.html', '/app.js': 'app.js', '/workbench.js': 'workbench.js', '/pages.js': 'pages.js', '/list.js': 'list.js', '/markdown.js': 'markdown.js', '/queues.js': 'queues.js', '/queue-model.js': 'queue-model.js', '/style.css': 'style.css', '/list.css': 'list.css', '/markdown.css': 'markdown.css', '/queues.css': 'queues.css' };
+    const files = { '/': 'index.html', '/app.js': 'app.js', '/workbench.js': 'workbench.js', '/pages.js': 'pages.js', '/list.js': 'list.js', '/markdown.js': 'markdown.js', '/queues.js': 'queues.js', '/queue-model.js': 'queue-model.js', '/style.css': 'style.css', '/list.css': 'list.css', '/markdown.css': 'markdown.css', '/queues.css': 'queues.css', '/flight.css': 'flight.css', '/flight-barlow-condensed-600.ttf': 'flight-barlow-condensed-600.ttf' };
     if (!files[url.pathname]) return new Response('Not found', { status: 404 });
     return new Response(Bun.file(join(root, 'public', files[url.pathname])), { headers: { 'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' } });
   } catch (e) { return response({ error: e.message }, 400); }

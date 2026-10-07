@@ -1,67 +1,67 @@
 ---
 name: tuios inbox
-description: Task-first graphite workbench for inspecting and continuing native TUIOS work.
+description: Flight deck task navigation for inspecting and continuing native TUIOS work.
 colors:
-  paper: "#15181e"
-  white: "#20252d"
-  surface-raised: "#2c333d"
-  ink: "#edf1f7"
-  muted: "#b6beca"
-  line: "#444d59"
-  control-line: "#697382"
-  accent: "#b9d776"
-  danger: "#ffd0d8"
-  accent-soft: "#303a28"
-  accent-hover: "#d1e7a3"
-  nav-hover: "#2c333d"
+  paper: "#17212b"
+  white: "#17212b"
+  surface-raised: "#202f3b"
+  ink: "#e9eff3"
+  muted: "#bfccd6"
+  line: "#435463"
+  control-line: "#647786"
+  accent: "#ffb54a"
+  danger: "#edbeb8"
+  accent-soft: "#344656"
+  accent-hover: "#ffc570"
+  nav-hover: "#243442"
   danger-background: "#38292c"
   danger-line: "#765051"
   warning: "#edce91"
   warning-background: "#302d25"
   warning-line: "#665d43"
-  success: "#b4d3bc"
+  success: "#bbd5c5"
   detail-line: "#526570"
   data-ink: "#c8dae3"
   unread-ink: "#fff"
-  unread-background: "#303b2b"
-  unread-border: "#81965c"
+  unread-background: "#202f3b"
+  unread-border: "#647786"
 typography:
   headline:
-    fontFamily: "Arial, Helvetica, sans-serif"
-    fontSize: "clamp(21px, 2vw, 27px)"
+    fontFamily: "FlightCondensed, Arial Narrow, sans-serif"
+    fontSize: "44px; 38px below 1050px; 36px below 760px"
     fontWeight: 600
-    lineHeight: 1.15
-    letterSpacing: "-.035em"
+    lineHeight: 1.1
+    letterSpacing: "0"
   dialog-title:
-    fontFamily: "Arial, Helvetica, sans-serif"
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
     fontSize: "23px"
     fontWeight: 600
     lineHeight: 1.25
     letterSpacing: "-.025em"
   metadata-title:
-    fontFamily: "Arial, Helvetica, sans-serif"
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
     fontSize: "18px"
     fontWeight: 600
   record-title:
-    fontFamily: "Arial, Helvetica, sans-serif"
-    fontSize: "15px"
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    fontSize: "16px"
     fontWeight: 400
-    lineHeight: 1.5
+    lineHeight: 1.4
   record-title-unread:
-    fontFamily: "Arial, Helvetica, sans-serif"
-    fontSize: "15px"
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    fontSize: "16px"
     fontWeight: 700
-    lineHeight: 1.5
+    lineHeight: 1.4
   body:
-    fontFamily: "Arial, Helvetica, sans-serif"
-    fontSize: "14px"
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    fontSize: "16px"
     lineHeight: 1.45
   label:
-    fontFamily: "Arial, Helvetica, sans-serif"
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
     fontSize: "13px"
     fontWeight: 600
   hint:
-    fontFamily: "Arial, Helvetica, sans-serif"
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
     fontSize: "12px"
     fontWeight: 400
     lineHeight: 1.6
@@ -74,7 +74,7 @@ typography:
     fontSize: "11px"
     lineHeight: 1.6
 rounded:
-  control: "3px"
+  control: "2px"
   dialog: "4px"
   record: "0"
   status: "50%"
@@ -154,19 +154,19 @@ components:
 
 ## Overview
 
-The default live UI is the Task workbench, backed by existing production APIs and SQLite records. Only Task > Agent navigation appears in the left rail. Task histories, agent histories, original prompts, responses, and reply forms occupy the main pane; finished unread responses occupy an independently sortable review queue.
+The default live UI is the Flight deck inbox, backed by the production APIs and SQLite records. The left rail provides Inbox, Queues, Turns, Tasks, Agents, Archive, and Agent profiles. Task groups, Work, and Review select the main work area. Task and agent histories, prompts, responses, and reply forms remain real native-session workflows.
 
-Graphite backgrounds and lime controls follow the merged Rooms/Desk/Ledger comparison. Agent rows carry execution state with green Working, amber Needs input, rose Stopped, flat neutral Idle, and darker dashed Offline treatments. Selection uses a separate outline. Execution state does not determine review state.
+Dark blue surfaces, condensed FlightCondensed headings, and amber actions follow the Flight deck direction. Agent rows retain explicit Working, Needs input, Stopped, Idle, and Offline treatments without shadows. Selection uses a separate outline. Execution state does not determine review state.
 
 Opening a response marks it read; **Mark as unread** restores the unread flag, and a successful reply also clears it. Failed replies retain their drafts and pending status. Shell command output is bucketed apart from other unread work and hidden from the review queue and the Queues page until the reader asks for it. Native hash links change main-pane content, and Back/Forward restores prior views without rolling back writes. Live updates morph stable DOM nodes instead of replacing focused forms or reading panes.
 
-The tokens above describe [style.css](public/style.css) and [list.css](public/list.css). The [extension sidecar](.impeccable/design.json) and [earlier direction contract](.impeccable/planning/packet-surface.md) describe the preceding Packet list design; they are not the current workbench layout contract.
+The effective visual layer is [flight.css](public/flight.css), applied after [style.css](public/style.css), [list.css](public/list.css), and [queues.css](public/queues.css). The frontmatter describes shared tokens and base components; Flight deck overrides determine the current shell and record treatment. Historical comparison assets under `.impeccable/` are not served by the application.
 
 ## Colors
 
-`paper` is the page ground, read-record background, and expanded output background. `white` is the main pane and dialog background; the token retains the production CSS name despite its dark value. `surface-raised` is the input and bulk-action background. Unread records use `unread-background` with `unread-border`, bold white titles, and an explicit lime Unread label and dot. `ink` carries ordinary text, `muted` carries secondary labels, and `data-ink` carries record identifiers and times.
+`paper` and `white` are the dark blue page, main-pane, and dialog ground. Read list records use #1b2833; unread records use #202f3b with bold white titles and an explicit Unread label and dot. `surface-raised` is the input and bulk-action background. `ink` carries ordinary text and `muted` carries secondary labels.
 
-`accent` marks actions, selected type controls, active navigation, focus, unread dots, and selection outlines. `accent-soft` supports button hover, selected type controls, and query chips. `accent-hover` is the primary-button hover color. `nav-hover` supports navigation and type-control hover. The production `forest` custom property is an alias of `accent`, not a second palette color.
+`accent` marks actions, selected type controls, focus, and selection outlines. Active navigation uses white text on #344656 with a #586d7d border. Primary buttons hover at #ffc570. Unread indicators use light text; `forest` is the #bbd5c5 success color.
 
 `line` separates ordinary sections and records; `control-line` outlines controls and themes scrollbars. `detail-line` strengthens the column header and expanded-output separator. `danger`, `warning`, and `success` accompany explicit status text. Error and warning containers use their corresponding background and line tokens.
 
@@ -176,27 +176,27 @@ Text selection uses the accent background with paper-colored text. Form carets a
 
 ## Typography
 
-**The Data Lettering Rule.** Use neutral sans for labels, headings, and prose; reserve system monospace for identifiers, times, metadata values, and captured terminal output.
+Use FlightCondensed for the brand and page headings, platform sans-serif for labels and prose, and system monospace for identifiers, times, metadata values, and captured terminal output. The bundled Barlow Condensed font retains its OFL license.
 
-The frontmatter records the observed roles rather than an invented proportional type scale. Headline size is fluid. Metadata headings and dialog titles are smaller fixed roles; dialog titles shrink at the mobile breakpoint. Record titles have ordinary and unread weights. Navigation counts use monospace and tabular numbers; record identifiers and times also use tabular numbers.
+Page headings are 44px, 38px below 1050px, and 36px below 760px. Record titles are 16px with ordinary and bold unread weights. Navigation counts use monospace and tabular numbers; record identifiers and times also use tabular numbers.
 
 Body text inherits the base line height. Descriptions and hints loosen it, Markdown output uses its own reading rhythm, and terminal captures preserve whitespace with wrapping. Closed record titles clamp to two lines; opening the record removes that clamp. Long paths, IDs, notes, and output wrap instead of forcing document overflow.
 
 ## Layout
 
-The desktop shell fills the viewport beneath the global navigation. Three independently scrolling areas use `clamp(200px, 15vw, 250px) minmax(0, 1fr) 280px` columns, 4px gaps, and 4px shell padding. Between 900px and 1199px, the outer columns become 200px and 240px. The task rail has exactly two levels; thread and turn navigation stays in the main pane.
+The desktop shell fills the viewport with a 208px left navigation column and one scrolling work area. Task groups and Review are separate selectable work areas, not permanently visible sidebars. Queues adds a 240px task-bucket column beside its queue and reading pane. Native hash links and browser history reveal the selected content area.
 
-The main pane has compact gutters, factual Task/Agent metadata, scoped composition, history links, and full record detail. Secondary index pages retain the shared query shelf and bulk operations. Opening a work record from an index navigates to the main-pane detail rather than expanding its output inline.
+The main pane has 32px gutters, reduced to 20px below 1050px and 16px below 760px. Task/Agent metadata, scoped composition, history links, and full record detail remain available. Inbox and the other indexes share query controls and bulk operations. Opening a work record navigates to its detail rather than leaving its output inline.
 
 Record summaries use six aligned fields when space permits. A main-pane container width of 760px or less switches to labeled mobile fields, independently of viewport width.
 
-Below 900px, bottom Tasks, Content, and Review buttons select one work area at a time. Controls have 44px minimum heights. Metadata and composer fields stack, paths and output wrap, and dialogs retain bounded scrolling.
+Below 760px, global navigation becomes a horizontally scrolling link row and Task groups, Work, and Review become bottom buttons. Queues uses Task groups and Work because it has its own reading pane. Controls retain 44px mobile minimum heights; metadata and composer fields stack, paths wrap, and dialogs retain bounded scrolling.
 
 **The Scoped Inbox Rule.** Task and Agent pages place metadata above work and constrain the query by Task ID or native Agent/pane ID. Scope is intrinsic to the route, not a removable chip or a display-name match.
 
 ## Elevation & Depth
 
-Separators and backgrounds define ordinary content hierarchy. Agent state rows add distinct borders and soft offset shadows: Working is light, Needs input is stronger, Stopped is strongest, while Idle and Offline have no shadow.
+Separators and backgrounds define ordinary content hierarchy. Agent state rows keep distinct borders and explicit state text without shadows.
 
 Native HTML dialogs use the one large blurred shadow and a dim backdrop. Toasts and the shared index bulk-action bar use the smaller blurred shadow. Selection controls sit above records; workbench and index action bars stick to the top of their scrolling area so bulk actions remain available below long lists.
 
@@ -216,19 +216,19 @@ Inputs, native selects, and textareas use surface-raised, ink text, opaque muted
 
 ### Navigation and query controls
 
-Navigation is a native link set with `aria-current` on the active page. Active links use accent text and a bottom rule; hover uses nav-hover. The type controls expose independent `aria-pressed` state. Turns and Commands form an OR union with search, property filters, and sort. All is the exclusive reset; when neither type is active, All is active. Query chips remove ordinary filters and turn danger-colored on hover. They never remove the intrinsic detail-page scope.
+Navigation is a native link set with `aria-current` on the active page. Active links use white text on a blue raised surface; hover uses nav-hover. The type controls expose independent `aria-pressed` state. Turns and Commands form an OR union with search, property filters, and sort. All is the exclusive reset. Query chips remove ordinary filters, never the intrinsic detail-page scope.
 
 ### Records and mobile fields
 
-Read and unread records share field geometry. Unread titles use unread-ink and the heavier title role, with an explicit Unread label. Index selection keeps its read-state background. Record links open full main-pane details with Markdown, provenance, editable properties, and threaded continuation. Opening alone never clears unread state.
+Read and unread records share field geometry. Unread titles use bold white text and an explicit Unread label. Selection keeps the read-state background. Record links open full main-pane details with Markdown, provenance, editable properties, and threaded continuation. Opening a work record marks it read.
 
-Recent work, task and agent histories, the review queue, left-rail task/agent groups, and task members use native checkboxes separate from navigation links. Each list owns its selection and shows a selected count, select-all control with a mixed state, and contextual bulk actions. Selection uses an outline without changing read-state backgrounds. In-flight controls are disabled, failures retain selection, and live updates preserve checked state. History and member selections reset on route changes.
+Inbox, task and agent histories, the review queue, task groups, and task members use native checkboxes separate from navigation links. Each list owns its selection and contextual bulk actions. Selection uses an outline without changing read-state backgrounds. In-flight controls are disabled, failures retain selection, and live updates preserve checked state. History and member selections reset on route changes.
 
-The left rail is titled Task groups, with a short hierarchy explanation, Manage tasks and Manage agents links, Agents & panes labels beneath tasks, and a Not assigned to a task group. Task and agent archiving hides navigation entries but does not stop panes or archive their records.
+The Task groups work area includes hierarchy explanations, Manage tasks and Manage agents links, Agents & panes labels beneath tasks, and a Not assigned to a task group. Task and agent archiving hides navigation entries without stopping panes or archiving their records.
 
 ### Metadata and composer
 
-Task metadata contains actual paths, status, notes, and member panes. Agent metadata describes the native recipient and its task assignment. The global inline composer lists each Agent once and only agentless Panes separately, deduplicated by native ID. Sending accepts real native work; acceptance is not a completion claim. Task composition remains task-scoped. Focused composer, metadata, and reply drafts survive SSE refresh.
+Task metadata contains actual paths, status, notes, and member panes. Agent metadata describes the native recipient and task assignment. The inline composer lives in a Send work to an agent or pane disclosure; live updates preserve its draft and expanded state. It lists each Agent once and only agentless Panes separately, deduplicated by native ID. Sending accepts real native work, not a completion claim. Task composition remains task-scoped.
 
 **The Creation Continuation Rule.** A New Task, New Agent, or New Pane choice uses real creation APIs and returns to its initiating selector. Cancel or failure preserves the caller and draft. Agent selection waits for the exact returned startup thread and native pane, never for an unrelated ready session.
 

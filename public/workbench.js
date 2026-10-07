@@ -61,7 +61,7 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
   const selections = { history: new Set(), queue: new Set(), tasks: new Set(), agents: new Set(), members: new Set() };
   const pending = new Set(), notices = new Map();
   try { order = sessionStorage.getItem('workbench.queue-order') === 'newest' ? 'newest' : 'oldest'; } catch {}
-  const supports = r => r.kind === 'item' || r.kind === 'task' || r.kind === 'agent' || r.kind === 'index' && r.page === 'inbox';
+  const supports = r => r.kind === 'item' || r.kind === 'task' || r.kind === 'agent';
   const selected = () => route?.kind === 'item' ? store.state.items.find(i => i.id === route.id) : null;
   const queue = () => { const rows = showCommands ? commandRows() : reviewRows(); return order === 'newest' ? rows.reverse() : rows; };
   const history = () => !route || !supports(route) || route.kind === 'item' ? [] : store.state.items.filter(i => !i.archived && (route.kind === 'task' ? i.task_id === route.id : route.kind === 'agent' ? i.agent_id === route.id : true)).sort(chronological).reverse();
