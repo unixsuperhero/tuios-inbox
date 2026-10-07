@@ -104,3 +104,5 @@ button:hover { background: #344656; }
   .queues-mode[data-workbench-view=content] .workbench-shell > .task-rail { display: none; }
   .queues-mode .workbench-mobile-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.host-label { display: block; margin-top: 4px; color: var(--muted); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
+.wb-agent .host-label { flex-basis: 100%; color: inherit; }

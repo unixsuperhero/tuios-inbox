@@ -1,7 +1,7 @@
 // Queues page: one bucket per task, oldest at the top, read on the right. Records, actions, drafts
 // and forms are the workbench's own (pages.js detail + app.js handlers); this module only lays
 // them out as a queue and moves you to the next one.
-import { store, pages, esc, agentName, unfinished, api, taskTree } from '/pages.js';
+import { store, pages, esc, agentName, hostLabel, unfinished, api, taskTree } from '/pages.js';
 import { patchHTML } from '/workbench.js';
 import { buildBuckets, nextAfter, waitingFor, byOldest, ALL } from '/queue-model.js';
 
@@ -43,6 +43,7 @@ export function createQueues({ root, navigate, load, review, refresh, report }) 
     return `<div class="wb-record ${r.unread ? 'is-unread' : 'is-read'}${picked.has(r.id) ? ' is-picked' : ''}" data-wb-key="${esc(r.id)}"><input type="checkbox" data-qb-pick="${esc(r.id)}" aria-label="Select ${esc(r.title || 'record')}"${picked.has(r.id) ? ' checked' : ''}${pending ? ' disabled' : ''}><a class="wb-record-link" href="${href(bucket.id, r.id)}"${item?.id === r.id ? ' aria-current="page"' : ''}>
       <strong>${esc(r.title || 'Prompt not captured')}</strong>
       <span>${esc(r.agent_id ? agentName(r.agent_name, r.agent_id) : 'No agent')} · ${esc(r.type)}${r.status === 'needs_input' ? ' · <b class="qb-blocked">needs your answer</b>' : ''}</span>
+      ${r.agent_id ? `<span class="host-label">Host: ${esc(hostLabel(r.agent_id))}</span>` : ''}
       <small>${esc(r.status)} · ${esc(time(r.updated))} · waiting ${waitingFor(r)}</small>
       <span class="qb-position">${position} of ${total}</span></a></div>`;
   }

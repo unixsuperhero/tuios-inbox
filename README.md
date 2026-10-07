@@ -51,10 +51,12 @@ Expand **Send work to an agent or pane** to use the inline composer. It sends a 
 
 On the Agents page, assign a pane to a task. Its existing turns and commands move to that task, unless you moved one elsewhere by hand, and new ones inherit it.
 
+Execution-host labels appear in task groups, task members, agent/pane rows and details, work records, review rows, and recipient selectors. They use native TUIOS host names such as **local** or **build**. Unknown historical hosts show **Not reported**; missing hook metadata never overwrites a known host. Detailed native pane listings resolve hosts during reconciliation and for newly observed recipients. A task can contain recipients on multiple hosts; this adds labels, not a host-management interface.
+
 ```js
 item:  { id: 'turn:…' | 'thread:…', type: 'turn' | 'command' | 'mail' | 'system' | 'dispatch' | 'snapshot',
          title, agent_id, agent_name, harness, task_id, status, unread, archived, created, updated }
-agent: { id, session, name, harness, kind: 'agent' | 'shell', task_id, state, seen }
+agent: { id, session, name, harness, host: 'local' | 'build' | '', kind: 'agent' | 'shell', task_id, state, seen }
 ```
 
 ## Turns

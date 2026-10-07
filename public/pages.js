@@ -10,6 +10,7 @@ const badge = value => value ? `<span class="badge ${esc(value)}">${esc(value)}<
 const time = value => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 // A pane's name is its title, which harnesses prefix with a spinner glyph (oh-my-pi also with "π"). Shells have no name.
 export const agentName = (name, key) => String(name || '').replace(/^(π\s+)?[^\p{L}\p{N}]*/u, '') || `pane ${key.slice(0, 8)}`;
+export const hostLabel = key => store.state.agents.find(a => a.id === key)?.host || store.state.panes.find(p => p.id === key)?.host || 'Not reported';
 const hint = text => `<p class="hint">${text}</p>`;
 const createChoice = (kind, taskId) => ({ owner } = {}) => store.createEntity({ kind, taskId, owner });
 const newChoice = kind => ({ value: `__new_${kind}`, label: `New ${kind[0].toUpperCase() + kind.slice(1)}…`, createKind: kind });
@@ -56,7 +57,7 @@ export function recipients(context = {}) {
     const kind = row.kind === 'agent' ? 'agent' : 'pane';
     return [row.id, {
       ...row, value: row.id, kind, taskId: row.task_id,
-      label: [agentName(row.name, row.id), kind === 'agent' ? 'Agent' : 'Pane', row.state].filter(Boolean).join(' · '),
+      label: [agentName(row.name, row.id), kind === 'agent' ? 'Agent' : 'Pane', row.state, `Host: ${hostLabel(row.id)}`].filter(Boolean).join(' · '),
     }];
   })).values()];
 }
@@ -96,7 +97,7 @@ function itemSummary(r) {
   return `<div class="record-summary">
     <span class="record-type" data-label="Type">${esc(typeLabels[r.type] || r.type)}</span>
     <div class="record-title" data-label="Work"><h2>${esc(r.title || (r.type === 'turn' ? 'Prompt not captured' : 'No subject'))}</h2><span class="record-reference">${esc(r.harness || '')}</span><span class="unread-indicator">${r.unread ? 'Unread' : 'Read'}</span></div>
-    <span class="record-agent" data-label="Agent">${r.agent_id ? `<a href="${agentHref(r.agent_id)}">${esc(agentName(r.agent_name, r.agent_id))}</a>` : '—'}</span>
+    <span class="record-agent" data-label="Agent">${r.agent_id ? `<a href="${agentHref(r.agent_id)}">${esc(agentName(r.agent_name, r.agent_id))}</a><small class="host-label">Host: ${esc(hostLabel(r.agent_id))}</small>` : '—'}</span>
     <span class="record-task" data-label="Task">${task ? taskTag(task.id) : 'No task'}</span>
     <span class="record-status" data-label="State">${badge(r.status)}</span>
     <span class="record-time" data-label="Time">${esc(time(r.updated))}</span>
@@ -189,7 +190,7 @@ function taskDetail(t) {
     <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}">Compose work</button><button data-do="open-pane" data-kind="agent" data-id="${esc(t.id)}">New Agent…</button><button data-do="open-pane" data-kind="pane" data-id="${esc(t.id)}">New Pane…</button><button data-do="open-mail" data-id="${esc(t.id)}">Send mail</button>${archiveButton('task-archive', t)}</div>
     <label>Task notes<textarea data-notes="${esc(t.id)}" rows="3">${esc(store.drafts.get(`notes:${t.id}`) ?? t.notes)}</textarea></label><button data-do="save-notes" data-id="${esc(t.id)}" class="subtle">Save notes</button>
     <div class="metadata-members"><h2 class="section-title">Agents and panes <span>${members.length}</span></h2><div id="member-selection" data-workbench-controls></div>
-    ${members.map(m => `<div class="pane" data-wb-key="member:${esc(m.id)}"><div class="member-summary"><input type="checkbox" data-wb-pick="members" data-id="${esc(m.id)}" aria-label="Select ${esc(agentName(m.name, m.id))}"><div><strong>${agents.some(a => a.id === m.id) ? `<a href="${agentHref(m.id)}">${esc(agentName(m.name, m.id))}</a>` : esc(agentName(m.name, m.id))}</strong> ${badge(m.state)}${archivedTag(m)}<small>${esc(m.kind)}${m.harness ? ` · ${esc(m.harness)}` : ''} · ${esc(m.id)}${m.pane ? ' · managed here' : ' · assigned here'}</small></div></div><div class="pane-actions">${m.pane ? `<button data-do="inspect" data-id="${esc(m.id)}">Inspect</button>${mine.find(p => p.id === m.id)?.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(m.id)}">Check mail</button>` : ''}` : ''}</div></div>`).join('') || hint('No members yet. Open an agent or pane here, or assign an existing recipient from Agents.')}</div>
+    ${members.map(m => `<div class="pane" data-wb-key="member:${esc(m.id)}"><div class="member-summary"><input type="checkbox" data-wb-pick="members" data-id="${esc(m.id)}" aria-label="Select ${esc(agentName(m.name, m.id))}"><div><strong>${agents.some(a => a.id === m.id) ? `<a href="${agentHref(m.id)}">${esc(agentName(m.name, m.id))}</a>` : esc(agentName(m.name, m.id))}</strong> ${badge(m.state)}${archivedTag(m)}<span class="host-label">Host: ${esc(hostLabel(m.id))}</span><small>${esc(m.kind)}${m.harness ? ` · ${esc(m.harness)}` : ''} · ${esc(m.id)}${m.pane ? ' · managed here' : ' · assigned here'}</small></div></div><div class="pane-actions">${m.pane ? `<button data-do="inspect" data-id="${esc(m.id)}">Inspect</button>${mine.find(p => p.id === m.id)?.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(m.id)}">Check mail</button>` : ''}` : ''}</div></div>`).join('') || hint('No members yet. Open an agent or pane here, or assign an existing recipient from Agents.')}</div>
     ${hint('Work uses observed recipients assigned to this task. Mail uses only panes opened in this task; assignment does not move native sessions or directories.')}
   </section>`;
 }
@@ -200,7 +201,7 @@ function agentDetail(a) {
   return `<section class="entity-metadata" aria-label="Agent details">
     <div class="metadata-heading"><a href="#agents">← Agents</a>${archivedTag(a)}</div>
     <div class="props">${select('agent-task', a.id, a.task_id, taskChoices(), 'Task')}${archiveButton('agent-archive', a)}${pane ? `<button data-do="inspect" data-id="${esc(a.id)}">Inspect pane</button>${pane.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(a.id)}">Check mail</button>` : ''}` : ''}</div>
-    <dl class="metadata-facts"><div><dt>Name</dt><dd>${esc(agentName(a.name, a.id))}</dd></div><div><dt>Native pane ID</dt><dd>${esc(a.id)}</dd></div><div><dt>Kind</dt><dd>${esc(a.kind)}</dd></div><div><dt>Harness</dt><dd>${esc(a.harness || 'Not reported')}</dd></div><div><dt>TUIOS session</dt><dd>${esc(a.session || 'Not reported')}</dd></div><div><dt>Last known state</dt><dd>${badge(a.state)}</dd></div><div><dt>Last seen</dt><dd>${esc(time(a.seen))}</dd></div>${pane?.profile_id ? `<div><dt>Launch profile</dt><dd>${esc(profile?.name || pane.profile_id)}</dd></div>` : ''}${pane?.conversation_id ? `<div><dt>Conversation ID</dt><dd>${esc(pane.conversation_id)}</dd></div>` : ''}</dl>
+    <dl class="metadata-facts"><div><dt>Name</dt><dd>${esc(agentName(a.name, a.id))}</dd></div><div><dt>Native pane ID</dt><dd>${esc(a.id)}</dd></div><div><dt>Host</dt><dd>${esc(hostLabel(a.id))}</dd></div><div><dt>Kind</dt><dd>${esc(a.kind)}</dd></div><div><dt>Harness</dt><dd>${esc(a.harness || 'Not reported')}</dd></div><div><dt>TUIOS session</dt><dd>${esc(a.session || 'Not reported')}</dd></div><div><dt>Last known state</dt><dd>${badge(a.state)}</dd></div><div><dt>Last seen</dt><dd>${esc(time(a.seen))}</dd></div>${pane?.profile_id ? `<div><dt>Launch profile</dt><dd>${esc(profile?.name || pane.profile_id)}</dd></div>` : ''}${pane?.conversation_id ? `<div><dt>Conversation ID</dt><dd>${esc(pane.conversation_id)}</dd></div>` : ''}</dl>
     ${hint('Assigning this recipient groups its turns and commands with the task. Items explicitly moved to another task stay there. Native session, directory and managed-mail membership do not change.')}
   </section>`;
 }
@@ -266,6 +267,7 @@ export const pages = {
       fields: [
         { key: 'kind', label: 'Kind', type: 'enum', filter: true, sort: true },
         { key: 'harness', label: 'Harness', type: 'enum', filter: true, sort: true },
+        { key: 'host', label: 'Host', type: 'enum', filter: true, sort: true, search: true },
         { key: 'state', label: 'State', type: 'enum', filter: true, sort: true },
         taskField,
         { key: 'session', label: 'Session', type: 'enum', filter: true, sort: true, search: true },
@@ -276,7 +278,7 @@ export const pages = {
       rowId: a => a.id, rowHref: a => agentHref(a.id), rowClass: a => a.unread_count ? 'is-unread' : 'is-read',
       summary: a => `<div class="record-summary">
         <span class="record-type" data-label="Type">${esc(a.kind)}</span>
-        <div class="record-title" data-label="Work"><h3>${esc(agentName(a.name, a.id))}</h3><span class="record-reference">${esc(a.session || a.id)}${archivedTag(a)}</span><span class="unread-indicator">${a.unread_count} unread</span></div>
+        <div class="record-title" data-label="Work"><h3>${esc(agentName(a.name, a.id))}</h3><span class="record-reference">${esc(a.session || a.id)}${archivedTag(a)}</span><span class="host-label">Host: ${esc(hostLabel(a.id))}</span><span class="unread-indicator">${a.unread_count} unread</span></div>
         <span class="record-agent" data-label="Harness">${esc(a.harness || '—')}</span>
         <span class="record-task" data-label="Task">${esc(store.state.tasks.find(t => t.id === a.task_id)?.title || 'No task')}</span>
         <span class="record-status" data-label="State">${badge(a.state)}</span>

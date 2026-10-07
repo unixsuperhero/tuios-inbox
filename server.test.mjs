@@ -367,3 +367,15 @@ test('a turn that ended without a hook report is unread and finished; the hookâ€
     expect(await json('/turns/stuck')).toMatchObject({ response: 'the late reply', unread: 1 });
   } finally { proc.kill(); await proc.exited; await rm(dir, { recursive: true, force: true }); }
 });
+
+test('execution host survives host-less sightings and restart; unknown is not local', async () => {
+  await hook('host-first', { TUIOS_EVENT: 'after-command-finished', TUIOS_WINDOW_ID: 'hosted-pane', TUIOS_SESSION_ID: 's', TUIOS_HOST: 'build', TUIOS_COMMAND: 'hostname', TUIOS_EXIT_CODE: '0' }, { capture: 'build' });
+  let snapshot = await commandHook('host-again', 'hosted-pane', 'pwd');
+  expect(snapshot.agents.find(a => a.id === 'hosted-pane').host).toBe('build');
+  snapshot = await commandHook('host-unknown', 'unknown-host-pane', 'pwd');
+  expect(snapshot.agents.find(a => a.id === 'unknown-host-pane').host).toBe('');
+  await stop(); await start();
+  snapshot = await state();
+  expect(snapshot.agents.find(a => a.id === 'hosted-pane').host).toBe('build');
+  expect(snapshot.agents.find(a => a.id === 'unknown-host-pane').host).toBe('');
+});

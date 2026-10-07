@@ -29,12 +29,13 @@ const run = (sql, ...args) => db.query(sql).run(...args);
 if (!one('SELECT 1 FROM profiles')) for (const [key, name, executable, protocol] of [['codex', 'Codex · structured', 'codex', 'codex'], ['claude', 'Claude Code', 'claude', ''], ['omp', 'oh-my-pi', 'omp', ''], ['opencode', 'OpenCode · ACP', 'opencode', 'acp']]) {
   run('INSERT OR IGNORE INTO profiles VALUES (?,?,?,?,?,?)', key, name, executable, JSON.stringify(key === 'opencode' ? ['acp'] : []), protocol, '{}');
 }
+if (!all("SELECT name FROM pragma_table_info('agents')").some(c => c.name === 'host')) db.exec("ALTER TABLE agents ADD COLUMN host TEXT NOT NULL DEFAULT ''");
 // One row per TUIOS pane seen anywhere. A sighting fills in what it knows and never blanks the rest.
-function seeAgent(key, { session, name, harness, kind = 'agent', state, task = null, seen } = {}) {
-  run(`INSERT INTO agents (id,session,name,harness,kind,task_id,state,seen) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET session=COALESCE(NULLIF(excluded.session,''),session), name=COALESCE(NULLIF(excluded.name,''),name), harness=COALESCE(NULLIF(excluded.harness,''),harness),
-    kind=CASE WHEN excluded.kind='agent' THEN 'agent' ELSE kind END, task_id=COALESCE(excluded.task_id,task_id), state=COALESCE(NULLIF(excluded.state,''),state), seen=MAX(seen,excluded.seen)`,
+function seeAgent(key, { session, name, harness, kind = 'agent', state, task = null, seen, host } = {}) {
+  run(`INSERT INTO agents (id,session,name,harness,kind,task_id,state,seen,host) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET session=COALESCE(NULLIF(excluded.session,''),session), name=COALESCE(NULLIF(excluded.name,''),name), harness=COALESCE(NULLIF(excluded.harness,''),harness),
+    kind=CASE WHEN excluded.kind='agent' THEN 'agent' ELSE kind END, task_id=COALESCE(excluded.task_id,task_id), state=COALESCE(NULLIF(excluded.state,''),state), seen=MAX(seen,excluded.seen), host=COALESCE(NULLIF(excluded.host,''),host)`,
     // Claude Code and oh-my-pi ("π ⠧ Title") prefix their window title with a status glyph that changes constantly.
-    key, session || '', (name || '').replace(/^(?:π\s+)?[^\p{L}\p{N}]+/u, ''), harness || '', kind, task, state || '', seen || now());
+    key, session || '', (name || '').replace(/^(?:π\s+)?[^\p{L}\p{N}]+/u, ''), harness || '', kind, task, state || '', seen || now(), host || '');
 }
 // The task a pane's new turns and commands inherit.
 function agentTask(key) { return one('SELECT task_id FROM agents WHERE id=?', key || '')?.task_id ?? null; }
@@ -147,7 +148,7 @@ async function newShell(t, name) {
   const paneId = result.window_id || result.id;
   if (!paneId) throw new Error(`Missing window id: ${JSON.stringify(result)}`);
   run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'shell', null, 'idle', '');
-  seeAgent(paneId, { session: t.session, name, kind: 'shell', state: 'idle', task: t.id });
+  seeAgent(paneId, { session: t.session, name, kind: 'shell', state: 'idle', task: t.id, host: result.host || 'local' });
   await cli(['send-text', '-s', t.session, '-w', paneId, `source '${root.replaceAll("'", "'\\''")}/scripts/shell.zsh'\n`], 15000, false);
   changed(); return paneFor(paneId);
 }
@@ -234,6 +235,7 @@ async function handleEvent(e) {
   if (e.type === 'agent-message') await importMail(e.session);
   if (e.type === 'agent-state' && e.window && typeof e.state === 'string') {
     seeAgent(e.window, { session: e.session, state: e.state, seen: e.time ? new Date(e.time / 1e6).toISOString() : now() });
+    if (!agentFor(e.window).host) { try { await observeHosts(e.session); } catch (error) { lastError = error.message; } }
     await turnState(e);
   }
   const p = e.window && one('SELECT * FROM panes WHERE id=?', e.window);
@@ -261,11 +263,17 @@ async function subscribe() {
     if (!stopping) await Bun.sleep(3000);
   }
 }
+async function observeHosts(session) {
+  const result = await cli(['list-windows', '-s', session]);
+  const windows = Array.isArray(result) ? result : result.windows || [];
+  // The detailed native listing omits host only for a confirmed local process.
+  for (const w of windows) run('UPDATE agents SET host=? WHERE id=?', w.host || 'local', w.window_id || w.id);
+  return windows;
+}
 async function reconcile() {
   for (const t of all('SELECT * FROM tasks')) {
     try {
-      const result = await cli(['list-windows', '-s', t.session]);
-      const windows = Array.isArray(result) ? result : result.windows || [];
+      const windows = await observeHosts(t.session);
       for (const p of all('SELECT * FROM panes WHERE task_id=?', t.id)) {
         const w = windows.find(w => (w.id || w.window_id) === p.id);
         const state = w?.agent_state?.state || (typeof w?.agent_state === 'string' ? w.agent_state : w ? 'idle' : 'closed');
@@ -278,6 +286,12 @@ async function reconcile() {
   try {
     const sessions = await cli(['ls']);
     const live = (Array.isArray(sessions) ? sessions : sessions.sessions || []).flatMap(s => (s.windows || []).map(w => w.id));
+    const taskSessions = new Set(all('SELECT session FROM tasks').map(t => t.session));
+    for (const s of Array.isArray(sessions) ? sessions : sessions.sessions || []) {
+      if (!taskSessions.has(s.name) && all('SELECT id FROM agents WHERE session=?', s.name).length) {
+        try { await observeHosts(s.name); } catch (error) { lastError = error.message; }
+      }
+    }
     run("UPDATE agents SET state='closed' WHERE state!='closed' AND id NOT IN (SELECT value FROM json_each(?))", JSON.stringify(live));
   } catch (e) { lastError = e.message; }
   changed();
@@ -289,7 +303,10 @@ async function drainHooks() {
     for (const file of await readdir(spool)) {
       if (!file.endsWith('.json')) continue;
       const path = join(spool, file), e = await Bun.file(path).json(), v = e.values, command = v.TUIOS_EVENT === 'after-command-finished';
-      if (v.TUIOS_WINDOW_ID) seeAgent(v.TUIOS_WINDOW_ID, { session: v.TUIOS_SESSION_ID || e.turn?.session, name: e.turn?.name || v.TUIOS_WINDOW_NAME, harness: e.turn?.harness || v.TUIOS_AGENT_HARNESS, kind: command ? 'shell' : 'agent', state: v.TUIOS_AGENT_STATE, seen: e.time });
+      if (v.TUIOS_WINDOW_ID) seeAgent(v.TUIOS_WINDOW_ID, { session: v.TUIOS_SESSION_ID || e.turn?.session, name: e.turn?.name || v.TUIOS_WINDOW_NAME, harness: e.turn?.harness || v.TUIOS_AGENT_HARNESS, kind: command ? 'shell' : 'agent', state: v.TUIOS_AGENT_STATE, seen: e.time, host: v.TUIOS_HOST });
+      if (v.TUIOS_WINDOW_ID && !agentFor(v.TUIOS_WINDOW_ID).host && (v.TUIOS_SESSION_ID || e.turn?.session)) {
+        try { await observeHosts(v.TUIOS_SESSION_ID || e.turn.session); } catch (error) { lastError = error.message; }
+      }
       if (e.turn) completeTurn(e.turn, e.id);
       const completedKey = completionKey(e.bootId, v.TUIOS_WINDOW_ID, e.captureMeta?.command_seq, e.agent?.agent_state_at);
       if (completedKey && !command && one('SELECT id FROM events WHERE id=?', completedKey)) { await unlink(path); continue; }
@@ -331,7 +348,7 @@ const respondHint = process.env.TUIOS_PANE_ID
 async function api(req, url) {
   const parts = url.pathname.split('/').filter(Boolean), method = req.method;
   const body = method === 'POST' || method === 'PATCH' ? await req.json() : {};
-  if (url.pathname === '/api/state') return response({ tasks: all('SELECT * FROM tasks ORDER BY created DESC'), panes: all('SELECT * FROM panes'), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), agents: all('SELECT * FROM agents ORDER BY seen DESC'), items: all(`
+  if (url.pathname === '/api/state') return response({ tasks: all('SELECT * FROM tasks ORDER BY created DESC'), panes: all("SELECT p.*,COALESCE(a.host,'') AS host FROM panes p LEFT JOIN agents a ON a.id=p.id"), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), agents: all('SELECT * FROM agents ORDER BY seen DESC'), items: all(`
     SELECT 'turn:'||t.id AS id, 'turn' AS type, substr(t.prompt,1,400) AS title, t.pane_id AS agent_id, COALESCE(a.name,t.pane_name) AS agent_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, t.task_id, t.state AS status, t.unread, t.archived, t.started AS created, COALESCE(t.finished,t.started) AS updated FROM turns t LEFT JOIN agents a ON a.id=t.pane_id
     UNION ALL SELECT 'thread:'||t.id, CASE WHEN t.kind IN ('agent','shell') THEN 'dispatch' WHEN t.kind='hook' THEN 'snapshot' ELSE t.kind END, t.subject, t.pane_id, COALESCE(a.name,''), COALESCE(a.harness,''), t.task_id, COALESCE((SELECT status FROM messages WHERE thread_id=t.id ORDER BY rowid DESC LIMIT 1),''), t.unread, t.archived, t.created, t.updated FROM threads t LEFT JOIN agents a ON a.id=t.pane_id
     ORDER BY updated DESC LIMIT 2000`), lastError, boot, dataDir });
@@ -411,7 +428,7 @@ async function api(req, url) {
           const paneId = r.window_id || r.id || r.window;
           if (!paneId) throw new Error(JSON.stringify(r));
           run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'agent', profile.id, r.outcome === 'window_closed' ? 'closed' : r.ready === false ? 'needs_input' : 'idle', r.agent_session_id || '');
-          seeAgent(paneId, { session: t.session, name, task: t.id });
+          seeAgent(paneId, { session: t.session, name, task: t.id, host: r.host || 'local' });
           run('UPDATE threads SET pane_id=? WHERE id=?', paneId, tid);
           finish(mid, r.ready === false ? `Agent needs attention: ${JSON.stringify(r)}` : `${name} is ready. Compose a prompt to begin.`, r.ready === false ? 'blocked' : 'complete', r);
         } catch (e) { finish(mid, e.message, 'failed'); }
