@@ -224,6 +224,10 @@ Read and unread records share field geometry. Unread titles use bold white text 
 
 The Prompts index uses the existing `#turns` route and excludes command records. Turn details always show the full captured text under an explicit PROMPT heading, including short and unfinished prompts. Working and needs-input turns retain their state and question controls without presenting partial assistant text as a completed response. Open details refresh when prompt capture or state changes, without resetting drafts.
 
+Record headers and table titles use single-line ellipsis without changing their stored text. The PROMPT and RESPONSE bodies remain untruncated and render through the shared Markdown renderer. Body headings, lists, code blocks, and tables retain their normal layout on desktop and mobile.
+
+Turns with neither prompt text nor response text are auto-archived rather than deleted. Pending empty rows stay out of the active lists until capture supplies content. Delayed content restores only automatic archives, preserving the record ID and manual archive decisions. A response-capture flag refreshes open details even when the completion timestamp is unchanged, without replacing reply drafts.
+
 Inbox, task and agent histories, the review queue, task groups, and task members use native checkboxes separate from navigation links. Each list owns its selection and contextual bulk actions. Selection uses an outline without changing read-state backgrounds. In-flight controls are disabled, failures retain selection, and live updates preserve checked state. History and member selections reset on route changes.
 
 The Task groups work area includes hierarchy explanations, Manage tasks and Manage agents links, Agents & panes labels beneath tasks, and a Not assigned to a task group. Task and agent archiving hides navigation entries without stopping panes or archiving their records.

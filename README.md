@@ -55,7 +55,7 @@ Execution-host labels appear in task groups, task members, agent/pane rows and d
 
 ```js
 item:  { id: 'turn:…' | 'thread:…', type: 'turn' | 'command' | 'mail' | 'system' | 'dispatch' | 'snapshot',
-         title, agent_id, agent_name, harness, task_id, status, unread, archived, created, updated }
+         title, agent_id, agent_name, harness, task_id, status, unread, archived, response_captured, created, updated }
 agent: { id, session, name, harness, host: 'local' | 'build' | '', kind: 'agent' | 'shell', task_id, state, seen }
 ```
 
@@ -63,12 +63,18 @@ agent: { id, session, name, harness, host: 'local' | 'build' | '', kind: 'agent'
 
 Choose **Prompts** in the left navigation to see agent turns without command records. The route remains `#turns`. Every turn detail has an explicit **PROMPT** section with the full captured text, even while the agent works or waits for input. A completed turn also has a **RESPONSE** section.
 
+Record headers and table titles occupy one line with an ellipsis when needed. The body retains the entire prompt and completed response. Both render as Markdown, including headings, emphasis, lists, code blocks, and tables.
+
 A turn row opens when a pane starts working. Native metadata or the capture hook supplies its prompt without waiting for a final reply. Reconciliation recovers missing prompts for still-active panes from supported transcripts. Known prompts remain unchanged as later hook reports arrive. When the turn ends, the hook supplies the response and the row becomes unread. If no reliable prompt source exists, the detail states that no prompt text was captured.
+
+Turns with both a blank prompt and a blank response are automatically archived, including pending empty rows. Whitespace-only text counts as blank. The records remain in SQLite and Archive. A later captured prompt or response restores the same automatically archived record. Explicit manual archives stay archived. Prompt-only and response-only turns remain visible.
+
+The item field `response_captured` changes when a stored response arrives. Open details use it to refresh delayed responses even when the native completion timestamp does not change, while preserving reply drafts.
 
 `TUIOS_AGENT_MESSAGE` holds only the first line of the reply, cut to about 120 characters. The hook therefore reads the whole turn from the Claude Code or oh-my-pi transcript (`source: transcript`) or from a protocol pane's own transcript (`source: pane`). Any other harness gets the one-line summary (`source: summary`). The hook runs after `notifications.agent.settle_seconds` (2 by default), and TUIOS drops it if the pane starts another turn first; that row then stays without a reply.
 
 ```js
-turn: { id, session, pane_id, pane_name, harness, prompt, response, source, state, unread, archived, task_id, started, finished }
+turn: { id, session, pane_id, pane_name, harness, prompt, response, source, state, unread, archived, auto_archived, task_id, started, finished }
 ```
 
 ## Working with a task

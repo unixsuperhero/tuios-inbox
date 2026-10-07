@@ -40,6 +40,8 @@
 .workbench-app[data-workbench-view=content] [data-workbench-view=content],
 .workbench-app[data-workbench-view=review] [data-workbench-view=review] { background: #344656; border-color: #586d7d; color: #fff; }
 #heading { min-height: 106px; padding: 22px 0; margin-bottom: 18px; border-bottom: 2px solid var(--control-line); }
+body[data-route-kind=item] #heading > div:not(.heading-actions) { flex: 1; min-width: 0; }
+body[data-route-kind=item] #page-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 h1 { font: 600 44px/1.1 FlightCondensed, 'Arial Narrow', sans-serif; letter-spacing: 0; }
 #page-description { font-size: 13px; max-width: 78ch; }
 .heading-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; flex: none; }
@@ -58,6 +60,8 @@ button:hover { background: #344656; }
 .workbench-main .item.is-unread { background: #202f3b; }
 .workbench-main :is(.item > summary, .item-row) { padding: 18px 12px; gap: 16px; }
 .workbench-main .record-title :is(h2, h3) { font-size: 16px; line-height: 1.4; }
+.workbench-main :is(.item > summary, .item-row, .wb-item > .wb-summary) .record-title > h2,
+.wb-record-link > strong { display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -webkit-line-clamp: unset; }
 .workbench-main .list-columns { padding-block: 12px; }
 .workbench-main .record-status { align-self: stretch; display: flex; align-items: center; border-left: 1px solid var(--line); padding-left: 14px; }
 .workbench-main .badge:is(.working, .running, .active) { color: #bed9ed; }

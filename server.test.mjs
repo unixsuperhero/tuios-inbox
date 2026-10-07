@@ -120,6 +120,45 @@ test('a finished agent turn from the hook is unread until its reply is opened', 
   expect((await state()).items.filter(i => i.title === turn.prompt)).toMatchObject([{ unread: 0 }]);
 });
 
+test('empty turns are archived without losing late capture or manual archive decisions', async () => {
+  const deliver = (key, pane, prompt, response, status = 'done') => hook(key, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: status, TUIOS_WINDOW_ID: pane },
+    { turn: { session: 's', pane, name: pane, harness: 'codex', state: status, at: new Date().toISOString(), prompt, response, source: 'pane' } });
+  for (const [pane, prompt, reply, status, archived] of [
+    ['empty-completed', '', '', 'done', 1], ['empty-whitespace', ' \n\t\u00a0', '\r\n\t ', 'errored', 1], ['prompt-only', 'Keep the question', '', 'done', 0], ['response-only', '', 'Keep the answer', 'done', 0],
+    ['active-prompt', 'Running question', '', 'working', 0], ['empty-active', '', '', 'working', 1], ['empty-waiting', ' \t', '', 'needs_input', 1], ['empty-response-capture', '', 'commentary is not a final reply', 'working', 1],
+  ]) {
+    const row = (await deliver(pane, pane, prompt, reply, status)).items.find(i => i.agent_id === pane);
+    expect(row).toMatchObject({ archived, unread: archived || ['working', 'needs_input'].includes(status) ? 0 : 1, status });
+    expect(await (await call(`/turns/${row.id.slice(5)}`)).json()).toMatchObject({ prompt, response: ['working', 'needs_input'].includes(status) ? '' : reply });
+  }
+  for (const [pane, status] of [['empty-whitespace', 'errored'], ['empty-active', 'working'], ['empty-waiting', 'needs_input']]) {
+    const first = (await state()).items.find(i => i.agent_id === pane);
+    const enriched = await deliver(pane + '-late', pane, 'Recovered question', status === 'errored' ? 'Recovered answer' : '', status);
+    expect(enriched.items.filter(i => i.agent_id === pane)).toMatchObject([{ id: first.id, title: 'Recovered question', archived: 0, unread: status === 'errored' ? 1 : 0 }]);
+  }
+  const responseRow = (await state()).items.find(i => i.agent_id === 'empty-response-capture');
+  expect((await deliver('empty-response-capture-late', 'empty-response-capture', '', 'The final answer')).items.filter(i => i.agent_id === 'empty-response-capture')).toMatchObject([{ id: responseRow.id, archived: 0, unread: 1 }]);
+  const emptyFinished = (await state()).items.find(i => i.agent_id === 'empty-completed');
+  const capturedBeforeFinish = { session: 's', pane: 'empty-completed', name: 'worker', harness: 'codex', state: 'working', at: emptyFinished.created, prompt: 'A delayed original question', response: '', source: 'pane' };
+  const delayed = await hook('empty-before-finish', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'working', TUIOS_WINDOW_ID: capturedBeforeFinish.pane }, { turn: capturedBeforeFinish });
+  expect(delayed.items.filter(i => i.agent_id === capturedBeforeFinish.pane)).toMatchObject([{ id: emptyFinished.id, title: capturedBeforeFinish.prompt, status: 'done', archived: 0, unread: 1 }]);
+  expect(delayed.items.find(i => i.id === emptyFinished.id)).toMatchObject({ response_captured: 0, updated: emptyFinished.updated });
+  const responseCaptured = await hook('empty-same-time-response', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: capturedBeforeFinish.pane },
+    { turn: { ...capturedBeforeFinish, state: 'done', at: emptyFinished.updated, response: '# Recovered answer\n\n**Complete.**' } });
+  expect(responseCaptured.items.filter(i => i.agent_id === capturedBeforeFinish.pane)).toMatchObject([{ id: emptyFinished.id, title: capturedBeforeFinish.prompt, status: 'done', archived: 0, updated: emptyFinished.updated, response_captured: 1 }]);
+  expect(await (await call(`/turns/${emptyFinished.id.slice(5)}`)).json()).toMatchObject({ response: '# Recovered answer\n\n**Complete.**', finished: emptyFinished.updated });
+  for (const [pane, bulk] of [['empty-manual-single', false], ['empty-manual-bulk', true]]) {
+    const row = (await deliver(pane, pane, '', '')).items.find(i => i.agent_id === pane);
+    const edited = bulk ? await call('/items/update', { ids: [row.id], set: { archived: true } }) : await call(`/turns/${row.id.slice(5)}`, { archived: true }, 'PATCH');
+    expect(edited.status).toBe(200);
+    const after = await deliver(pane + '-late', pane, 'Recovered manually archived question', 'Recovered manually archived answer');
+    expect(after.items.filter(i => i.agent_id === pane)).toMatchObject([{ id: row.id, archived: 1 }]);
+  }
+  const manual = (await state()).items.find(i => i.agent_id === 'prompt-only');
+  await call(`/turns/${manual.id.slice(5)}`, { archived: true }, 'PATCH');
+  expect((await deliver('prompt-only-late', 'prompt-only', 'Keep the question', 'Late answer')).items.filter(i => i.agent_id === 'prompt-only')).toMatchObject([{ id: manual.id, archived: 1 }]);
+});
+
 test('an in-progress hook exposes the prompt and keeps one turn through tool activity and completion', async () => {
   const pane = 'progress-pane', at = new Date().toISOString();
   const turn = { session: 's', pane, name: 'working agent', harness: 'omp', state: 'working', at, prompt: 'Repair the parser', response: 'intermediate commentary', source: 'transcript' };
@@ -142,6 +181,9 @@ test('an in-progress hook exposes the prompt and keeps one turn through tool act
   const inactive = await deliver('progress-inactive', { ...turn, at: new Date().toISOString(), prompt: '' });
   expect(inactive.items.filter(i => i.agent_id === pane)).toMatchObject([{ id: rowId, title: turn.prompt, status: 'done', unread: 0 }]);
   expect(await detail()).toMatchObject({ response: complete.response, finished: complete.at });
+  const next = await deliver('progress-next', { ...turn, at: new Date(Date.parse(complete.at) + 1000).toISOString(), prompt: 'Now repair the formatter', response: '' });
+  expect(next.items.filter(i => i.agent_id === pane).map(i => [i.title, i.status, i.archived]).sort()).toEqual([['Now repair the formatter', 'working', 0], ['Repair the parser', 'done', 0]]);
+  expect(await detail()).toMatchObject({ prompt: turn.prompt, response: complete.response, finished: complete.at, unread: 0 });
 });
 test('completion cannot replace an already captured prompt with a later answer', async () => {
   const pane = 'preserved-pane', turn = { session: 's', pane, name: 'worker', harness: 'omp', state: 'working', at: new Date().toISOString(), prompt: 'Fix the original issue', response: '', source: 'transcript' };
@@ -157,12 +199,12 @@ test('restart reconciliation recovers only unfinished prompts in the same native
   db.exec(`CREATE TABLE turns (id TEXT PRIMARY KEY, session TEXT NOT NULL, pane_id TEXT NOT NULL, pane_name TEXT NOT NULL, harness TEXT NOT NULL, prompt TEXT NOT NULL, response TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL, unread INTEGER NOT NULL DEFAULT 0, started TEXT NOT NULL, finished TEXT)`);
   const insert = db.query('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
   for (const [pane, status, prompt, reply, finished] of [
-    ['recover-working', 'working', '', '', null], ['recover-waiting', 'needs_input', '', '', null], ['recover-stale', 'working', '', '', null], ['recover-finished', 'done', 'Saved prompt', 'Saved reply', at],
+    ['recover-working', 'working', '', '', null], ['recover-waiting', 'needs_input', ' \n\t', '', null], ['recover-stale', 'working', '', '', null], ['recover-finished', 'done', 'Saved prompt', 'Saved reply', at],
   ]) insert.run(pane, 's', pane, 'worker', 'codex', prompt, reply, 'pane', status, status === 'done' ? 1 : 0, at, finished);
   db.close();
   const eventPath = join(dir, 'native-event.json'), bin = join(dir, 'not-installed');
   const agents = [
-    ['recover-working', 'working', 'Recover the running prompt'], ['recover-waiting', 'needs_input', 'Recover the waiting prompt'], ['recover-stale', 'done', 'Do not import the old prompt'], ['recover-finished', 'working', 'Do not overwrite saved history'], ['hook-first', 'working', 'Hook arrived before native event'],
+    ['recover-working', 'working', 'Recover the running prompt'], ['recover-waiting', 'needs_input', 'Recover the waiting prompt'], ['recover-stale', 'done', 'Do not import the old prompt'], ['recover-finished', 'working', 'Do not overwrite saved history'], ['hook-first', 'working', 'Hook arrived before native event'], ['native-empty', 'working', ''],
   ].map(([pane, status, prompt]) => ({ window_id: pane, name: 'worker', harness_id: 'codex', protocol: true, state: status, agent_state_at: Date.parse(at) * 1e6, meta: { prompt } }));
   await Bun.write(bin, '#!' + process.execPath + '\n' + `
 const agents = ` + JSON.stringify(agents) + `;
@@ -172,9 +214,15 @@ else if (command === 'list-windows') console.log(JSON.stringify({ windows: agent
 else if (command === 'ls') console.log(JSON.stringify({ sessions: [{ name: 's', windows: agents.map(a => ({ id: a.window_id })) }] }));
 else if (command === 'capture-pane') console.log('you  ' + agents.find(a => a.window_id === process.argv[process.argv.indexOf('-w') + 1]).meta.prompt + String.fromCharCode(10, 10) + 'intermediate output');
 else if (command === 'subscribe') {
-  while (!await Bun.file(` + JSON.stringify(eventPath) + `).exists()) await Bun.sleep(10);
-  console.log(await Bun.file(` + JSON.stringify(eventPath) + `).text());
-  await Bun.sleep(60000);
+  let sent = 0;
+  while (true) {
+    if (await Bun.file(` + JSON.stringify(eventPath) + `).exists()) {
+      const lines = (await Bun.file(` + JSON.stringify(eventPath) + `).text()).trim().split(String.fromCharCode(10));
+      for (const line of lines.slice(sent)) console.log(line);
+      sent = lines.length;
+    }
+    await Bun.sleep(10);
+  }
 } else console.log('{}');
 `);
   await chmod(bin, 0o755);
@@ -184,15 +232,16 @@ else if (command === 'subscribe') {
   try {
     await request('/reconcile', {});
     const first = await (await request('/state')).json();
-    expect(first.items.filter(i => i.agent_id === 'recover-working')).toMatchObject([{ id: 'turn:recover-working', title: 'Recover the running prompt', status: 'working', unread: 0 }]);
-    expect(first.items.filter(i => i.agent_id === 'recover-waiting')).toMatchObject([{ id: 'turn:recover-waiting', title: 'Recover the waiting prompt', status: 'needs_input', unread: 0 }]);
+    expect(first.items.filter(i => i.agent_id === 'recover-working')).toMatchObject([{ id: 'turn:recover-working', title: 'Recover the running prompt', status: 'working', unread: 0, archived: 0 }]);
+    expect(first.items.filter(i => i.agent_id === 'recover-waiting')).toMatchObject([{ id: 'turn:recover-waiting', title: 'Recover the waiting prompt', status: 'needs_input', unread: 0, archived: 0 }]);
     expect(await (await request('/turns/recover-working')).json()).toMatchObject({ response: '', finished: null });
-    expect(await (await request('/turns/recover-stale')).json()).toMatchObject({ prompt: '', response: '', state: 'working' });
+    expect(await (await request('/turns/recover-stale')).json()).toMatchObject({ prompt: '', response: '', state: 'working', archived: 1 });
     expect(await (await request('/turns/recover-finished')).json()).toMatchObject({ prompt: 'Saved prompt', response: 'Saved reply', state: 'done', finished: at });
     const captured = { session: 's', pane: 'hook-first', name: 'worker', harness: 'codex', state: 'working', at: new Date().toISOString(), prompt: 'Hook arrived before native event', response: '', source: 'pane' };
     const before = await hook('native-race', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'working', TUIOS_WINDOW_ID: captured.pane }, { turn: captured }, { dir, request });
     const row = before.items.find(i => i.agent_id === captured.pane);
-    await Bun.write(eventPath, JSON.stringify({ type: 'agent-state', session: 's', window: captured.pane, state: 'working', time: Date.now() * 1e6, boot_id: 'race', seq: 1 }));
+    const events = [{ type: 'agent-state', session: 's', window: captured.pane, state: 'working', time: (Date.now() + 1) * 1e6, boot_id: 'race', seq: 1 }];
+    await Bun.write(eventPath, events.map(JSON.stringify).join('\n'));
     let after;
     for (let i = 0; i < 100; i++) {
       after = await (await request('/state')).json();
@@ -201,6 +250,39 @@ else if (command === 'subscribe') {
     }
     expect(after.agents.find(a => a.id === captured.pane).seen > captured.at).toBe(true);
     expect(after.items.filter(i => i.agent_id === captured.pane)).toMatchObject([{ id: row.id, title: captured.prompt, status: 'working', unread: 0 }]);
+    events.push({ type: 'agent-state', session: 's', window: 'native-empty', state: 'working', time: Date.now() * 1e6, boot_id: 'race', seq: 2 });
+    await Bun.write(eventPath, events.map(JSON.stringify).join('\n'));
+    let blank;
+    for (let i = 0; i < 100; i++) {
+      blank = (await (await request('/state')).json()).items.find(i => i.agent_id === 'native-empty');
+      if (blank) break;
+      await Bun.sleep(10);
+    }
+    expect(blank).toMatchObject({ status: 'working', title: '', archived: 1, unread: 0 });
+    events.push({ type: 'agent-state', session: 's', window: 'native-empty', state: 'idle', time: (Date.now() + 1) * 1e6, boot_id: 'race', seq: 3 });
+    await Bun.write(eventPath, events.map(JSON.stringify).join('\n'));
+    let ended;
+    for (let i = 0; i < 100; i++) {
+      ended = await (await request('/turns/' + blank.id.slice(5))).json();
+      if (ended.state === 'idle') break;
+      await Bun.sleep(10);
+    }
+    expect(ended).toMatchObject({ id: blank.id.slice(5), state: 'idle', archived: 1, unread: 0 });
+    const delayed = { session: 's', pane: 'native-empty', name: 'worker', harness: 'codex', state: 'working', at: blank.created, prompt: 'Captured before the idle transition', response: '', source: 'pane' };
+    const restored = await hook('native-delayed-prompt', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'working', TUIOS_WINDOW_ID: delayed.pane }, { turn: delayed }, { dir, request });
+    expect(restored.items.filter(i => i.agent_id === delayed.pane)).toMatchObject([{ id: blank.id, title: delayed.prompt, status: 'idle', archived: 0, unread: 0 }]);
+    expect(await (await request('/turns/' + blank.id.slice(5))).json()).toMatchObject({ finished: ended.finished, state: 'idle' });
+    await hook('native-stale-prompt', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'working', TUIOS_WINDOW_ID: delayed.pane }, { turn: { ...delayed, prompt: 'Must not replace completed history' } }, { dir, request });
+    expect(await (await request('/turns/' + blank.id.slice(5))).json()).toMatchObject({ prompt: delayed.prompt, finished: ended.finished, state: 'idle' });
+    events.push({ type: 'agent-state', session: 's', window: captured.pane, state: 'idle', time: Date.now() * 1e6, boot_id: 'race', seq: 4 });
+    await Bun.write(eventPath, events.map(JSON.stringify).join('\n'));
+    let meaningfulIdle;
+    for (let i = 0; i < 100; i++) {
+      meaningfulIdle = await (await request('/turns/' + row.id.slice(5))).json();
+      if (meaningfulIdle.state === 'idle') break;
+      await Bun.sleep(10);
+    }
+    expect(meaningfulIdle).toMatchObject({ id: row.id.slice(5), prompt: captured.prompt, state: 'idle', finished: null, archived: 0, unread: 0 });
   } finally { proc.kill(); await proc.exited; await rm(dir, { recursive: true, force: true }); }
 });
 test('an agent state change without a finished turn updates the agent and creates no thread', async () => {
@@ -433,7 +515,11 @@ test('a turn that ended without a hook report is unread and finished; the hookâ€
   const db = new Database(join(dir, 'inbox.sqlite'), { create: true });
   db.exec(`CREATE TABLE turns (id TEXT PRIMARY KEY, session TEXT NOT NULL, pane_id TEXT NOT NULL, pane_name TEXT NOT NULL, harness TEXT NOT NULL, prompt TEXT NOT NULL, response TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL, unread INTEGER NOT NULL DEFAULT 0, started TEXT NOT NULL, finished TEXT);
     INSERT INTO turns VALUES ('stuck','s','quiet-pane','worker','claude-code','ended without a hook','','','done',0,'${at}',NULL);
-    INSERT INTO turns VALUES ('live','s','busy-pane','worker','claude-code','still running','','','working',0,'${at}',NULL);`);
+    INSERT INTO turns VALUES ('live','s','busy-pane','worker','claude-code','still running','','','working',0,'${at}',NULL);
+    INSERT INTO turns VALUES ('historical-empty','s','empty-pane','worker','codex','','','','done',1,'${at}','${at}');
+    INSERT INTO turns VALUES ('historical-whitespace','s','space-pane','worker','codex',' \t\u00a0','\n\r ','','idle',1,'${at}','${at}');
+    INSERT INTO turns VALUES ('historical-active','s','pending-pane','worker','codex',' \t','','','needs_input',0,'${at}',NULL);
+    INSERT INTO turns VALUES ('historical-response','s','answer-pane','worker','codex','','A saved answer','','done',1,'${at}','${at}');`);
   db.close();
   const p = await freePort(), url = `http://127.0.0.1:${p}/api`;
   const json = async (path, body, method = 'POST') => (await fetch(url + path, body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) })).json();
@@ -443,6 +529,11 @@ test('a turn that ended without a hook report is unread and finished; the hookâ€
     expect(first.items.find(i => i.title === 'ended without a hook')).toMatchObject({ status: 'done', unread: 1, updated: at });
     expect(first.items.find(i => i.title === 'still running')).toMatchObject({ status: 'working', unread: 0 });
     expect(await json('/turns/stuck')).toMatchObject({ finished: at, response: '' });
+    expect(first.items.filter(i => ['empty-pane', 'space-pane', 'pending-pane'].includes(i.agent_id)).map(i => [i.id, i.archived, i.unread]).sort()).toEqual([['turn:historical-active', 1, 0], ['turn:historical-empty', 1, 0], ['turn:historical-whitespace', 1, 0]]);
+    expect(await json('/turns/historical-whitespace')).toMatchObject({ prompt: ' \t\u00a0', response: '\n\r ', state: 'idle', finished: at });
+    expect(first.items.find(i => i.agent_id === 'answer-pane')).toMatchObject({ archived: 0, unread: 1 });
+    await json('/reconcile', {});
+    expect(await json('/turns/historical-active')).toMatchObject({ id: 'historical-active', archived: 1, state: 'needs_input', finished: null });
     const reply = { session: 's', pane: 'quiet-pane', name: 'worker', harness: 'claude-code', state: 'done', at: new Date().toISOString(), prompt: 'ended without a hook', response: 'the late reply', source: 'pane' };
     const path = join(dir, 'events', 'late.json');
     await Bun.write(path, JSON.stringify({ id: 'late', time: new Date().toISOString(), values: { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: 'quiet-pane' }, turn: reply }));

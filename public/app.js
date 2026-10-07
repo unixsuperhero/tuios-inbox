@@ -161,7 +161,7 @@ async function load(key, opened) {
   const row = store.state.items.find(i => i.id === key); if (!row) return;
   if (row.type === 'turn' && row.status === 'needs_input' && row.agent_id) question(row.agent_id, opened).catch(error);
   if (['dispatch', 'command'].includes(row.type) && row.status === 'running') return;
-  const cached = store.bodies.get(key), revision = { updated: row.updated, title: row.title, status: row.status };
+  const cached = store.bodies.get(key), revision = { updated: row.updated, title: row.title, status: row.status, archived: row.archived, response_captured: row.response_captured };
   if ((!cached || Object.keys(revision).some(field => cached[field] !== revision[field])) && !loading.has(key)) {
     loading.add(key);
     try { store.bodies.set(key, { ...revision, data: await api(`/${key.replace(':', 's/')}`) }); }
@@ -190,6 +190,7 @@ function mount(next) {
   route = next; page = routePage(route);
   if (oldKey !== nextKey) { if (next.kind === 'item') openRead(next.id); else if (next.kind === 'queue' && next.item) openRead(next.item); }
   const index = next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : next.kind === 'queue' ? 'queues' : '';
+  document.body.dataset.routeKind = next.kind;
   document.body.classList.toggle('queues-mode', queues.supports(next));
   document.querySelectorAll('[data-page]').forEach(link => {
     const active = link.dataset.page === index; link.classList.toggle('active', active);

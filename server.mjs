@@ -41,6 +41,15 @@ function seeAgent(key, { session, name, harness, kind = 'agent', state, task = n
 // The task a pane's new turns and commands inherit.
 function agentTask(key) { return one('SELECT task_id FROM agents WHERE id=?', key || '')?.task_id ?? null; }
 if (!all("SELECT name FROM pragma_table_info('turns')").some(c => c.name === 'archived')) db.transaction(() => db.exec('ALTER TABLE turns ADD COLUMN task_id TEXT REFERENCES tasks(id); ALTER TABLE turns ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;'))();
+if (!all("SELECT name FROM pragma_table_info('turns')").some(c => c.name === 'auto_archived')) db.exec('ALTER TABLE turns ADD COLUMN auto_archived INTEGER NOT NULL DEFAULT 0');
+function archiveEmptyTurns(rowId = null) {
+  const sql = 'SELECT id,prompt,response,archived,unread,auto_archived FROM turns WHERE (archived=0 OR auto_archived=1)';
+  for (const t of rowId ? all(sql + ' AND id=?', rowId) : all(sql)) {
+    if (!t.prompt.trim() && !t.response.trim()) {
+      if (!t.archived || t.unread) run('UPDATE turns SET archived=1,auto_archived=1,unread=0 WHERE id=?', t.id);
+    } else if (t.auto_archived) run("UPDATE turns SET archived=0,auto_archived=0,unread=CASE WHEN state IN ('done','errored') THEN 1 ELSE unread END WHERE id=?", t.id);
+  }
+}
 // Subtasks: a task may point at a parent task in the same table; depth is unbounded and cycles are refused.
 if (!all("SELECT name FROM pragma_table_info('tasks')").some(c => c.name === 'parent_id')) db.exec('ALTER TABLE tasks ADD COLUMN parent_id TEXT REFERENCES tasks(id)');
 for (const table of ['tasks', 'agents']) if (!all(`SELECT name FROM pragma_table_info('${table}')`).some(c => c.name === 'archived')) db.exec(`ALTER TABLE ${table} ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`);
@@ -115,7 +124,7 @@ function updateItems(ids, set = {}) {
   db.transaction(() => {
     for (const key of ids) {
       const [, type, rowId] = /^(turn|thread):(.+)$/.exec(key) || [];
-      if (!type || !run(`UPDATE ${type}s SET ${fields.join(',')} WHERE id=?`, ...args, rowId).changes) throw new Error(`Item not found: ${key}`);
+      if (!type || !run(`UPDATE ${type}s SET ${fields.join(',')}${type === 'turn' && set.archived !== undefined ? ',auto_archived=0' : ''} WHERE id=?`, ...args, rowId).changes) throw new Error(`Item not found: ${key}`);
     }
   })();
   changed(); return ids.length;
@@ -197,13 +206,11 @@ async function importMail(session) {
 }
 // A turn row opens when a pane starts working; the after-agent-state hook fills in the reply.
 async function turnState(e) {
-  const open = one("SELECT id,prompt FROM turns WHERE pane_id=? AND finished IS NULL AND state IN ('working','needs_input') ORDER BY started DESC LIMIT 1", e.window);
+  const open = one("SELECT id,prompt,response FROM turns WHERE pane_id=? AND finished IS NULL AND state IN ('working','needs_input') ORDER BY started DESC LIMIT 1", e.window);
   if (open) {
-    // A harness that is only starting up reports working, then idle, with no prompt: not a turn.
-    if (e.state === 'idle' && !open.prompt) run('DELETE FROM turns WHERE id=?', open.id);
-    // The turn ended: it is unread now, whether or not the capture hook later delivers the reply text.
-    else if (['done', 'errored'].includes(e.state)) run('UPDATE turns SET state=?, unread=1, finished=COALESCE(finished, ?) WHERE id=?', e.state, new Date(e.time / 1e6).toISOString(), open.id);
+    if (['done', 'errored'].includes(e.state) || (e.state === 'idle' && !open.prompt.trim() && !open.response.trim())) run('UPDATE turns SET state=?, unread=?, finished=COALESCE(finished, ?) WHERE id=?', e.state, Number(e.state !== 'idle'), new Date(e.time / 1e6).toISOString(), open.id);
     else run('UPDATE turns SET state=? WHERE id=?', e.state, open.id);
+    archiveEmptyTurns(open.id);
     return;
   }
   // Replayed history is not a turn starting now.
@@ -211,23 +218,32 @@ async function turnState(e) {
   let agent; try { agent = (await cli(['list-agents', '-s', e.session])).agents?.find(a => a.window_id === e.window); } catch {}
   const sent = active.has(e.window) && one("SELECT body FROM messages WHERE thread_id=? AND role='human' ORDER BY rowid DESC LIMIT 1", active.get(e.window));
   seeAgent(e.window, { session: e.session, name: agent?.name, harness: agent?.harness_id });
-  run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,0,?,NULL,?,0)', id(), e.session, e.window, agent?.name || '', agent?.harness_id || '', sent?.body || agent?.meta?.prompt || '', '', '', e.state, new Date(e.time / 1e6).toISOString(), agentTask(e.window));
+  const turnId = id();
+  run('INSERT INTO turns (id,session,pane_id,pane_name,harness,prompt,response,source,state,started,task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)', turnId, e.session, e.window, agent?.name || '', agent?.harness_id || '', sent?.body || agent?.meta?.prompt || '', '', '', e.state, new Date(e.time / 1e6).toISOString(), agentTask(e.window));
+  archiveEmptyTurns(turnId);
 }
 function importTurn(t, eventId) {
   const key = 'turn:' + eventId, complete = ['done', 'errored'].includes(t.state);
   if ((!complete && !['working', 'needs_input'].includes(t.state)) || one('SELECT id FROM events WHERE id=?', key)) return;
-  if (!complete) {
-    if (!t.prompt) return;
-    const latest = one('SELECT started,finished FROM turns WHERE pane_id=? ORDER BY started DESC LIMIT 1', t.pane);
-    if (latest && (latest.started > t.at || (latest.finished && latest.finished >= t.at))) return;
+  const latest = one('SELECT * FROM turns WHERE pane_id=? AND started<=? ORDER BY started DESC LIMIT 1', t.pane, t.at);
+  if (!complete && latest?.finished && !t.prompt.trim()) return;
+  // An active capture delivered after completion may recover its prompt, but never reopen history.
+  if (!complete && latest?.finished && latest.finished >= t.at) {
+    if (latest.auto_archived) {
+      run('INSERT INTO events VALUES (?,?)', key, '{}');
+      run('UPDATE turns SET prompt=? WHERE id=?', t.prompt, latest.id);
+      archiveEmptyTurns(latest.id); changed();
+    }
+    return;
   }
-  const open = complete
-    ? one("SELECT id,prompt FROM turns WHERE pane_id=? AND (finished IS NULL OR response='') AND started<=? ORDER BY started DESC LIMIT 1", t.pane, t.at)
-    : one("SELECT id,prompt FROM turns WHERE pane_id=? AND finished IS NULL AND state IN ('working','needs_input') AND started<=? ORDER BY started DESC LIMIT 1", t.pane, t.at);
+  if (!complete && one('SELECT 1 FROM turns WHERE pane_id=? AND started>?', t.pane, t.at)) return;
+  const open = latest && (complete ? latest.finished === null || !latest.response.trim() || !latest.prompt.trim() : latest.finished === null && ['working', 'needs_input'].includes(latest.state)) ? latest : null;
+  const turnId = open?.id || id();
   db.transaction(() => {
     run('INSERT INTO events VALUES (?,?)', key, '{}');
-    if (open) run('UPDATE turns SET pane_name=?,harness=?,prompt=?,response=?,source=?,state=?,unread=?,finished=? WHERE id=?', t.name, t.harness, open.prompt || t.prompt, complete ? t.response : '', t.source, t.state, Number(complete), complete ? t.at : null, open.id);
-    else run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)', id(), t.session, t.pane, t.name, t.harness, t.prompt, complete ? t.response : '', t.source, t.state, Number(complete), t.at, complete ? t.at : null, agentTask(t.pane));
+    if (open) run('UPDATE turns SET pane_name=?,harness=?,prompt=?,response=?,source=?,state=?,unread=?,finished=? WHERE id=?', t.name, t.harness, open.prompt.trim() ? open.prompt : t.prompt, complete ? (t.response.trim() ? t.response : open.response) : '', t.source, t.state, Number(complete), complete ? t.at : null, open.id);
+    else run('INSERT INTO turns (id,session,pane_id,pane_name,harness,prompt,response,source,state,unread,started,finished,task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', turnId, t.session, t.pane, t.name, t.harness, t.prompt, complete ? t.response : '', t.source, t.state, Number(complete), t.at, complete ? t.at : null, agentTask(t.pane));
+    archiveEmptyTurns(turnId);
   })();
   changed();
 }
@@ -302,13 +318,15 @@ async function reconcile() {
     }
     run("UPDATE agents SET state='closed' WHERE state!='closed' AND id NOT IN (SELECT value FROM json_each(?))", JSON.stringify(live));
   } catch (e) { lastError = e.message; }
-  for (const row of all("SELECT * FROM turns WHERE finished IS NULL AND state IN ('working','needs_input') AND prompt=''")) {
+  for (const row of all("SELECT * FROM turns WHERE finished IS NULL AND state IN ('working','needs_input')")) {
+    if (row.prompt.trim()) continue;
     try {
       const turn = await captureTurn({ bin: tuios, session: row.session, pane: row.pane_id, time: now(), seed: { state: row.state, name: row.pane_name, harness: row.harness } });
       const current = one('SELECT prompt,state,finished FROM turns WHERE id=?', row.id);
-      if (turn.prompt && current?.prompt === '' && current.finished === null && current.state === row.state) importTurn(turn, 'recover:' + row.id + ':' + turn.at);
+      if (turn.prompt.trim() && current && !current.prompt.trim() && current.finished === null && current.state === row.state) importTurn(turn, 'recover:' + row.id + ':' + turn.at);
     } catch (e) { lastError = e.message; }
   }
+  archiveEmptyTurns();
   changed();
 }
 let draining = false;
@@ -353,6 +371,7 @@ async function drainHooks() {
 run("UPDATE messages SET status='uncertain',body=body || '\nBackend restarted while waiting. Inspect the pane before resending.' WHERE status='running'");
 // Turns that ended without a hook report used to stay read and unfinished; they are review work.
 run("UPDATE turns SET unread=1, finished=started WHERE state IN ('done','errored') AND finished IS NULL");
+archiveEmptyTurns();
 const port = Number(process.env.PORT || 4399);
 const origin = `http://127.0.0.1:${port}`;
 const response = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -364,8 +383,8 @@ async function api(req, url) {
   const parts = url.pathname.split('/').filter(Boolean), method = req.method;
   const body = method === 'POST' || method === 'PATCH' ? await req.json() : {};
   if (url.pathname === '/api/state') return response({ tasks: all('SELECT * FROM tasks ORDER BY created DESC'), panes: all("SELECT p.*,COALESCE(a.host,'') AS host FROM panes p LEFT JOIN agents a ON a.id=p.id"), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), agents: all('SELECT * FROM agents ORDER BY seen DESC'), items: all(`
-    SELECT 'turn:'||t.id AS id, 'turn' AS type, substr(t.prompt,1,400) AS title, t.pane_id AS agent_id, COALESCE(a.name,t.pane_name) AS agent_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, t.task_id, t.state AS status, t.unread, t.archived, t.started AS created, COALESCE(t.finished,t.started) AS updated FROM turns t LEFT JOIN agents a ON a.id=t.pane_id
-    UNION ALL SELECT 'thread:'||t.id, CASE WHEN t.kind IN ('agent','shell') THEN 'dispatch' WHEN t.kind='hook' THEN 'snapshot' ELSE t.kind END, t.subject, t.pane_id, COALESCE(a.name,''), COALESCE(a.harness,''), t.task_id, COALESCE((SELECT status FROM messages WHERE thread_id=t.id ORDER BY rowid DESC LIMIT 1),''), t.unread, t.archived, t.created, t.updated FROM threads t LEFT JOIN agents a ON a.id=t.pane_id
+    SELECT 'turn:'||t.id AS id, 'turn' AS type, substr(t.prompt,1,400) AS title, t.pane_id AS agent_id, COALESCE(a.name,t.pane_name) AS agent_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, t.task_id, t.state AS status, t.unread, t.archived, t.started AS created, COALESCE(t.finished,t.started) AS updated, t.response <> '' AS response_captured FROM turns t LEFT JOIN agents a ON a.id=t.pane_id
+    UNION ALL SELECT 'thread:'||t.id, CASE WHEN t.kind IN ('agent','shell') THEN 'dispatch' WHEN t.kind='hook' THEN 'snapshot' ELSE t.kind END, t.subject, t.pane_id, COALESCE(a.name,''), COALESCE(a.harness,''), t.task_id, COALESCE((SELECT status FROM messages WHERE thread_id=t.id ORDER BY rowid DESC LIMIT 1),''), t.unread, t.archived, t.created, t.updated, 0 FROM threads t LEFT JOIN agents a ON a.id=t.pane_id
     ORDER BY updated DESC LIMIT 2000`), lastError, boot, dataDir });
   if (url.pathname === '/api/items/update' && method === 'POST') return response({ ok: true, updated: updateItems(idList(body.ids), body.set) });
   if (url.pathname === '/api/tasks/update' && method === 'POST') {
