@@ -218,6 +218,16 @@ Inputs, native selects, and textareas use surface-raised, ink text, opaque muted
 
 Navigation is a native link set with `aria-current` on the active page. Active links use white text on a blue raised surface; hover uses nav-hover. The type controls expose independent `aria-pressed` state. Turns and Commands form an OR union with search, property filters, and sort. All is the exclusive reset. Query chips remove ordinary filters, never the intrinsic detail-page scope.
 
+### Native TUIOS hierarchy
+
+The TUIOS navigation entry opens native sessions, numbered workspaces, and terminal panes. A native window and its pane share one UUID. Agent state belongs to that UUID. Breadcrumbs and an expandable hierarchy accompany searchable Name, Host, State, and Actions tables. Pane details contain escaped native metadata, agent activity, and a bounded terminal snapshot, not a browser terminal.
+
+Browse actions never change terminal focus or select a workspace. Focus and selection have explicit controls. Session layout applies to the terminal-selected workspace and states that limit in the form. Splits require an attached client with tiling enabled. Moves retain the pane UUID and stay within one session. Destructive actions and interruption require a confirmation checkbox and explicit submit. Native errors stay in the active form.
+
+Task homes specify future launch placement. Pane assignment specifies work grouping. Changing either does not implicitly change the other. Existing pane controls use the pane’s execution session rather than a task’s mutable home. Local launch directories use the backend’s native directory chooser; remote launches inherit native defaults.
+
+Native state refreshes on entry, explicit reads, and existing event notifications, without a new polling timer. Hierarchy expansion, search filters, form drafts, focus, and open dialogs survive live updates. Agent startup links show actual startup outcomes instead of treating an accepted request as readiness. Native grants and human approvals remain authoritative.
+
 ### Records and mobile fields
 
 Read and unread records share field geometry. Unread titles use bold white text and an explicit Unread label. Selection keeps the read-state background. Record links open full main-pane details with Markdown, provenance, editable properties, and threaded continuation. Opening a work record marks it read.

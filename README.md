@@ -43,7 +43,7 @@ Task and agent rail selections can be archived independently. This hides those e
 
 The review queue contains unread, unarchived finished responses, oldest first by default. Shell command output is bucketed apart and hidden until **Show commands** is ticked. Opening a record marks it read; **Mark as unread** puts it back. **Next** moves to the following record. A successful reply also clears the record. The **Queues** page shows the same unread work as one queue per task, oldest at the top, with a reading pane beside it.
 
-Inbox, Queues, Prompts, Tasks, Agents, Archive, and Agent profiles are available in the left navigation. Their indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Task groups, Work, and Review buttons switch between work areas; Queues has its own reading pane.
+Inbox, Queues, Prompts, Tasks, TUIOS, Agents, Archive, and Agent profiles are available in the left navigation. Work indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Task groups, Work, and Review buttons switch between work areas; Queues has its own reading pane.
 
 All is the default type selection and exclusive reset. Turns and Commands toggle independently; selecting both includes either type. The type union combines with search, filters, and sort. Selecting neither returns to All. Read and unread backgrounds describe state, never alternating stripes.
 
@@ -77,10 +77,31 @@ The item field `response_captured` changes when a stored response arrives. Open 
 turn: { id, session, pane_id, pane_name, harness, prompt, response, source, state, unread, archived, auto_archived, task_id, started, finished }
 ```
 
+## TUIOS management
+
+Choose **TUIOS** to browse native sessions, numbered workspaces, and windows. Each window is one terminal pane. An agent is state and harness metadata on that same pane UUID, not another movable child. The hierarchy includes native panes created outside Inbox.
+
+Session and pane tables have Name, Host, State, and Actions columns, with search and host/state filters. Pane details show full native metadata, agent state, bounded activity, and a 200-line terminal snapshot. **Read again** refreshes native state. Browsing never selects a terminal workspace or changes terminal focus. **Select in terminal** and **Focus in terminal** are explicit actions.
+
+Create sessions and panes, label or rename sessions, set session accents, name workspaces, rename panes, move panes between workspaces in the same session, and minimize or restore panes. Splits require an attached terminal client with tiling enabled and can change terminal focus. Session layout controls affect the terminal-selected workspace, not the browsed workspace. Native cross-session pane transfer is unavailable. Session rename and kill are local-only.
+
+Closing a pane, closing a workspace, killing a session, or interrupting a process requires a confirmation checkbox and explicit submit. Task records and captured history remain stored after native closure. Agent launches use saved profiles and expose the actual startup thread. Queued prompts require native agent metadata and never execute as shell commands. Native grants and human approvals remain enforced.
+
+Use one session per task by default. For a shared project session, use **Bind future task home** on the desired session or workspace:
+
+```js
+{ title: "Auth", session: "auth", workspace: null } // Session default
+{ title: "Auth", session: "project", workspace: 2 } // Shared session, workspace 2
+```
+
+A task home places future shell and agent launches. Changing that home never moves existing panes or rewrites history. Existing controls, capture, and mail use each pane’s execution session. **Assign pane to task** changes work grouping independently of native placement, preserving individually reassigned records. Managed mail requires recipients in the same execution session.
+
+Working-directory **Browse** opens the backend host’s native directory chooser for local launches. Remote launches inherit native directory defaults and reject local picker paths. Host configuration remains in TUIOS. Remote managed shells do not source the backend’s local shell integration script; command-marking availability is checked by native TUIOS.
+
 ## Working with a task
 
 1. Create a task with an existing project directory. Optionally associate an existing worktree directory. The app never creates worktrees.
-2. Open an agent or shell from the task. Its TUIOS session is created on demand. Several agents in the task share a session so they can exchange mail.
+2. Open an agent or shell from the task. Its dedicated TUIOS session is created on demand by default. An explicit future task home can use an existing session or numbered workspace instead.
 3. Compose a prompt or shell command with a subject. Close the page or switch tasks while it runs.
 4. Read the result in Inbox. Reply to continue in the same pane and thread. Archive or mark threads unread independently of TUIOS's ephemeral read state.
 5. Use Inspect for a terminal snapshot, interruption, and shell keys. The inspector shows the `tuios attach SESSION` command for full interactive access.

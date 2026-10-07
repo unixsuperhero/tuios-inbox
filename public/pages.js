@@ -53,11 +53,11 @@ export function recipients(context = {}) {
     ? panes.filter(p => context.taskId == null || p.task_id === context.taskId)
     : agents.filter(a => a.state !== 'closed' && !a.archived && (context.taskId == null || a.task_id === context.taskId))
       .map(a => ({ ...panes.find(p => p.id === a.id), ...a }));
-  return [...new Map(source.map(row => {
+  return [...new Map(source.filter(row => context.session == null || row.session === context.session).map(row => {
     const kind = row.kind === 'agent' ? 'agent' : 'pane';
     return [row.id, {
       ...row, value: row.id, kind, taskId: row.task_id,
-      label: [agentName(row.name, row.id), kind === 'agent' ? 'Agent' : 'Pane', row.state, `Host: ${hostLabel(row.id)}`].filter(Boolean).join(' · '),
+      label: [agentName(row.name, row.id), kind === 'agent' ? 'Agent' : 'Pane', row.state, `Host: ${hostLabel(row.id)}`, context.mail && row.session ? `Session: ${row.session}` : ''].filter(Boolean).join(' · '),
     }];
   })).values()];
 }
@@ -188,7 +188,8 @@ function taskDetail(t) {
     <div class="props"><label class="grow">Project path <small>Optional</small><span class="browse"><input id="task-path-${esc(t.id)}" data-set="task-path" data-id="${esc(t.id)}" value="${esc(t.path)}" list="path-options" placeholder="Not set · panes open in your home directory"><button type="button" data-do="browse" data-id="task-path-${esc(t.id)}">Browse…</button></span></label><label class="grow">Existing worktree <small>Optional</small><span class="browse"><input id="task-worktree-${esc(t.id)}" data-set="task-worktree" data-id="${esc(t.id)}" value="${esc(t.worktree)}" list="path-options" placeholder="Leave empty to use the project path"><button type="button" data-do="browse" data-id="task-worktree-${esc(t.id)}">Browse…</button></span></label></div>
     <div class="props">${select('task-parent', t.id, t.parent_id, [{ value: '', label: 'No parent · top-level task' }, ...taskOptions(subtree(t.id))], 'Parent task')}</div>
     ${(() => { const children = store.state.tasks.filter(c => c.parent_id === t.id && !c.archived), parent = store.state.tasks.find(p => p.id === t.parent_id); return `<div class="metadata-subtasks">${parent ? `<p class="hint">Subtask of <a href="${taskHref(parent.id)}">${esc(parent.title)}</a>.</p>` : ''}<h2 class="section-title">Subtasks <span>${children.length}</span></h2>${children.length ? `<ul class="subtask-list">${children.map(c => `<li><a href="${taskHref(c.id)}">${esc(c.title)}</a> ${badge(c.status)}</li>`).join('')}</ul>` : ''}<div class="actions"><button data-do="new-subtask" data-id="${esc(t.id)}">New subtask…</button></div></div>`; })()}
-    <dl class="metadata-facts"><div><dt>TUIOS session</dt><dd>${esc(t.session)}</dd></div><div><dt>Created</dt><dd>${esc(time(t.created))}</dd></div><div><dt>Task ID</dt><dd>${esc(t.id)}</dd></div></dl>
+    <dl class="metadata-facts"><div><dt>Future launch home</dt><dd><a href="#tuios/${encodeURIComponent(t.session)}${t.workspace == null ? '' : '/' + t.workspace}">${esc(t.session)} · ${t.workspace == null ? 'session default workspace' : 'workspace ' + esc(t.workspace)}</a></dd></div><div><dt>Created</dt><dd>${esc(time(t.created))}</dd></div><div><dt>Task ID</dt><dd>${esc(t.id)}</dd></div></dl>
+    ${hint('Change the future launch home in TUIOS. Existing panes, assigned work and history are not moved. A session per task keeps terminal work separate; sharing a session by workspace is optional.')}
     <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}">Compose work</button><button data-do="open-pane" data-kind="agent" data-id="${esc(t.id)}">New Agent…</button><button data-do="open-pane" data-kind="pane" data-id="${esc(t.id)}">New Pane…</button><button data-do="open-mail" data-id="${esc(t.id)}">Send mail</button>${archiveButton('task-archive', t)}</div>
     <label>Task notes<textarea data-notes="${esc(t.id)}" rows="3">${esc(store.drafts.get(`notes:${t.id}`) ?? t.notes)}</textarea></label><button data-do="save-notes" data-id="${esc(t.id)}" class="subtle">Save notes</button>
     <div class="metadata-members"><h2 class="section-title">Agents and panes <span>${members.length}</span></h2><div id="member-selection" data-workbench-controls></div>
@@ -213,6 +214,7 @@ const protocols = [{ value: 'native', label: 'Native terminal' }, { value: 'code
 const protocol = p => p.protocol || 'native';
 
 export const pages = {
+  tuios: { title: 'TUIOS', description: 'Native sessions, workspaces and panes. Browse without changing your terminal. Focus and reorganization are explicit actions.', rows: () => [], list: null },
   queues: {
     title: 'Queues', items: true,
     description: 'Unread work grouped by task, oldest first. Opening a record marks it read; shell commands sit in their own bucket until you ask for them.',
@@ -326,6 +328,7 @@ export const pages = {
 };
 
 export function pageForRoute(route) {
+  if (route.kind === 'tuios') return pages.tuios;
   if (route.kind === 'index') return pages[route.page] || null;
   const task = route.kind === 'task';
   const row = (task ? store.state.tasks : store.state.agents).find(r => r.id === route.id);

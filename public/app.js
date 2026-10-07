@@ -2,6 +2,7 @@
 import { createList } from '/list.js';
 import { createWorkbench, patchHTML, terminalResponse } from '/workbench.js';
 import { createQueues } from '/queues.js';
+import { createTuios } from '/tuios.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, taskTree } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
@@ -27,6 +28,7 @@ function composerRecipients() {
 }
 const workbench = createWorkbench({ root, navigate, load, review: reviewItem, refresh, report: error });
 const queues = createQueues({ root, navigate, load, review: reviewItem, refresh, report: error });
+const tuios = createTuios({ root, refresh });
 async function reviewItem(id, unread = false) {
   await api('/items/update', { ids: [id], set: { unread } });
   await refresh();
@@ -55,10 +57,12 @@ function compose(taskId, agentId) {
   openDialog($('#compose-dialog'));
 }
 let route, page, list, terminalPane = null, refreshTimer, refreshVersion = 0;
-const routeKey = r => r?.kind === 'index' ? r.page : r?.kind === 'queue' ? `queue/${r.bucket}/${r.item || ''}` : `${r?.kind}/${r?.id}`;
+const routeKey = r => r?.kind === 'tuios' ? `tuios/${r.session || ''}/${r.workspace || ''}/${r.window || ''}` : r?.kind === 'index' ? r.page : r?.kind === 'queue' ? `queue/${r.bucket}/${r.item || ''}` : `${r?.kind}/${r?.id}`;
 function parseRoute(hash) {
   const path = hash.replace(/^#\/?/, '');
   if (!path) return { kind: 'index', page: 'inbox' };
+  const native = /^tuios(?:\/([^/]+)(?:\/(\d+)(?:\/([^/]+))?)?)?$/.exec(path);
+  if (native) { try { return { kind: 'tuios', session: native[1] ? decodeURIComponent(native[1]) : undefined, workspace: native[2] ? Number(native[2]) : undefined, window: native[3] ? decodeURIComponent(native[3]) : undefined }; } catch {} }
   if (Object.hasOwn(pages, path)) return { kind: 'index', page: path };
   const match = /^(task|agent|item)\/([^/]+)$/.exec(path);
   if (match) { try { return { kind: match[1], id: decodeURIComponent(match[2]) }; } catch {} }
@@ -66,7 +70,7 @@ function parseRoute(hash) {
   if (queue) { try { return { kind: 'queue', bucket: decodeURIComponent(queue[1]), item: queue[2] ? decodeURIComponent(queue[2]) : undefined }; } catch {} }
   return { kind: 'invalid' };
 }
-const routeHash = r => r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
+const routeHash = r => r.kind === 'tuios' ? `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
 function navigate(next) {
   const hash = routeHash(next);
   if (location.hash === hash) mount(next); else location.hash = hash;
@@ -100,9 +104,10 @@ function updateMenus() {
   if (composeTask && document.activeElement !== $('#compose-panes')) setChoices($('#compose-panes'), [...recipients({ taskId: composeTask }), ...newChoices(['agent', 'pane'])]);
   const mailTask = $('#mail-form').dataset.taskId;
   if (mailTask) {
-    const choices = [...recipients({ taskId: mailTask, mail: true }), ...newChoices(['agent', 'pane'])];
-    if (document.activeElement !== $('#mail-from')) setChoices($('#mail-from'), choices);
-    if (document.activeElement !== $('#mail-to')) setChoices($('#mail-to'), [{ value: 'human', label: 'Your TUIOS inbox' }, ...choices]);
+    const from = recipients({ taskId: mailTask, mail: true });
+    const session = from.find(p => p.value === $('#mail-from').value)?.session;
+    if (document.activeElement !== $('#mail-from')) setChoices($('#mail-from'), [...from, ...newChoices(['agent', 'pane'])]);
+    if (document.activeElement !== $('#mail-to')) setChoices($('#mail-to'), [{ value: 'human', label: 'Your TUIOS inbox' }, ...recipients({ taskId: mailTask, mail: true, session: session || '__unselected__' })]);
   }
 }
 function render() {
@@ -126,6 +131,7 @@ function render() {
     return;
   }
   if (queues.supports(route)) { page = nextPage; $('#page-title').textContent = page.title; $('#page-description').textContent = page.description; document.title = `tuios inbox · ${page.title}`; queues.render(route); return; }
+  if (tuios.supports(route)) { page = nextPage; $('#page-title').textContent = page.title; $('#page-description').textContent = page.description; document.title = `tuios inbox · ${page.title}`; tuios.render(route); return; }
   if (!list && !workbench.supports(route)) { mount(route); return; }
   page = nextPage;
   $('#page-title').textContent = page.title;
@@ -189,9 +195,10 @@ function mount(next) {
   }
   route = next; page = routePage(route);
   if (oldKey !== nextKey) { if (next.kind === 'item') openRead(next.id); else if (next.kind === 'queue' && next.item) openRead(next.item); }
-  const index = next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : next.kind === 'queue' ? 'queues' : '';
+  const index = next.kind === 'tuios' ? 'tuios' : next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : next.kind === 'queue' ? 'queues' : '';
   document.body.dataset.routeKind = next.kind;
   document.body.classList.toggle('queues-mode', queues.supports(next));
+  document.body.classList.toggle('tuios-mode', tuios.supports(next));
   document.querySelectorAll('[data-page]').forEach(link => {
     const active = link.dataset.page === index; link.classList.toggle('active', active);
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
@@ -204,17 +211,18 @@ function mount(next) {
   composer.elements.body.value = composerDraft().body;
   if (next.kind === 'task') { composer.dataset.taskId = next.id; $('#inbox-recipient').dataset.taskScope = ''; }
   else { delete composer.dataset.taskId; delete $('#inbox-recipient').dataset.taskScope; }
-  $('#page-back').hidden = next.kind === 'index';
+  $('#page-back').hidden = next.kind === 'index' || tuios.supports(next);
   $('#page-back').href = `#${index || 'inbox'}`;
   $('#page-back').textContent = `← Back to ${index || 'Inbox'}`;
   metadata.hidden = !['task', 'agent'].includes(next.kind) || !page;
   if (oldKey !== nextKey) metadata.replaceChildren();
   if (!metadata.hidden) patchHTML(metadata, metadataForRoute(next));
   list?.destroy(); list = null;
-  if (page && !workbench.supports(route) && !queues.supports(route)) list = createList(root, { ...page.list,
+  if (page && !workbench.supports(route) && !queues.supports(route) && !tuios.supports(route)) list = createList(root, { ...page.list,
     onOpen: page.items ? row => navigate({ kind: 'item', id: row.id }) : undefined,
     actions: (page.list.actions || []).map(a => ({ ...a, run: async (ids, value) => { $('#error').hidden = true; await a.run(ids, value); await refresh(); } })) });
   render();
+  tuios.enter(next, oldKey !== nextKey).catch(e => error(e, null));
   if (oldKey !== nextKey) main.scrollTop = viewCache.get(nextKey)?.scroll || 0;
 }
 function ownerActive(context) {
@@ -367,9 +375,8 @@ function openProfile(profile) {
 async function inspect(key) {
   terminalPane = store.state.panes.find(p => p.id === key);
   if (!terminalPane) throw new Error('This pane is no longer available for inspection.');
-  const task = store.state.tasks.find(t => t.id === terminalPane.task_id);
   $('#terminal-title').textContent = terminalPane.name;
-  $('#attach-command').textContent = task ? `Full terminal: tuios attach ${task.session}` : 'Open this session in TUIOS.';
+  $('#attach-command').textContent = terminalPane.session ? `Full terminal: tuios attach ${terminalPane.session}` : 'Open this session in TUIOS.';
   $('#terminal-output').textContent = 'Reading pane…'; openDialog($('#terminal-dialog'));
   $('#send-key').disabled = terminalPane.kind !== 'shell'; $('#terminal-key').disabled = terminalPane.kind !== 'shell';
   $('#terminal-output').textContent = (await api(`/panes/${key}/capture`)).text;
@@ -411,7 +418,7 @@ document.addEventListener('click', e => {
       case 'new-subtask': { const choice = await store.createEntity({ kind: 'task', parentId: d.id }); if (choice) navigate({ kind: 'task', id: choice.value }); break; }
       case 'add-profile': openProfile(); break;
       case 'capture': $('#terminal-output').textContent = (await api(`/panes/${terminalPane.id}/capture`)).text; break;
-      case 'interrupt': if (confirm(`Interrupt ${terminalPane.name} with Ctrl+C?`)) { await api(`/panes/${terminalPane.id}/interrupt`, {}); toast('Interrupt sent'); } break;
+      case 'interrupt': tuios.interrupt(terminalPane); break;
       case 'send-key': await api(`/panes/${terminalPane.id}/keys`, { keys: $('#terminal-key').value }); $('#terminal-output').textContent = (await api(`/panes/${terminalPane.id}/capture`)).text; break;
       case 'reconcile': await api('/reconcile', {}); await refresh(); toast('Sessions reconciled'); break;
     }
@@ -435,6 +442,7 @@ document.addEventListener('change', e => {
   }
   if (target.id === 'inbox-recipient') { const draft = composerDraft(); draft.recipientId = target.value; draft.revision++; updateMenus(); return; }
   if (target.form?.getAttribute('id') === 'pane-form' && target.name === 'kind') { paneKind(); return; }
+  if (target.id === 'mail-from') { updateMenus(); return; }
   const { set, id } = target.dataset, value = target.value; if (!set) return;
   act(async () => {
     if (set === 'item-task') await api('/items/update', { ids: [id], set: { task_id: value || null } });
@@ -519,7 +527,13 @@ document.addEventListener('submit', e => {
         await refresh(); navigate({ kind: 'item', id: `thread:${result.threadId}` }); toast('Task work accepted'); break;
       }
       case 'profile-form': data.args = JSON.parse(data.args); data.env = JSON.parse(data.env); await api('/profiles', data); $('#profile-dialog').close(); await refresh(); navigate({ kind: 'index', page: 'profiles' }); break;
-      case 'mail-form': await api(`/panes/${data.from}/mail`, data); if (form.elements.body.value === body && form.elements.subject.value === data.subject) { form.reset(); $('#mail-dialog').close(); } await refresh(); toast('Mail delivered. Use Check mail to notify a recipient agent.'); break;
+      case 'mail-form': {
+        const from = recipients({ taskId: form.dataset.taskId, mail: true }).find(p => p.value === data.from);
+        if (!from?.session || data.to !== 'human' && !recipients({ taskId: form.dataset.taskId, mail: true, session: from.session }).some(p => p.value === data.to)) throw new Error('Mail recipients must belong to the same native session. Choose a pane in the sender’s session.');
+        await api('/panes/' + encodeURIComponent(data.from) + '/mail', data);
+        if (form.elements.body.value === body && form.elements.subject.value === data.subject) { form.reset(); $('#mail-dialog').close(); }
+        await refresh(); toast('Mail delivered. Use Check mail to notify a recipient agent.'); break;
+      }
     }
   }, e => {
     if (context && creations.get(context.dialog) !== context) error(e, null);
@@ -538,6 +552,6 @@ window.addEventListener('hashchange', () => {
 const stream = new EventSource('/api/events');
 stream.onopen = () => $('#connection').textContent = 'Connected locally';
 stream.onerror = () => $('#connection').textContent = 'Reconnecting…';
-stream.onmessage = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().catch(error), 150); };
+stream.onmessage = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().then(() => tuios.update()).catch(error), 150); };
 await act(async () => { store.state = await api('/state'); });
 mount(parseRoute(location.hash));
