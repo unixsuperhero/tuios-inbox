@@ -5,6 +5,9 @@
   "scripts": {
     "start": "bun server.mjs",
     "refresh-skills": "bun scripts/refresh-skills.mjs",
-    "test": "bun test"
+    "test": "bun test",
+    "build:tui": "go build -o bin/tuios-inbox-tui ./cmd/tuios-inbox-tui",
+    "tui": "bin/tuios-inbox-tui",
+    "install:tui": "go install ./cmd/tuios-inbox-tui"
   }
 }

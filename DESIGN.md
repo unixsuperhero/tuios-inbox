@@ -282,3 +282,13 @@ Native TUIOS approvals remain in an attached client, including ACP approvals. Ta
 - Describe native approvals, tailnet access, or browser-device filesystem picking as shipped.
 
 The terminal inspector retains its existing uppercase eyebrow. It is not a reusable heading rule.
+
+## Optional terminal task workspace
+
+The separate `tuios-inbox-tui` executable uses the existing Inbox HTTP API. It owns no database and imports no TUIOS implementation packages. The browser palette and typography above remain browser-specific; the terminal uses indexed colors and reverse-video focus so it works with the terminal's color depth.
+
+- Tasks occupy the left column; the selected task's live windows occupy the right. Narrow terminals show the focused column, switched with Tab.
+- Membership comes from canonical `agents.task_id` joined to live native window UUIDs across sessions. A task's session/workspace is its default creation home, not a membership filter.
+- Window/session forms retain their name when choosing or creating a task. Cancel restores the prior form and selection context; choosing a task intentionally changes the assignment.
+- Short screens remove optional chrome before clipping the name, task scope, and status. Loading and failure remain visible; refresh is explicit, never a polling heartbeat.
+- A popup carries its initiating TUIOS client identity. Opening a window uses the generic confirmed `jump-window` interface; failure leaves the task workspace open. TUIOS core has no task-specific action or default task binding.

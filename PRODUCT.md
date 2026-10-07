@@ -23,7 +23,7 @@ Success means the user can understand completed work, respond to questions, hand
 
 ## Positioning
 
-TUIOS owns persistent execution in terminal panes. tuios inbox presents that work as a cross-session Turns feed and project-scoped tasks with threaded correspondence. SQLite stores the app's task and conversation records independently of the browser lifecycle.
+TUIOS owns persistent execution in terminal panes. tuios inbox presents that work as a cross-session Turns feed and project-scoped tasks with threaded correspondence. SQLite stores the app's task and conversation records independently of the browser lifecycle. An optional standalone terminal task workspace (`tuios-inbox-tui`) uses the same HTTP API and records; it supplements the browser and is not required for routine work.
 
 ## Operating context
 

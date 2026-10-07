@@ -4,3 +4,4 @@ node_modules/
 *.sqlite-shm
 .DS_Store
 .impeccable/*
+/bin/

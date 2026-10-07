@@ -168,6 +168,32 @@ The hook collector writes atomic JSON files to `~/.local/share/tuios-inbox/event
 
 Background UI updates refresh the list and an unfocused thread. They do not recreate focused task metadata editors or overwrite focused composer and reply drafts.
 
+## Terminal task workspace
+
+`tuios-inbox-tui` is an optional terminal front end for the same tasks and the same SQLite data, reached through this server's HTTP API. It is an independent Go module (`go.mod` at the repository root) and shares no code with TUIOS. `bun start` and `bun test` never build it.
+
+```sh
+bun run build:tui        # go build -o bin/tuios-inbox-tui ./cmd/tuios-inbox-tui
+bun run install:tui      # go install, into $(go env GOBIN) or ~/go/bin
+bin/tuios-inbox-tui --help
+```
+
+Options: `--url` (default `$TUIOS_INBOX_URL`, then `http://127.0.0.1:4399`), `--client` (default `$TUIOS_CLIENT_ID`) and `--tuios-bin` (default `$TUIOS_BIN`, then `tuios`). Tasks are on the left and the selected task's live windows on the right; on a narrow terminal one column fills the screen and Tab switches. Keys: arrows or `j`/`k`, Tab, Enter, `n` task, `w` window, `s` session, `r` refresh, `/` find, Ctrl+N new task, Esc back or close. The mouse works too. On a very short screen (under 12 rows) rules, descriptions, buttons and the info line are dropped so the Name field, selected task, and status or error line stay visible; the keys still work. Esc from the task chooser or from inline task creation, when either was opened from a window or session form, returns to that form with its typed name, selected task, filter, cursors, scroll and pane focus exactly as they were, even if the selected task has since become unavailable (submitting it is still refused). Choosing or creating a task is the only way to change the form's task. When Ctrl+N or `n` starts the mandatory first-task creation straight from the list, Esc returns to the list and creates nothing. Jumping waits up to 50 seconds for `tuios jump-window` to confirm; a timeout is shown as an error, never as success. State is held in memory only.
+
+Enter on a window runs `tuios jump-window --client CLIENT --session HOST:SESSION WINDOW_UUID` and exits only after TUIOS confirms the jump; a failure is shown and the app stays open. Jumping needs the client that launched the popup, so outside a popup (no `--client`) listing and creating still work and jumping reports that. Core TUIOS has only generic popups; bind the program in `config.toml`:
+
+```toml
+[popups.tasks]
+command = ["/Users/you/proj/tuios-inbox/bin/tuios-inbox-tui", "--url", "http://127.0.0.1:4399"]
+width = "90%"
+height = "85%"
+
+[keybindings.prefix_mode]
+"popup:tasks" = ["g"]
+```
+
+This binding requires a TUIOS build with generic configured popups and `jump-window`, and a daemon and attached clients running that build. Updating only the CLI binary does not update a running daemon. If the desired `tuios` is not on the daemon's PATH, include `"--tuios-bin", "/absolute/path/to/tuios"` in `command`. The binding is configuration, not a built-in task shortcut.
+
 ## TUIOS setup
 
 The active config is given by `tuios config path`. On this machine, `~/.config/tuios/config.toml` links to `~/Library/Application Support/tuios/config.toml`; that file is hard-linked into `~/proj/phome/.config/tuios/config.toml`.
