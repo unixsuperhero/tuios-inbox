@@ -40,13 +40,13 @@ beforeAll(async () => {
 afterAll(async () => { if (child) await stop(); if (home) await rm(home, { recursive: true, force: true }); });
 const state = async () => (await call('/state')).json();
 // Delivers one hook event the way capture-hook.mjs does and waits for the server to consume it.
-async function hook(key, values, rest = {}) {
-  const path = join(home, 'events', `${key}.json`);
+async function hook(key, values, rest = {}, { dir = home, request = call } = {}) {
+  const path = join(dir, 'events', key + '.json');
   await Bun.write(path, JSON.stringify({ id: key, time: new Date().toISOString(), values, ...rest }));
-  await call('/reconcile', {});
+  await request('/reconcile', {});
   for (let i = 0; i < 40 && await Bun.file(path).exists(); i++) await Bun.sleep(100);
   expect(await Bun.file(path).exists()).toBe(false);
-  return state();
+  return (await request('/state')).json();
 }
 const turnHook = (key, pane, prompt, name = pane) => hook(key, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: pane },
   { turn: { session: 's', pane, name, harness: 'codex', state: 'done', at: new Date().toISOString(), prompt, response: `reply to ${prompt}`, source: 'pane' } });
@@ -120,6 +120,89 @@ test('a finished agent turn from the hook is unread until its reply is opened', 
   expect((await state()).items.filter(i => i.title === turn.prompt)).toMatchObject([{ unread: 0 }]);
 });
 
+test('an in-progress hook exposes the prompt and keeps one turn through tool activity and completion', async () => {
+  const pane = 'progress-pane', at = new Date().toISOString();
+  const turn = { session: 's', pane, name: 'working agent', harness: 'omp', state: 'working', at, prompt: 'Repair the parser', response: 'intermediate commentary', source: 'transcript' };
+  const deliver = (key, captured) => hook(key, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: captured.state, TUIOS_WINDOW_ID: pane }, { turn: captured });
+  const first = await deliver('progress-start', turn);
+  expect(first.items.filter(i => i.agent_id === pane)).toMatchObject([{ title: turn.prompt, status: 'working', unread: 0 }]);
+  const rowId = first.items.find(i => i.agent_id === pane).id;
+  const detail = () => call('/turns/' + rowId.slice(5)).then(r => r.json());
+  expect(await detail()).toMatchObject({ prompt: turn.prompt, response: '', finished: null, unread: 0 });
+  const waiting = await deliver('progress-tool', { ...turn, state: 'needs_input', at: new Date().toISOString(), prompt: 'Yes, apply the repair', response: 'tool output' });
+  expect(waiting.items.filter(i => i.agent_id === pane)).toMatchObject([{ id: rowId, title: turn.prompt, status: 'needs_input', unread: 0 }]);
+  expect(await detail()).toMatchObject({ response: '', finished: null });
+  const complete = { ...turn, state: 'done', at: new Date().toISOString(), prompt: '', response: 'The parser is repaired.' };
+  const ended = await deliver('progress-end', complete);
+  expect(ended.items.filter(i => i.agent_id === pane)).toMatchObject([{ id: rowId, title: turn.prompt, status: 'done', unread: 1 }]);
+  expect(await detail()).toMatchObject({ prompt: turn.prompt, response: complete.response, finished: complete.at });
+  await call('/turns/' + rowId.slice(5), { unread: false }, 'PATCH');
+  await deliver('progress-end', complete);
+  await deliver('progress-old', turn);
+  const inactive = await deliver('progress-inactive', { ...turn, at: new Date().toISOString(), prompt: '' });
+  expect(inactive.items.filter(i => i.agent_id === pane)).toMatchObject([{ id: rowId, title: turn.prompt, status: 'done', unread: 0 }]);
+  expect(await detail()).toMatchObject({ response: complete.response, finished: complete.at });
+});
+test('completion cannot replace an already captured prompt with a later answer', async () => {
+  const pane = 'preserved-pane', turn = { session: 's', pane, name: 'worker', harness: 'omp', state: 'working', at: new Date().toISOString(), prompt: 'Fix the original issue', response: '', source: 'transcript' };
+  const first = await hook('preserved-start', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'working', TUIOS_WINDOW_ID: pane }, { turn });
+  const row = first.items.find(i => i.agent_id === pane);
+  const last = await hook('preserved-finish', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: pane }, { turn: { ...turn, state: 'done', at: new Date().toISOString(), prompt: 'Yes, proceed', response: 'Original issue fixed.' } });
+  expect(last.items.filter(i => i.agent_id === pane)).toMatchObject([{ id: row.id, title: turn.prompt, status: 'done', unread: 1 }]);
+  expect(await (await call('/turns/' + row.id.slice(5))).json()).toMatchObject({ prompt: turn.prompt, response: 'Original issue fixed.' });
+});
+test('restart reconciliation recovers only unfinished prompts in the same native state and a later native event reuses a hook row', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dispatch-progress-')), at = '2026-01-02T00:00:00.000Z';
+  const db = new Database(join(dir, 'inbox.sqlite'), { create: true });
+  db.exec(`CREATE TABLE turns (id TEXT PRIMARY KEY, session TEXT NOT NULL, pane_id TEXT NOT NULL, pane_name TEXT NOT NULL, harness TEXT NOT NULL, prompt TEXT NOT NULL, response TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL, unread INTEGER NOT NULL DEFAULT 0, started TEXT NOT NULL, finished TEXT)`);
+  const insert = db.query('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+  for (const [pane, status, prompt, reply, finished] of [
+    ['recover-working', 'working', '', '', null], ['recover-waiting', 'needs_input', '', '', null], ['recover-stale', 'working', '', '', null], ['recover-finished', 'done', 'Saved prompt', 'Saved reply', at],
+  ]) insert.run(pane, 's', pane, 'worker', 'codex', prompt, reply, 'pane', status, status === 'done' ? 1 : 0, at, finished);
+  db.close();
+  const eventPath = join(dir, 'native-event.json'), bin = join(dir, 'not-installed');
+  const agents = [
+    ['recover-working', 'working', 'Recover the running prompt'], ['recover-waiting', 'needs_input', 'Recover the waiting prompt'], ['recover-stale', 'done', 'Do not import the old prompt'], ['recover-finished', 'working', 'Do not overwrite saved history'], ['hook-first', 'working', 'Hook arrived before native event'],
+  ].map(([pane, status, prompt]) => ({ window_id: pane, name: 'worker', harness_id: 'codex', protocol: true, state: status, agent_state_at: Date.parse(at) * 1e6, meta: { prompt } }));
+  await Bun.write(bin, '#!' + process.execPath + '\n' + `
+const agents = ` + JSON.stringify(agents) + `;
+const command = process.argv[2];
+if (command === 'list-agents') console.log(JSON.stringify({ agents }));
+else if (command === 'list-windows') console.log(JSON.stringify({ windows: agents.map(a => ({ id: a.window_id, agent_state: a.state })) }));
+else if (command === 'ls') console.log(JSON.stringify({ sessions: [{ name: 's', windows: agents.map(a => ({ id: a.window_id })) }] }));
+else if (command === 'capture-pane') console.log('you  ' + agents.find(a => a.window_id === process.argv[process.argv.indexOf('-w') + 1]).meta.prompt + String.fromCharCode(10, 10) + 'intermediate output');
+else if (command === 'subscribe') {
+  while (!await Bun.file(` + JSON.stringify(eventPath) + `).exists()) await Bun.sleep(10);
+  console.log(await Bun.file(` + JSON.stringify(eventPath) + `).text());
+  await Bun.sleep(60000);
+} else console.log('{}');
+`);
+  await chmod(bin, 0o755);
+  const port = await freePort(), url = 'http://127.0.0.1:' + port + '/api';
+  const request = (path, body) => fetch(url + path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) });
+  const proc = await launch(dir, port);
+  try {
+    await request('/reconcile', {});
+    const first = await (await request('/state')).json();
+    expect(first.items.filter(i => i.agent_id === 'recover-working')).toMatchObject([{ id: 'turn:recover-working', title: 'Recover the running prompt', status: 'working', unread: 0 }]);
+    expect(first.items.filter(i => i.agent_id === 'recover-waiting')).toMatchObject([{ id: 'turn:recover-waiting', title: 'Recover the waiting prompt', status: 'needs_input', unread: 0 }]);
+    expect(await (await request('/turns/recover-working')).json()).toMatchObject({ response: '', finished: null });
+    expect(await (await request('/turns/recover-stale')).json()).toMatchObject({ prompt: '', response: '', state: 'working' });
+    expect(await (await request('/turns/recover-finished')).json()).toMatchObject({ prompt: 'Saved prompt', response: 'Saved reply', state: 'done', finished: at });
+    const captured = { session: 's', pane: 'hook-first', name: 'worker', harness: 'codex', state: 'working', at: new Date().toISOString(), prompt: 'Hook arrived before native event', response: '', source: 'pane' };
+    const before = await hook('native-race', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'working', TUIOS_WINDOW_ID: captured.pane }, { turn: captured }, { dir, request });
+    const row = before.items.find(i => i.agent_id === captured.pane);
+    await Bun.write(eventPath, JSON.stringify({ type: 'agent-state', session: 's', window: captured.pane, state: 'working', time: Date.now() * 1e6, boot_id: 'race', seq: 1 }));
+    let after;
+    for (let i = 0; i < 100; i++) {
+      after = await (await request('/state')).json();
+      if (after.agents.find(a => a.id === captured.pane)?.seen > captured.at) break;
+      await Bun.sleep(10);
+    }
+    expect(after.agents.find(a => a.id === captured.pane).seen > captured.at).toBe(true);
+    expect(after.items.filter(i => i.agent_id === captured.pane)).toMatchObject([{ id: row.id, title: captured.prompt, status: 'working', unread: 0 }]);
+  } finally { proc.kill(); await proc.exited; await rm(dir, { recursive: true, force: true }); }
+});
 test('an agent state change without a finished turn updates the agent and creates no thread', async () => {
   const before = (await state()).items.length;
   const after = await hook('state-1', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'needs_input', TUIOS_WINDOW_ID: 'pane-waiting', TUIOS_SESSION_ID: 's', TUIOS_WINDOW_NAME: '\u2733 Build the thing', TUIOS_AGENT_HARNESS: 'claude-code' }, { capture: 'approve?' });
@@ -256,7 +339,8 @@ test('a turn is read in full from a harness transcript or a protocol pane', () =
     { type: 'assistant', message: { content: [{ type: 'text', text: 'Fixed.\n\nTests pass.' }] } },
   ].map(JSON.stringify);
   expect(claudeTranscript(lines)).toEqual({ prompt: 'fix the bug', response: 'Fixed.\n\nTests pass.', source: 'transcript' });
-  expect(claudeTranscript(lines.slice(0, 5))).toBeNull();
+  expect(claudeTranscript(lines.slice(0, 3))).toEqual({ prompt: 'fix the bug', response: '', source: 'transcript' });
+  expect(claudeTranscript(lines.slice(0, 5))).toEqual({ prompt: 'fix the bug', response: '', source: 'transcript' });
   const omp = [
     { type: 'session' },
     { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'testing' }] } },
@@ -265,6 +349,8 @@ test('a turn is read in full from a harness transcript or a protocol pane', () =
     { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: "Received. I'm here." }] } },
   ].map(JSON.stringify);
   expect(ompTranscript(omp)).toEqual({ prompt: 'testing', response: "Received. I'm here.", source: 'transcript' });
+  expect(ompTranscript(omp.slice(0, 2))).toEqual({ prompt: 'testing', response: '', source: 'transcript' });
+  expect(ompTranscript(omp.slice(0, 4))).toEqual({ prompt: 'testing', response: '', source: 'transcript' });
   const pane = ['you  old prompt', '', 'old reply', 'turn finished', '', 'you  Reply with exactly ONE TWO. Do not u', 'se tools.', '', 'ONE', 'TWO', 'turn finished', '> type a prompt'].join('\n');
   expect(paneTranscript(pane)).toEqual({ prompt: 'Reply with exactly ONE TWO. Do not use tools.', response: 'ONE\nTWO', source: 'pane' });
   expect(paneTranscript('> type a prompt')).toBeNull();

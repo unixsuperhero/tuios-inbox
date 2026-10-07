@@ -43,7 +43,7 @@ Task and agent rail selections can be archived independently. This hides those e
 
 The review queue contains unread, unarchived finished responses, oldest first by default. Shell command output is bucketed apart and hidden until **Show commands** is ticked. Opening a record marks it read; **Mark as unread** puts it back. **Next** moves to the following record. A successful reply also clears the record. The **Queues** page shows the same unread work as one queue per task, oldest at the top, with a reading pane beside it.
 
-Inbox, Queues, Turns, Tasks, Agents, Archive, and Agent profiles are available in the left navigation. Their indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Task groups, Work, and Review buttons switch between work areas; Queues has its own reading pane.
+Inbox, Queues, Prompts, Tasks, Agents, Archive, and Agent profiles are available in the left navigation. Their indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Task groups, Work, and Review buttons switch between work areas; Queues has its own reading pane.
 
 All is the default type selection and exclusive reset. Turns and Commands toggle independently; selecting both includes either type. The type union combines with search, filters, and sort. Selecting neither returns to All. Read and unread backgrounds describe state, never alternating stripes.
 
@@ -59,9 +59,11 @@ item:  { id: 'turn:…' | 'thread:…', type: 'turn' | 'command' | 'mail' | 'sys
 agent: { id, session, name, harness, host: 'local' | 'build' | '', kind: 'agent' | 'shell', task_id, state, seen }
 ```
 
-## Turns
+## Prompts and turns
 
-A turn row appears with the prompt when a pane starts working. When the turn ends, the `after-agent-state` hook delivers the reply and the row becomes unread.
+Choose **Prompts** in the left navigation to see agent turns without command records. The route remains `#turns`. Every turn detail has an explicit **PROMPT** section with the full captured text, even while the agent works or waits for input. A completed turn also has a **RESPONSE** section.
+
+A turn row opens when a pane starts working. Native metadata or the capture hook supplies its prompt without waiting for a final reply. Reconciliation recovers missing prompts for still-active panes from supported transcripts. Known prompts remain unchanged as later hook reports arrive. When the turn ends, the hook supplies the response and the row becomes unread. If no reliable prompt source exists, the detail states that no prompt text was captured.
 
 `TUIOS_AGENT_MESSAGE` holds only the first line of the reply, cut to about 120 characters. The hook therefore reads the whole turn from the Claude Code or oh-my-pi transcript (`source: transcript`) or from a protocol pane's own transcript (`source: pane`). Any other harness gets the one-line summary (`source: summary`). The hook runs after `notifications.agent.settle_seconds` (2 by default), and TUIOS drops it if the pane starts another turn first; that row then stays without a reply.
 

@@ -77,9 +77,9 @@ const recipientField = taskId => ({
 
 // ---- Items: agent turns, finished commands, mail, notices (Inbox, Turns, Archive) ----
 const typeLabels = { turn: 'Agent turn', command: 'Command', mail: 'Mail', system: 'Notice', dispatch: 'Sent work', snapshot: 'Pane snapshot' };
-const waiting = { working: 'Still working. The reply appears here when the turn ends.', needs_input: 'Waiting for your answer in the pane.', idle: 'The agent went idle without finishing this turn, so there is no reply.' };
+const waiting = { working: 'Still working. The completed response appears here when the turn ends.', needs_input: 'Waiting for your answer in the pane.', idle: 'The agent is idle, but this turn has not finished.' };
 const turnNotes = { summary: 'Only the one-line TUIOS_AGENT_MESSAGE summary was available for this turn.', pane: 'Read from the pane transcript, so tool activity is included.' };
-/** A turn that has no reply to load yet. */
+/** A turn without a completed response yet; its captured prompt can still be read. */
 export const unfinished = row => row.type === 'turn' && row.status in waiting;
 const itemFields = [
   { key: 'type', label: 'Type', type: 'enum', options: () => Object.entries(typeLabels).map(([value, label]) => ({ value, label })), filter: true, sort: true, search: true },
@@ -104,8 +104,10 @@ function itemSummary(r) {
   </div>`;
 }
 function turnHtml(r, turn) {
-  if (!turn.finished) return hint('The turn ended. Waiting for the hook to deliver the reply.');
-  return `${turn.prompt.length > r.title.length ? `<p class="eyebrow">FULL PROMPT</p><div class="md">${markdown(turn.prompt)}</div>` : ''}<p class="eyebrow">RESPONSE</p>${turn.response ? `<div class="md">${markdown(turn.response)}</div>` : hint('The turn ended, but no reply text was captured: the capture hook did not report it. Inspect the pane for the answer.')}${turnNotes[turn.source] ? hint(turnNotes[turn.source]) : ''}`;
+  const prompt = `<p class="eyebrow">PROMPT</p>${turn.prompt ? `<div class="md">${markdown(turn.prompt)}</div>` : hint('No prompt text was captured for this turn.')}`;
+  if (unfinished(r)) return prompt;
+  if (!turn.finished) return `${prompt}${hint('The turn ended. Waiting for the hook to deliver the reply.')}`;
+  return `${prompt}<p class="eyebrow">RESPONSE</p>${turn.response ? `<div class="md">${markdown(turn.response)}</div>` : hint('The turn ended, but no reply text was captured: the capture hook did not report it. Inspect the pane for the answer.')}${turnNotes[turn.source] ? hint(turnNotes[turn.source]) : ''}`;
 }
 function threadHtml(r, thread) {
   const p = liveAgent(thread.pane_id), mail = thread.kind === 'mail';
@@ -149,7 +151,7 @@ function questionHtml(r) {
 }
 function itemDetail(r) {
   const agent = store.state.agents.find(a => a.id === r.agent_id), pane = store.state.panes.find(p => p.id === r.agent_id), cached = store.bodies.get(r.id);
-  const body = unfinished(r) ? (r.status === 'needs_input' ? questionHtml(r) : hint(waiting[r.status]))
+  const body = ['dispatch', 'command'].includes(r.type) && r.status === 'running' ? hint('Still running. The result appears here when the work ends.')
     : !cached ? hint('Loading…')
     : cached.error ? `<p class="hint danger">Could not load this item: ${esc(cached.error)}</p>`
     : r.type === 'turn' ? turnHtml(r, cached.data) : threadHtml(r, cached.data);
@@ -157,7 +159,7 @@ function itemDetail(r) {
     <button data-do="unread" data-id="${esc(r.id)}" data-value="${r.unread ? '' : '1'}">${r.unread ? 'Mark as read' : 'Mark as unread'}</button>
     <button data-do="archive" data-id="${esc(r.id)}" data-value="${r.archived ? '' : '1'}">${r.archived ? 'Restore to inbox' : 'Archive'}</button>
     ${pane ? `<button data-do="inspect" data-id="${esc(pane.id)}">Inspect ${esc(pane.name)}</button>` : ''}</div>
-    ${agent ? hint(`“Agent’s task” assigns the whole agent (${esc(agentName(agent.name, agent.id))}): its other turns and commands move too, and new ones follow.`) : ''}${body}${unfinished(r) ? '' : promptForm(r)}`;
+    ${agent ? hint(`“Agent’s task” assigns the whole agent (${esc(agentName(agent.name, agent.id))}): its other turns and commands move too, and new ones follow.`) : ''}${body}${unfinished(r) ? (r.status === 'needs_input' ? questionHtml(r) : hint(waiting[r.status])) : promptForm(r)}`;
 }
 const itemActions = archived => [
   { id: 'read', label: 'Mark as read', run: update('/items/update', { unread: false }) },
@@ -223,10 +225,10 @@ export const pages = {
     list: itemList('inbox', itemFields, false, 'Nothing here. A row appears when an agent gets a prompt, a shell command finishes, or mail arrives.'),
   },
   turns: {
-    title: 'Turns', items: true,
-    description: 'Prompts received by agents in TUIOS. Open a record to inspect the reply; unfinished turns show their last known state.',
+    title: 'Prompts', items: true,
+    description: 'Prompts received by agents in TUIOS. Open a record to read the full captured prompt, current state, and completed response.',
     rows: () => store.state.items.filter(i => i.type === 'turn' && !i.archived),
-    list: itemList('turns', itemFields.filter(f => f.key !== 'type'), false, 'No turns. A row appears when an agent in TUIOS receives a prompt.'),
+    list: itemList('turns', itemFields.filter(f => f.key !== 'type'), false, 'No prompts. A row appears when an agent in TUIOS receives a prompt.'),
   },
   tasks: {
     title: 'Tasks',

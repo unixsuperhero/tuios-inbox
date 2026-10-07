@@ -23,7 +23,7 @@ function lastTurn(messages, toolCall) {
     else if (blocks.some(b => b.type === toolCall)) reply = [];
     else if (text) reply.push(text);
   }
-  return prompt && reply.length ? { prompt, response: reply.join('\n\n'), source: 'transcript' } : null;
+  return prompt ? { prompt, response: reply.join('\n\n'), source: 'transcript' } : null;
 }
 export const claudeTranscript = lines => lastTurn(entries(lines).filter(e => !e.isSidechain && !e.isMeta && e.message).map(e => ({ role: e.type, content: e.message.content })), 'tool_use');
 export const ompTranscript = lines => lastTurn(entries(lines).filter(e => e.type === 'message' && e.message).map(e => e.message), 'toolCall');
@@ -45,21 +45,23 @@ async function transcriptTurn(harness, sessionId) {
 }
 
 // A protocol pane prints "you  <prompt>", the turn, then "turn finished".
-export function paneTranscript(text) {
+export function paneTranscript(text, { allowIncomplete = false } = {}) {
   const lines = text.split('\n').map(line => line.trimEnd());
   const start = lines.findLastIndex(line => line.startsWith('you  ')), end = lines.lastIndexOf('turn finished');
-  if (start < 0 || end < start) return null;
+  const complete = end > start;
+  if (start < 0 || (!complete && !allowIncomplete)) return null;
   // The pane hard-wraps at its width, so a full line continues on the next one.
   const width = Math.max(...lines.map(line => [...line].length));
   const turn = []; let glue = null;
-  for (const line of lines.slice(start, end)) {
+  for (const line of lines.slice(start, complete ? end : lines.length)) {
     if (glue === null || !line) turn.push(line); else turn[turn.length - 1] += glue + line;
     const length = [...line].length;
     glue = length === width ? '' : length === width - 1 ? ' ' : null;
   }
   const gap = turn.indexOf('');
-  if (gap < 0) return null;
-  return { prompt: turn.slice(0, gap).join('\n').slice(5), response: turn.slice(gap + 1).join('\n').trim(), source: 'pane' };
+  if (gap < 0 && complete) return null;
+  const prompt = turn.slice(0, gap < 0 ? turn.length : gap).join('\n').slice(5);
+  return prompt ? { prompt, response: complete ? turn.slice(gap + 1).join('\n').trim() : '', source: 'pane' } : null;
 }
 
 // TUIOS_AGENT_MESSAGE (the seed summary) is only the first line of the reply, cut short.
@@ -69,16 +71,17 @@ export async function captureTurn({ bin, session, pane, time, seed = {} }) {
   try { agent = JSON.parse(await tuios(bin, ['list-agents', '-s', session, '--json'])).agents?.find(a => a.window_id === pane); } catch {}
   // A pane that already left the reported state is on its next turn; only the summary is this turn's.
   const current = agent?.state === seed.state;
+  const active = ['working', 'needs_input'].includes(seed.state);
   const turn = {
     session, pane, name: agent?.name || seed.name || '', harness: agent?.harness_id || seed.harness || '', state: seed.state,
     at: current && agent.agent_state_at ? new Date(agent.agent_state_at / 1e6).toISOString() : time,
-    prompt: current ? agent.meta?.prompt || '' : '', response: seed.summary || '', source: 'summary',
+    prompt: current ? agent.meta?.prompt || '' : '', response: active ? '' : seed.summary || '', source: 'summary',
   };
   if (!current) return turn;
   let full = null;
   try {
-    if (agent.protocol) full = paneTranscript(await tuios(bin, ['capture-pane', '-s', session, '-w', pane, '--scrollback', '--lines', '10000']));
+    if (agent.protocol) full = paneTranscript(await tuios(bin, ['capture-pane', '-s', session, '-w', pane, '--scrollback', '--lines', '10000']), { allowIncomplete: active });
     else full = await transcriptTurn(agent.harness_id, agent.agent_session_id);
   } catch {}
-  return { ...turn, ...full };
+  return { ...turn, ...full, response: active ? '' : full?.response || turn.response };
 }

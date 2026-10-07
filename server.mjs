@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { mkdir, readdir, unlink, stat, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { captureTurn } from './scripts/turn.mjs';
 
 const root = import.meta.dir;
 const dataDir = process.env.TUIOS_INBOX_DATA || join(homedir(), '.local/share/tuios-inbox');
@@ -212,14 +213,21 @@ async function turnState(e) {
   seeAgent(e.window, { session: e.session, name: agent?.name, harness: agent?.harness_id });
   run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,0,?,NULL,?,0)', id(), e.session, e.window, agent?.name || '', agent?.harness_id || '', sent?.body || agent?.meta?.prompt || '', '', '', e.state, new Date(e.time / 1e6).toISOString(), agentTask(e.window));
 }
-function completeTurn(t, eventId) {
-  const key = `turn:${eventId}`;
-  if (!['done', 'errored'].includes(t.state) || one('SELECT id FROM events WHERE id=?', key)) return;
-  const open = one("SELECT id,prompt FROM turns WHERE pane_id=? AND (finished IS NULL OR response='') AND started<=? ORDER BY started DESC LIMIT 1", t.pane, t.at);
+function importTurn(t, eventId) {
+  const key = 'turn:' + eventId, complete = ['done', 'errored'].includes(t.state);
+  if ((!complete && !['working', 'needs_input'].includes(t.state)) || one('SELECT id FROM events WHERE id=?', key)) return;
+  if (!complete) {
+    if (!t.prompt) return;
+    const latest = one('SELECT started,finished FROM turns WHERE pane_id=? ORDER BY started DESC LIMIT 1', t.pane);
+    if (latest && (latest.started > t.at || (latest.finished && latest.finished >= t.at))) return;
+  }
+  const open = complete
+    ? one("SELECT id,prompt FROM turns WHERE pane_id=? AND (finished IS NULL OR response='') AND started<=? ORDER BY started DESC LIMIT 1", t.pane, t.at)
+    : one("SELECT id,prompt FROM turns WHERE pane_id=? AND finished IS NULL AND state IN ('working','needs_input') AND started<=? ORDER BY started DESC LIMIT 1", t.pane, t.at);
   db.transaction(() => {
     run('INSERT INTO events VALUES (?,?)', key, '{}');
-    if (open) run('UPDATE turns SET pane_name=?,harness=?,prompt=?,response=?,source=?,state=?,unread=1,finished=? WHERE id=?', t.name, t.harness, t.prompt || open.prompt, t.response, t.source, t.state, t.at, open.id);
-    else run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?,0)', id(), t.session, t.pane, t.name, t.harness, t.prompt, t.response, t.source, t.state, t.at, t.at, agentTask(t.pane));
+    if (open) run('UPDATE turns SET pane_name=?,harness=?,prompt=?,response=?,source=?,state=?,unread=?,finished=? WHERE id=?', t.name, t.harness, open.prompt || t.prompt, complete ? t.response : '', t.source, t.state, Number(complete), complete ? t.at : null, open.id);
+    else run('INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)', id(), t.session, t.pane, t.name, t.harness, t.prompt, complete ? t.response : '', t.source, t.state, Number(complete), t.at, complete ? t.at : null, agentTask(t.pane));
   })();
   changed();
 }
@@ -294,6 +302,13 @@ async function reconcile() {
     }
     run("UPDATE agents SET state='closed' WHERE state!='closed' AND id NOT IN (SELECT value FROM json_each(?))", JSON.stringify(live));
   } catch (e) { lastError = e.message; }
+  for (const row of all("SELECT * FROM turns WHERE finished IS NULL AND state IN ('working','needs_input') AND prompt=''")) {
+    try {
+      const turn = await captureTurn({ bin: tuios, session: row.session, pane: row.pane_id, time: now(), seed: { state: row.state, name: row.pane_name, harness: row.harness } });
+      const current = one('SELECT prompt,state,finished FROM turns WHERE id=?', row.id);
+      if (turn.prompt && current?.prompt === '' && current.finished === null && current.state === row.state) importTurn(turn, 'recover:' + row.id + ':' + turn.at);
+    } catch (e) { lastError = e.message; }
+  }
   changed();
 }
 let draining = false;
@@ -307,7 +322,7 @@ async function drainHooks() {
       if (v.TUIOS_WINDOW_ID && !agentFor(v.TUIOS_WINDOW_ID).host && (v.TUIOS_SESSION_ID || e.turn?.session)) {
         try { await observeHosts(v.TUIOS_SESSION_ID || e.turn.session); } catch (error) { lastError = error.message; }
       }
-      if (e.turn) completeTurn(e.turn, e.id);
+      if (e.turn) importTurn(e.turn, e.id);
       const completedKey = completionKey(e.bootId, v.TUIOS_WINDOW_ID, e.captureMeta?.command_seq, e.agent?.agent_state_at);
       if (completedKey && !command && one('SELECT id FROM events WHERE id=?', completedKey)) { await unlink(path); continue; }
       if (!one('SELECT id FROM events WHERE id=?', e.id)) {

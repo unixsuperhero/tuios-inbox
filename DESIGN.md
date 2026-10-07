@@ -154,7 +154,7 @@ components:
 
 ## Overview
 
-The default live UI is the Flight deck inbox, backed by the production APIs and SQLite records. The left rail provides Inbox, Queues, Turns, Tasks, Agents, Archive, and Agent profiles. Task groups, Work, and Review select the main work area. Task and agent histories, prompts, responses, and reply forms remain real native-session workflows.
+The default live UI is the Flight deck inbox, backed by the production APIs and SQLite records. The left rail provides Inbox, Queues, Prompts, Tasks, Agents, Archive, and Agent profiles. Task groups, Work, and Review select the main work area. Task and agent histories, prompts, responses, and reply forms remain real native-session workflows.
 
 Dark blue surfaces, condensed FlightCondensed headings, and amber actions follow the Flight deck direction. Agent rows retain explicit Working, Needs input, Stopped, Idle, and Offline treatments without shadows. Selection uses a separate outline. Execution state does not determine review state.
 
@@ -221,6 +221,8 @@ Navigation is a native link set with `aria-current` on the active page. Active l
 ### Records and mobile fields
 
 Read and unread records share field geometry. Unread titles use bold white text and an explicit Unread label. Selection keeps the read-state background. Record links open full main-pane details with Markdown, provenance, editable properties, and threaded continuation. Opening a work record marks it read.
+
+The Prompts index uses the existing `#turns` route and excludes command records. Turn details always show the full captured text under an explicit PROMPT heading, including short and unfinished prompts. Working and needs-input turns retain their state and question controls without presenting partial assistant text as a completed response. Open details refresh when prompt capture or state changes, without resetting drafts.
 
 Inbox, task and agent histories, the review queue, task groups, and task members use native checkboxes separate from navigation links. Each list owns its selection and contextual bulk actions. Selection uses an outline without changing read-state backgrounds. In-flight controls are disabled, failures retain selection, and live updates preserve checked state. History and member selections reset on route changes.
 

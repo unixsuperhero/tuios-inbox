@@ -2,7 +2,7 @@
 import { createList } from '/list.js';
 import { createWorkbench, patchHTML, terminalResponse } from '/workbench.js';
 import { createQueues } from '/queues.js';
-import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, unfinished, taskTree } from '/pages.js';
+import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, taskTree } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
 const previousValues = new WeakMap(), creations = new Map(), draftRevisions = new Map(), submissions = new WeakMap();
@@ -159,11 +159,13 @@ async function answer(agent, body, sent) {
 }
 async function load(key, opened) {
   const row = store.state.items.find(i => i.id === key); if (!row) return;
-  if (unfinished(row)) { if (row.status === 'needs_input' && row.agent_id) await question(row.agent_id, opened); return; }
-  if (store.bodies.get(key)?.updated !== row.updated && !loading.has(key)) {
+  if (row.type === 'turn' && row.status === 'needs_input' && row.agent_id) question(row.agent_id, opened).catch(error);
+  if (['dispatch', 'command'].includes(row.type) && row.status === 'running') return;
+  const cached = store.bodies.get(key), revision = { updated: row.updated, title: row.title, status: row.status };
+  if ((!cached || Object.keys(revision).some(field => cached[field] !== revision[field])) && !loading.has(key)) {
     loading.add(key);
-    try { store.bodies.set(key, { updated: row.updated, data: await api(`/${key.replace(':', 's/')}`) }); }
-    catch (e) { store.bodies.set(key, { updated: row.updated, error: e.message }); }
+    try { store.bodies.set(key, { ...revision, data: await api(`/${key.replace(':', 's/')}`) }); }
+    catch (e) { store.bodies.set(key, { ...revision, error: e.message }); }
     finally { loading.delete(key); }
     render();
   }
