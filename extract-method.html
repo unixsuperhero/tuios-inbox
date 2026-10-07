@@ -1,0 +1,132 @@
+<title>Extract Method</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: four source files on the left, one class sheet on the right; the shared lines travel between them. */
+  :root {
+    --bg: #f6f4ee; --fg: #2a2a2a; --muted: #8a8578; --paper: #ffffff; --paper-edge: #d9d4c7; --line: #d3cfc4; --call: #2a2a2a;
+    --c1: #e0a63a; --c2: #2a9d8f; --c3: #d96b7a; --c4: #6c6fd1; --c5: #5fa65c;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #16181d; --fg: #e8e6df; --muted: #8e8c84; --paper: #22252c; --paper-edge: #3a3e48; --line: #3b3f49; --call: #e8e6df; --c1: #f0b84a; --c2: #3fc2b1; --c3: #ef8392; --c4: #8d90f0; --c5: #78c274; color-scheme: dark; } }
+  :root[data-theme="dark"] { --bg: #16181d; --fg: #e8e6df; --muted: #8e8c84; --paper: #22252c; --paper-edge: #3a3e48; --line: #3b3f49; --call: #e8e6df; --c1: #f0b84a; --c2: #3fc2b1; --c3: #ef8392; --c4: #8d90f0; --c5: #78c274; color-scheme: dark; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--mono); padding: 32px 16px; margin: 0; }
+  main { max-width: 1100px; margin: 0 auto; display: grid; gap: 18px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 15px; font-weight: 500; margin: 0; letter-spacing: 0.02em; }
+  .step { font-size: 12px; color: var(--muted); min-height: 1.6em; }
+  .board { overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; max-width: 100%; }
+  p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 64ch; }
+  button { font: 12px var(--mono); color: var(--fg); background: var(--paper); border: 1px solid var(--paper-edge); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:focus-visible { outline: 2px solid var(--c2); outline-offset: 2px; }
+</style>
+<main>
+  <header><h1>Extract method</h1><div style="display:flex;gap:10px;align-items:center"><span class="step" id="step">Four files, one copied fragment</span><button id="replay" type="button">Replay</button></div></header>
+  <div class="board"><svg id="board" viewBox="0 0 1100 420" role="img" aria-label="Animation: five colored lines duplicated across four files move into one method on a class sheet, leaving a single call line in each file"></svg></div>
+  <p>The five colored lines are the same fragment pasted into each file. Extracting it moves one copy into a method on a shared class and replaces every copy with a one-line call.</p>
+</main>
+<script>
+  const NS = "http://www.w3.org/2000/svg", svg = document.getElementById("board"), stepEl = document.getElementById("step");
+  const el = (name, attrs, parent = svg) => { const n = document.createElementNS(NS, name); for (const k in attrs) n.setAttribute(k, attrs[k]); parent.appendChild(n); return n; };
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const FILES = 4, W = 170, H = 360, GAP = 24, TOP = 30, LEFT = 16, LINE_H = 9, LINES = 32, FOLD = 20;
+  const CLASS_X = LEFT + FILES * (W + GAP) + 40, CLASS_W = 250;
+  const COLORS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)"];
+  const SHAPE = { rel: [0, 1, 1, 2, 0], len: [78, 62, 92, 50, 56] };
+  const PLACEMENTS = [{ at: 4, indent: 1 }, { at: 17, indent: 0 }, { at: 11, indent: 2 }, { at: 24, indent: 1 }];
+  const files = [];
+
+  function sheet(x, w, label) {
+    el("path", { d: `M${x} ${TOP} h${w - FOLD} l${FOLD} ${FOLD} v${H - FOLD} h${-w} z`, fill: "var(--paper)", stroke: "var(--paper-edge)", "stroke-width": 1.2 });
+    el("path", { d: `M${x + w - FOLD} ${TOP} v${FOLD} h${FOLD}`, fill: "none", stroke: "var(--paper-edge)", "stroke-width": 1.2 });
+    const t = el("text", { x: x + w / 2, y: TOP + H + 18, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", "font-family": "var(--mono)" }); t.textContent = label;
+  }
+
+  function build() {
+    svg.replaceChildren(); files.length = 0;
+    let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    // Paint the class sheet first so lines that fly onto it land on top of the paper.
+    // The class sheet: a name bar, then room for the method.
+    sheet(CLASS_X, CLASS_W, "shared class");
+    classParts = { frame: el("g", { opacity: 0 }) };
+    el("rect", { x: CLASS_X + 14, y: TOP + 22, width: 96, height: 6, rx: 3, fill: "var(--call)" }, classParts.frame);
+    el("rect", { x: CLASS_X + 14, y: TOP + 40, width: 60, height: 5, rx: 2.5, fill: "var(--line)" }, classParts.frame);
+    classParts.method = el("g", { opacity: 0 });
+    el("rect", { x: CLASS_X + 26, y: TOP + 64, width: 110, height: 6, rx: 3, fill: "var(--call)" }, classParts.method); // method signature
+    classParts.close = el("rect", { x: CLASS_X + 26, y: TOP + 64 + 6 * LINE_H + 4, width: 14, height: 5, rx: 2.5, fill: "var(--line)", opacity: 0 }, classParts.method);
+    classParts.landed = [];
+    for (let f = 0; f < FILES; f++) {
+      const x = LEFT + f * (W + GAP); sheet(x, W, `file ${f + 1}`);
+      const { at, indent } = PLACEMENTS[f]; let depth = 0;
+      const file = { x, at, indent, shared: [], below: [], call: null };
+      for (let i = 0; i < LINES; i++) {
+        const y = TOP + 22 + i * LINE_H;
+        if (i >= at && i < at + 5) {
+          const k = i - at;
+          file.shared.push(el("rect", { x: x + 12 + (indent + SHAPE.rel[k]) * 10, y, width: SHAPE.len[k], height: 5, rx: 2.5, fill: COLORS[k] }));
+          continue;
+        }
+        if (rnd() < 0.12) { depth = Math.max(0, depth - 1); continue; }
+        if (rnd() < 0.2) depth = Math.max(0, Math.min(3, depth + (rnd() < 0.5 ? 1 : -1)));
+        const len = Math.max(22, 36 + Math.floor(rnd() * 84) - depth * 9);
+        const r = el("rect", { x: x + 12 + depth * 10, y, width: len, height: 5, rx: 2.5, fill: "var(--line)" });
+        if (i > at) file.below.push(r);
+      }
+      // The call that replaces the fragment: one short line, hidden until the extraction lands.
+      const cy = TOP + 22 + at * LINE_H;
+      file.call = el("g", { opacity: 0 });
+      el("rect", { x: x + 12 + indent * 10, y: cy, width: 30, height: 5, rx: 2.5, fill: "var(--call)" }, file.call);
+      el("rect", { x: x + 12 + indent * 10 + 34, y: cy, width: 44, height: 5, rx: 2.5, fill: "var(--c2)", opacity: 0.9 }, file.call);
+      files.push(file);
+    }
+  }
+  let classParts = null;
+
+  // Where line k of the fragment sits inside the method body.
+  const target = k => ({ x: CLASS_X + 26 + 12 + SHAPE.rel[k] * 10, y: TOP + 64 + 12 + k * LINE_H });
+  const SLOW = 2.4; // everything runs at this multiple of the original timings
+  const animate = (node, keyframes, duration, delay = 0) => {
+    if (reduced) { // no travel: hold the start pose, then cut to the end pose after the same time
+      const end = keyframes[keyframes.length - 1];
+      return new Promise(r => setTimeout(() => { node.animate([end, end], { duration: 1, fill: "forwards" }); r(); }, (duration + delay) * SLOW));
+    }
+    return node.animate(keyframes, { duration: duration * SLOW, delay: delay * SLOW, fill: "forwards", easing: "cubic-bezier(.4,0,.2,1)" }).finished;
+  };
+  const wait = ms => new Promise(r => setTimeout(r, ms * SLOW));
+  const say = text => { stepEl.textContent = text; };
+
+  let run = 0;
+  async function play() {
+    const mine = ++run; build();
+    say("Four files, one copied fragment"); await wait(1800); if (mine !== run) return;
+    say("A new class to hold it");
+    await animate(classParts.frame, [{ opacity: 0 }, { opacity: 1 }], 500); if (mine !== run) return;
+    for (let f = 0; f < FILES; f++) {
+      const file = files[f];
+      say(f === 0 ? "Move the first copy into a method" : `Copy ${f + 1} is the same code: it merges into that method`);
+      // Lift, then fly each line to its place in the method.
+      await Promise.all(file.shared.map(r => animate(r, [{ transform: "translate(0,0)" }, { transform: "translate(0,-6px)" }], 350)));
+      await wait(200);
+      if (mine !== run) return;
+      if (f === 0) classParts.method.setAttribute("opacity", 1);
+      await Promise.all(file.shared.map((r, k) => {
+        const t = target(k), dx = t.x - Number(r.getAttribute("x")), dy = t.y - Number(r.getAttribute("y"));
+        return animate(r, [{ transform: "translate(0,-6px)", opacity: 1 }, { transform: `translate(${dx}px,${dy}px)`, opacity: f === 0 ? 1 : 0.15 }], 1100, k * 90);
+      }));
+      if (mine !== run) return;
+      if (f === 0) classParts.landed = file.shared; else file.shared.forEach(r => r.remove());
+      // Back in the file: the lines below close the gap and a single call line takes the fragment's place.
+      await Promise.all([
+        ...file.below.map(r => animate(r, [{ transform: "translate(0,0)" }, { transform: `translate(0,${-4 * LINE_H}px)` }], 500)),
+        animate(file.call, [{ opacity: 0 }, { opacity: 1 }], 500, 200),
+      ]);
+      if (mine !== run) return;
+      await wait(600);
+    }
+    classParts.close.setAttribute("opacity", 1);
+    say("One method, four one-line calls");
+  }
+  document.getElementById("replay").addEventListener("click", () => { void play(); });
+  void play();
+</script>

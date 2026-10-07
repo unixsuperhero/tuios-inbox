@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" width="960" height="420" font-family="IBM Plex Mono, Menlo, monospace">
+<style>.paper{fill:#fff;stroke:#d9d4c7;stroke-width:1.2}.code{fill:#d3cfc4}.label{fill:#8a8578;font-size:11px}@media (prefers-color-scheme: dark){.paper{fill:#22252c;stroke:#3a3e48}.code{fill:#3b3f49}.label{fill:#8e8c84}}</style>
+<rect width="960" height="420" fill="none"/>
+<path class="paper" d="M20 30 h178 l22 22 v338 h-200 z"/><path d="M198 30 v22 h22" fill="none" stroke="#d9d4c7" stroke-width="1.2"/>
+<rect class="code" x="34" y="61" width="61" height="5" rx="2.5"/>
+<rect class="code" x="34" y="70" width="72" height="5" rx="2.5"/>
+<rect class="code" x="34" y="79" width="94" height="5" rx="2.5"/>
+<rect x="46" y="88" width="92" height="5" rx="2.5" fill="#e0a63a"/>
+<rect x="58" y="97" width="74" height="5" rx="2.5" fill="#2a9d8f"/>
+<rect x="58" y="106" width="110" height="5" rx="2.5" fill="#d96b7a"/>
+<rect x="70" y="115" width="58" height="5" rx="2.5" fill="#6c6fd1"/>
+<rect x="46" y="124" width="66" height="5" rx="2.5" fill="#5fa65c"/>
+<rect class="code" x="34" y="133" width="121" height="5" rx="2.5"/>
+<rect class="code" x="34" y="142" width="110" height="5" rx="2.5"/>
+<rect class="code" x="34" y="151" width="86" height="5" rx="2.5"/>
+<rect class="code" x="34" y="160" width="52" height="5" rx="2.5"/>
+<rect class="code" x="34" y="169" width="108" height="5" rx="2.5"/>
+<rect class="code" x="34" y="178" width="131" height="5" rx="2.5"/>
+<rect class="code" x="34" y="187" width="73" height="5" rx="2.5"/>
+<rect class="code" x="34" y="196" width="55" height="5" rx="2.5"/>
+<rect class="code" x="34" y="205" width="69" height="5" rx="2.5"/>
+<rect class="code" x="34" y="214" width="112" height="5" rx="2.5"/>
+<rect class="code" x="46" y="223" width="86" height="5" rx="2.5"/>
+<rect class="code" x="46" y="232" width="49" height="5" rx="2.5"/>
+<rect class="code" x="58" y="241" width="54" height="5" rx="2.5"/>
+<rect class="code" x="58" y="250" width="71" height="5" rx="2.5"/>
+<rect class="code" x="58" y="259" width="48" height="5" rx="2.5"/>
+<rect class="code" x="58" y="268" width="53" height="5" rx="2.5"/>
+<rect class="code" x="58" y="277" width="43" height="5" rx="2.5"/>
+<rect class="code" x="58" y="286" width="106" height="5" rx="2.5"/>
+<rect class="code" x="58" y="295" width="71" height="5" rx="2.5"/>
+<rect class="code" x="58" y="304" width="113" height="5" rx="2.5"/>
+<rect class="code" x="58" y="313" width="45" height="5" rx="2.5"/>
+<rect class="code" x="58" y="322" width="53" height="5" rx="2.5"/>
+<rect class="code" x="58" y="331" width="107" height="5" rx="2.5"/>
+<text class="label" x="120" y="408" text-anchor="middle">file 1</text>
+<path class="paper" d="M260 30 h178 l22 22 v338 h-200 z"/><path d="M438 30 v22 h22" fill="none" stroke="#d9d4c7" stroke-width="1.2"/>
+<rect class="code" x="286" y="61" width="45" height="5" rx="2.5"/>
+<rect class="code" x="274" y="79" width="103" height="5" rx="2.5"/>
+<rect class="code" x="274" y="88" width="99" height="5" rx="2.5"/>
+<rect class="code" x="274" y="97" width="128" height="5" rx="2.5"/>
+<rect class="code" x="274" y="106" width="130" height="5" rx="2.5"/>
+<rect class="code" x="274" y="115" width="41" height="5" rx="2.5"/>
+<rect class="code" x="286" y="124" width="91" height="5" rx="2.5"/>
+<rect class="code" x="286" y="133" width="78" height="5" rx="2.5"/>
+<rect class="code" x="286" y="142" width="118" height="5" rx="2.5"/>
+<rect class="code" x="286" y="151" width="119" height="5" rx="2.5"/>
+<rect class="code" x="274" y="169" width="103" height="5" rx="2.5"/>
+<rect class="code" x="274" y="178" width="58" height="5" rx="2.5"/>
+<rect class="code" x="274" y="187" width="107" height="5" rx="2.5"/>
+<rect class="code" x="274" y="196" width="60" height="5" rx="2.5"/>
+<rect x="274" y="205" width="92" height="5" rx="2.5" fill="#e0a63a"/>
+<rect x="286" y="214" width="74" height="5" rx="2.5" fill="#2a9d8f"/>
+<rect x="286" y="223" width="110" height="5" rx="2.5" fill="#d96b7a"/>
+<rect x="298" y="232" width="58" height="5" rx="2.5" fill="#6c6fd1"/>
+<rect x="274" y="241" width="66" height="5" rx="2.5" fill="#5fa65c"/>
+<rect class="code" x="274" y="250" width="110" height="5" rx="2.5"/>
+<rect class="code" x="274" y="259" width="43" height="5" rx="2.5"/>
+<rect class="code" x="274" y="277" width="129" height="5" rx="2.5"/>
+<rect class="code" x="274" y="295" width="139" height="5" rx="2.5"/>
+<rect class="code" x="274" y="304" width="81" height="5" rx="2.5"/>
+<rect class="code" x="274" y="313" width="128" height="5" rx="2.5"/>
+<rect class="code" x="274" y="322" width="80" height="5" rx="2.5"/>
+<rect class="code" x="274" y="331" width="75" height="5" rx="2.5"/>
+<text class="label" x="360" y="408" text-anchor="middle">file 2</text>
+<path class="paper" d="M500 30 h178 l22 22 v338 h-200 z"/><path d="M678 30 v22 h22" fill="none" stroke="#d9d4c7" stroke-width="1.2"/>
+<rect class="code" x="514" y="52" width="73" height="5" rx="2.5"/>
+<rect class="code" x="514" y="61" width="59" height="5" rx="2.5"/>
+<rect class="code" x="514" y="70" width="139" height="5" rx="2.5"/>
+<rect class="code" x="514" y="79" width="131" height="5" rx="2.5"/>
+<rect class="code" x="514" y="88" width="53" height="5" rx="2.5"/>
+<rect class="code" x="514" y="97" width="117" height="5" rx="2.5"/>
+<rect class="code" x="514" y="106" width="58" height="5" rx="2.5"/>
+<rect class="code" x="514" y="115" width="92" height="5" rx="2.5"/>
+<rect class="code" x="514" y="124" width="115" height="5" rx="2.5"/>
+<rect class="code" x="514" y="133" width="42" height="5" rx="2.5"/>
+<rect class="code" x="514" y="142" width="60" height="5" rx="2.5"/>
+<rect x="538" y="151" width="92" height="5" rx="2.5" fill="#e0a63a"/>
+<rect x="550" y="160" width="74" height="5" rx="2.5" fill="#2a9d8f"/>
+<rect x="550" y="169" width="110" height="5" rx="2.5" fill="#d96b7a"/>
+<rect x="562" y="178" width="58" height="5" rx="2.5" fill="#6c6fd1"/>
+<rect x="538" y="187" width="66" height="5" rx="2.5" fill="#5fa65c"/>
+<rect class="code" x="514" y="196" width="63" height="5" rx="2.5"/>
+<rect class="code" x="514" y="205" width="47" height="5" rx="2.5"/>
+<rect class="code" x="514" y="214" width="131" height="5" rx="2.5"/>
+<rect class="code" x="514" y="223" width="135" height="5" rx="2.5"/>
+<rect class="code" x="514" y="241" width="112" height="5" rx="2.5"/>
+<rect class="code" x="526" y="250" width="38" height="5" rx="2.5"/>
+<rect class="code" x="514" y="286" width="59" height="5" rx="2.5"/>
+<rect class="code" x="514" y="295" width="107" height="5" rx="2.5"/>
+<rect class="code" x="514" y="304" width="139" height="5" rx="2.5"/>
+<rect class="code" x="514" y="313" width="117" height="5" rx="2.5"/>
+<rect class="code" x="514" y="322" width="46" height="5" rx="2.5"/>
+<rect class="code" x="514" y="331" width="137" height="5" rx="2.5"/>
+<text class="label" x="600" y="408" text-anchor="middle">file 3</text>
+<path class="paper" d="M740 30 h178 l22 22 v338 h-200 z"/><path d="M918 30 v22 h22" fill="none" stroke="#d9d4c7" stroke-width="1.2"/>
+<rect class="code" x="754" y="52" width="90" height="5" rx="2.5"/>
+<rect class="code" x="754" y="61" width="100" height="5" rx="2.5"/>
+<rect class="code" x="766" y="70" width="94" height="5" rx="2.5"/>
+<rect class="code" x="766" y="79" width="129" height="5" rx="2.5"/>
+<rect class="code" x="754" y="97" width="40" height="5" rx="2.5"/>
+<rect class="code" x="766" y="115" width="122" height="5" rx="2.5"/>
+<rect class="code" x="766" y="124" width="73" height="5" rx="2.5"/>
+<rect class="code" x="766" y="133" width="110" height="5" rx="2.5"/>
+<rect class="code" x="766" y="142" width="64" height="5" rx="2.5"/>
+<rect class="code" x="766" y="151" width="79" height="5" rx="2.5"/>
+<rect class="code" x="766" y="160" width="96" height="5" rx="2.5"/>
+<rect class="code" x="766" y="169" width="118" height="5" rx="2.5"/>
+<rect class="code" x="766" y="178" width="73" height="5" rx="2.5"/>
+<rect class="code" x="766" y="187" width="127" height="5" rx="2.5"/>
+<rect class="code" x="778" y="196" width="108" height="5" rx="2.5"/>
+<rect class="code" x="778" y="205" width="115" height="5" rx="2.5"/>
+<rect class="code" x="778" y="214" width="43" height="5" rx="2.5"/>
+<rect class="code" x="766" y="223" width="110" height="5" rx="2.5"/>
+<rect class="code" x="766" y="232" width="83" height="5" rx="2.5"/>
+<rect class="code" x="766" y="241" width="86" height="5" rx="2.5"/>
+<rect class="code" x="766" y="250" width="98" height="5" rx="2.5"/>
+<rect class="code" x="766" y="259" width="48" height="5" rx="2.5"/>
+<rect x="766" y="268" width="92" height="5" rx="2.5" fill="#e0a63a"/>
+<rect x="778" y="277" width="74" height="5" rx="2.5" fill="#2a9d8f"/>
+<rect x="778" y="286" width="110" height="5" rx="2.5" fill="#d96b7a"/>
+<rect x="790" y="295" width="58" height="5" rx="2.5" fill="#6c6fd1"/>
+<rect x="766" y="304" width="66" height="5" rx="2.5" fill="#5fa65c"/>
+<rect class="code" x="766" y="313" width="119" height="5" rx="2.5"/>
+<rect class="code" x="766" y="322" width="98" height="5" rx="2.5"/>
+<rect class="code" x="778" y="331" width="112" height="5" rx="2.5"/>
+<text class="label" x="840" y="408" text-anchor="middle">file 4</text>
+</svg>
