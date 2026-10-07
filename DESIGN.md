@@ -222,6 +222,10 @@ Navigation is a native link set with `aria-current` on the active page. Active l
 
 The TUIOS navigation entry opens native sessions, numbered workspaces, and terminal panes. A native window and its pane share one UUID. Agent state belongs to that UUID. Breadcrumbs and an expandable hierarchy accompany searchable Name, Host, State, and Actions tables. Pane details contain escaped native metadata, agent activity, and a bounded terminal snapshot, not a browser terminal.
 
+The **Overview** view (`#tuios-overview`) uses the full main pane without a duplicate hierarchy sidebar. Session headings group workspace cards; pane tiles subdivide each card and show native state, harness, host, and task assignment. This is a membership view, not a terminal-geometry preview. Workspace cards wrap across desktop columns and stack on mobile. **Filter panes** is a default-closed native disclosure; **Show empty workspaces** stays visible.
+
+Pane links open native inspection without changing terminal focus. Dragging uses actual pane UUIDs and permits only same-session destinations. The shared **Move pane** dialog provides keyboard and touch access to all native workspace destinations. A move restores logical keyboard focus to the pane’s control after its card changes. Board updates pause throughout an active drag, including event-triggered renders, then flush one deferred native read.
+
 Browse actions never change terminal focus or select a workspace. Focus and selection have explicit controls. Session layout applies to the terminal-selected workspace and states that limit in the form. Splits require an attached client with tiling enabled. Moves retain the pane UUID and stay within one session. Destructive actions and interruption require a confirmation checkbox and explicit submit. Native errors stay in the active form.
 
 Task homes specify future launch placement. Pane assignment specifies work grouping. Changing either does not implicitly change the other. Existing pane controls use the pane’s execution session rather than a task’s mutable home. Local launch directories use the backend’s native directory chooser; remote launches inherit native defaults.

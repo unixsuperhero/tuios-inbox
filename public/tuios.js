@@ -5,7 +5,7 @@ const href = (session, workspace, window) => `#tuios${session ? '/' + encodeURIC
 const windowId = w => w.window_id || w.id;
 const workspaceId = w => Number(w.workspace);
 const paneName = w => w.display_name || w.custom_name || w.title || windowId(w);
-const stateName = w => w.agent_state || w.state || (w.minimized ? 'minimized' : 'shell');
+const stateName = w => (w.agent_state && w.agent_state !== 'none' ? w.agent_state : w.state && w.state !== 'none' ? w.state : '') || (w.minimized ? 'minimized' : 'shell');
 const json = value => esc(JSON.stringify(value ?? {}, null, 2));
 const names = {
   'create-session': 'New session', 'label-session': 'Label session', 'rename-session': 'Rename session', 'accent-session': 'Session accent', 'kill-session': 'Kill session',
@@ -20,9 +20,10 @@ const direct = new Set(['select-workspace', 'focus-window', 'minimize-window', '
 export function createTuios({ root, refresh }) {
   let route, inventory, dialogContext, notice = '', readAt = '', mutation = false;
   const sessions = new Map(), windows = new Map(), errors = new Map(), reading = new Map(), filters = new Map(), drafts = new Map(), launches = new Map(), expanded = new Map();
-  let treeScroll = 0;
+  let treeScroll = 0, showEmptyWorkspaces = false, dragging = null, deferredRead = false;
+  try { showEmptyWorkspaces = sessionStorage.getItem('native-overview.empty-workspaces') === '1'; } catch {}
   const supports = r => r?.kind === 'tuios' || r?.kind === 'index' && r.page === 'tuios';
-  const scope = r => `${r?.session || ''}/${r?.workspace ?? ''}`;
+  const scope = r => r?.view === 'overview' ? 'overview' : `${r?.session || ''}/${r?.workspace ?? ''}`;
   const detailKey = r => `${r.session}/${r.window}`;
   const sessionData = () => sessions.get(route?.session);
   const currentWorkspace = () => Number(sessionData()?.info?.current_workspace || 1);
@@ -41,6 +42,7 @@ export function createTuios({ root, refresh }) {
   const taskOptions = () => [{ value: '', label: 'No task · unassigned' }, ...store.state.tasks.filter(t => !t.archived).map(t => ({ value: t.id, label: t.title }))];
   const knownWorkspaces = session => sessions.get(session)?.workspaces || [];
   const workspaceLabel = w => `${workspaceId(w)} · ${w.name || 'Workspace'}`;
+  const unavailableSession = s => s.saved ? 'Saved session. Attach it in TUIOS to inspect live panes.' : ['down', 'saved'].includes(inventory?.hosts.find(h => h.host === s.host)?.status) ? 'Host is down or saved. Live panes are unavailable.' : '';
 
   const dialog = document.createElement('dialog');
   dialog.id = 'native-dialog'; dialog.setAttribute('aria-labelledby', 'native-dialog-title');
@@ -51,7 +53,17 @@ export function createTuios({ root, refresh }) {
     const data = Object.fromEntries([...form.elements].filter(field => field.name && field.name !== 'confirmed').map(field => [field.name, field.value]));
     drafts.set(dialogContext.key, data);
   };
-  function closeDialog() { saveDraft(); dialog.close(); }
+  function captureFocus() {
+    const element = document.activeElement, pane = element.closest?.('[data-native-pane]');
+    return { element, session: element.dataset?.session || pane?.dataset.session, window: element.dataset?.window || pane?.dataset.window, action: element.dataset?.nativeAction, title: element.textContent, paneTitle: element.classList?.contains('native-overview-pane-title') };
+  }
+  function restoreFocus(focus) {
+    if (!focus || dialog.open) return;
+    const tile = [...root.querySelectorAll('[data-native-pane]')].find(p => p.dataset.session === focus.session && p.dataset.window === focus.window);
+    const control = focus.action ? [...root.querySelectorAll('[data-native-action]')].find(b => b.dataset.session === focus.session && b.dataset.window === focus.window && b.dataset.nativeAction === focus.action) : tile && [...tile.querySelectorAll('a')].find(a => focus.paneTitle ? a.classList.contains('native-overview-pane-title') : a.textContent === focus.title);
+    (control || (focus.element.isConnected ? focus.element : null))?.focus({ preventScroll: true });
+  }
+  function closeDialog() { saveDraft(); dialog.close(); restoreFocus(dialogContext?.returnFocus); }
   function syncDirectory() {
     const field = dialog.querySelector('[name=cwd]');
     if (!field) return;
@@ -95,6 +107,34 @@ export function createTuios({ root, refresh }) {
   function paneRows(data) {
     return (data.windows || []).map(w => ({ ...data.agents?.find(a => windowId(a) === windowId(w)), ...w }));
   }
+  function overviewNav() {
+    return `<nav class="native-overview-nav" aria-label="TUIOS views"><a href="#tuios-overview"${route.view === 'overview' ? ' aria-current="page"' : ''}>Overview</a><a href="#tuios"${!route.view && !route.session ? ' aria-current="page"' : ''}>Sessions</a></nav>`;
+  }
+  function overviewPane(s, w) {
+    const id = windowId(w), context = { session: s.target, workspace: w.workspace, window: id };
+    const managed = store.state.agents.find(a => a.id === id) || store.state.panes.find(p => p.id === id);
+    const task = store.state.tasks.find(t => t.id === managed?.task_id);
+    const taskLabel = task ? task.title : managed?.task_id ? 'Assigned task unavailable' : 'No task assigned';
+    const host = w.host || s.host || 'local', state = stateName(w), harness = w.harness_id || w.agent_harness || '';
+    return `<article class="native-overview-pane${w.focused ? ' is-focused' : ''}${w.minimized ? ' is-minimized' : ''}" data-wb-key="overview-pane:${esc(s.target)}:${esc(id)}" data-native-pane data-session="${esc(s.target)}" data-window="${esc(id)}" data-workspace="${esc(w.workspace)}" data-status="${esc(state)}" draggable="${!mutation}" aria-describedby="native-overview-instructions"><a class="native-overview-pane-title" href="${href(s.target, w.workspace, id)}" title="${esc(paneName(w))}">${esc(paneName(w))}</a><div class="native-overview-pane-meta"><span class="badge">${esc(state)}</span><span>${esc(harness || 'No agent harness')}</span><span>${esc(host)}</span>${w.focused ? '<span>Terminal focus</span>' : ''}${w.minimized ? '<span>Minimized</span>' : ''}${w.needs_you ? '<span>Needs you</span>' : ''}<span>${task ? `<a href="#task/${encodeURIComponent(task.id)}">${esc(taskLabel)}</a>` : esc(taskLabel)}</span><small title="Native UUID">${esc(id)}</small></div><div class="native-overview-pane-actions"><a href="${href(s.target, w.workspace, id)}">Inspect</a>${actionButton('move-window', context)}${actionButton('assign-task', context)}</div></article>`;
+  }
+  function overview() {
+    const all = inventory?.sessions || [];
+    const rows = all.flatMap(s => unavailableSession(s) || errors.has('session:' + s.target) ? [] : paneRows(sessions.get(s.target) || {}).map(w => ({ ...w, overviewSession: s.target, overviewSessionName: sessionLabel(s), host: w.host || s.host || 'local', assignedTask: store.state.tasks.find(t => t.id === store.state.agents.find(a => a.id === windowId(w))?.task_id)?.title || '' })));
+    const found = filtered(rows, w => w.host, stateName), f = filter(), activeFilters = Boolean(f.search || f.host || f.status);
+    const groups = all.map(s => {
+      const data = sessions.get(s.target), unavailable = unavailableSession(s), failure = errors.get('session:' + s.target);
+      const panes = found.filter(w => w.overviewSession === s.target), nativePanes = data?.windows || [];
+      if (activeFilters && !panes.length && (nativePanes.length && !unavailable && !failure || !filtered([s], x => x.host || 'local', sessionState).length)) return '';
+      const blocked = unavailable || failure || (!data ? 'Reading this session…' : '');
+      const cards = !blocked ? data.workspaces.filter(w => showEmptyWorkspaces || panes.some(p => Number(p.workspace) === workspaceId(w)) || !nativePanes.length && workspaceId(w) === Number(data.info.current_workspace)).map(w => {
+        const ws = workspaceId(w), current = ws === Number(data.info.current_workspace), inWorkspace = panes.filter(p => Number(p.workspace) === ws), occupied = nativePanes.some(p => Number(p.workspace) === ws), context = { session: s.target, workspace: ws };
+        return `<section class="native-overview-workspace${occupied ? '' : ' is-empty'}${current ? ' is-current' : ''}" data-wb-key="overview-workspace:${esc(s.target)}:${ws}" data-native-workspace data-session="${esc(s.target)}" data-workspace="${ws}" aria-label="${esc(sessionLabel(s))}, ${esc(workspaceLabel(w))}"><div class="native-overview-workspace-heading"><div><h4><a href="${href(s.target, ws)}">${esc(workspaceLabel(w))}</a></h4><small>${inWorkspace.length} matching pane${inWorkspace.length === 1 ? '' : 's'}${current ? ' · terminal workspace' : ''}</small></div><div class="native-row-actions">${actionButton('create-window', context)}${actionButton('create-agent', context)}</div></div><div class="native-overview-panes">${inWorkspace.map(p => overviewPane(s, p)).join('') || empty(occupied ? 'No panes match these filters. Drop a pane here to move it.' : 'Empty workspace. Drop a pane from this session here.')}</div></section>`;
+      }).join('') : '';
+      return `<section class="native-overview-session" data-wb-key="overview-session:${esc(s.target)}" data-session="${esc(s.target)}"><div class="native-overview-session-heading"><div><h3><a href="${href(s.target)}">${esc(sessionLabel(s))}</a></h3><p class="hint">${esc(s.target)} · ${esc(s.host || 'local')} · ${esc(sessionState(s))}${!blocked ? ' · ' + nativePanes.length + ' panes' : ''}${reading.has('session:' + s.target) && data ? ' · reading, showing previous read' : data && !blocked ? ' · read ' + esc(data.overviewReadAt) : ''}</p></div><div class="native-row-actions"><a href="${href(s.target)}">Inspect session</a>${actionButton('create-window', { session: s.target }, blocked)}${actionButton('create-agent', { session: s.target }, blocked)}</div></div>${blocked ? `<p class="${failure ? 'form-error danger' : 'native-empty'}"${failure ? ' role="alert"' : ''}>${esc(blocked)}${failure ? ' · Use Read again to retry. No live pane data shown.' : ''}</p>` : `<div class="native-overview-workspaces">${cards || empty(activeFilters ? 'No panes match these filters.' : 'No native workspaces reported.')}</div>`}</section>`;
+    }).join('');
+    return `<section class="native-overview"><div class="native-section-heading"><h2>Overview <span>${all.length} sessions</span></h2>${actionButton('create-session')}</div><div class="native-overview-controls"><details class="native-overview-filter" data-wb-key="overview-filters"><summary>Filter panes</summary>${filterBar(rows, w => w.host, stateName)}</details><label class="native-confirm"><input id="native-overview-empty" type="checkbox" data-native-empty-workspaces${showEmptyWorkspaces ? ' checked' : ''}>Show empty workspaces</label></div><p id="native-overview-instructions" class="hint">One tile per native pane. Drag between workspaces in the same session, or use Move pane. Inspect does not change terminal focus.</p>${groups || empty(inventory ? activeFilters ? 'No sessions or panes match these filters.' : 'No native sessions. Create a session to open a pane.' : 'Reading native sessions…')}</section>`;
+  }
   function paneList(data) {
     const rows = paneRows(data).filter(w => route.workspace == null || Number(w.workspace) === route.workspace);
     const host = w => w.host || data.session.host || 'local', found = filtered(rows, host, stateName);
@@ -131,10 +171,13 @@ export function createTuios({ root, refresh }) {
   }
   function render(next = route) {
     route = next;
-    if (!supports(route)) return;
-    const readingNow = ['inventory', 'session:' + route.session, 'window:' + detailKey(route)].some(key => reading.has(key));
+    if (dragging && route?.view !== 'overview') endDrag();
+    if (!supports(route) || dragging) return;
+    const readingNow = route.view === 'overview' ? reading.size > 0 : ['inventory', 'session:' + route.session, 'window:' + detailKey(route)].some(key => reading.has(key));
     const failure = errors.get(route.window ? 'window:' + detailKey(route) : route.session ? 'session:' + route.session : 'inventory') || errors.get('inventory');
-    patchHTML(root, `<section id="native-browser" class="native-browser">${breadcrumbs()}<div class="native-toolbar"><p class="hint" role="status">${readingNow ? 'Reading native state…' : readAt ? 'Read ' + readAt : 'Native state has not been read yet.'}</p><button type="button" data-native-read${readingNow ? ' disabled' : ''}>Read again</button></div>${notice ? `<p class="native-notice" role="status">${esc(notice)}</p>` : ''}${failure ? `<p class="form-error danger" role="alert">${esc(failure)} · Use Read again to retry.</p>` : ''}${(inventory?.hosts || []).filter(h => h.error).map(h => `<p class="native-host-error" role="alert">${esc(h.host)} · ${esc(h.status)}: ${esc(h.error)}</p>`).join('')}${launchStatus()}<div class="native-layout">${tree()}<div id="native-content">${route.window ? windowView() : route.session ? sessionView() : sessionList()}</div></div></section>`);
+    const focused = captureFocus();
+    patchHTML(root, `<section id="native-browser" class="native-browser">${overviewNav()}${route.view === 'overview' ? '' : breadcrumbs()}<div class="native-toolbar"><p class="hint" role="status">${readingNow ? 'Reading native state…' : readAt ? 'Read ' + readAt : 'Native state has not been read yet.'}</p><button type="button" data-native-read${readingNow ? ' disabled' : ''}>Read again</button></div><p id="native-overview-status" class="native-notice" role="status" aria-live="polite" aria-atomic="true"${notice ? '' : ' hidden'}>${esc(notice)}</p>${failure ? `<p class="form-error danger" role="alert">${esc(failure)} · Use Read again to retry.</p>` : ''}${(inventory?.hosts || []).filter(h => h.error).map(h => `<p class="native-host-error" role="alert">${esc(h.host)} · ${esc(h.status)}: ${esc(h.error)}</p>`).join('')}${launchStatus()}${route.view === 'overview' ? `<div id="native-content">${overview()}</div>` : `<div class="native-layout">${tree()}<div id="native-content">${route.window ? windowView() : route.session ? sessionView() : sessionList()}</div></div>`}</section>`);
+    if (!focused.element.isConnected) restoreFocus(focused);
     const rail = root.querySelector('#native-tree');
     if (rail) rail.scrollTop = treeScroll;
   }
@@ -146,17 +189,29 @@ export function createTuios({ root, refresh }) {
   }
   async function read(next = route) {
     if (!supports(next)) return;
-    const operations = [readResource('inventory', '/tuios', data => { inventory = data; })];
-    if (next.session) operations.push(readResource('session:' + next.session, '/tuios?session=' + encodeURIComponent(next.session), data => sessions.set(next.session, data)));
+    if (dragging) { deferredRead = true; return; }
+    deferredRead = false;
+    const rootRead = readResource('inventory', '/tuios', data => { inventory = data; });
+    if (next.view === 'overview') {
+      await rootRead;
+      if (dragging) { deferredRead = true; return; }
+      if (errors.has('inventory')) return;
+      await Promise.all(inventory.sessions.filter(s => !unavailableSession(s)).map(s => readResource('session:' + s.target, '/tuios?session=' + encodeURIComponent(s.target), data => sessions.set(s.target, { ...data, overviewReadAt: new Date().toLocaleTimeString() }))));
+      return;
+    }
+    const operations = [rootRead];
+    if (next.session) operations.push(readResource('session:' + next.session, '/tuios?session=' + encodeURIComponent(next.session), data => sessions.set(next.session, { ...data, overviewReadAt: new Date().toLocaleTimeString() })));
     if (next.window) operations.push(readResource('window:' + detailKey(next), '/tuios/window?session=' + encodeURIComponent(next.session) + '&window=' + encodeURIComponent(next.window), data => windows.set(detailKey(next), data)));
     await Promise.all(operations);
   }
   async function enter(next, changed) {
+    if (dragging && next.view !== 'overview') endDrag();
     if (dialog.open && changed) closeDialog();
     route = next;
     if (supports(next) && changed) await read(next);
   }
   async function update() {
+    if (dragging) { deferredRead = true; return; }
     if (!supports(route) || mutation || dialog.open || root.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) return;
     await read();
   }
@@ -172,15 +227,16 @@ export function createTuios({ root, refresh }) {
     const key = [action, context.session, context.workspace ?? '', context.window || ''].join('|');
     const draft = drafts.get(key) || {}, workspace = draft.workspace ?? context.workspace ?? data?.info?.current_workspace ?? 1;
     const task = store.state.agents.find(a => a.id === context.window)?.task_id;
-    dialogContext = { action, ...context, key };
+    dialogContext = { action, ...context, key, returnFocus: { ...captureFocus(), session: context.session, window: context.window, action } };
     let fields = '', hint = '', submitLabel = names[action];
     if (['create-session', 'label-session', 'rename-session', 'name-workspace', 'create-window', 'rename-window', 'split-window', 'create-agent'].includes(action)) {
       const value = draft.name ?? (action === 'label-session' ? session?.display_name || session?.label || '' : action === 'rename-session' ? session?.name || context.session : action === 'name-workspace' ? data?.workspaces.find(w => workspaceId(w) === context.workspace)?.name || '' : action === 'rename-window' ? paneName(w || {}) : '');
       fields += field('name', action === 'label-session' ? 'Display label (empty clears; address stays unchanged)' : 'Name', value, (['label-session', 'name-workspace', 'rename-window'].includes(action) ? '' : 'required ') + 'maxlength="120"');
     }
     if (['create-session', 'create-window'].includes(action)) fields += choice('host', 'Host', [{ value: '', label: 'Session / local default' }, ...(inventory?.hosts || []).filter(h => h.host !== 'local').map(h => ({ value: h.host, label: h.host }))], draft.host || '');
-    if (['create-window', 'create-agent', 'move-window', 'name-workspace', 'select-workspace', 'close-workspace'].includes(action)) {
-      fields += field('workspace', action === 'move-window' ? 'Destination numbered workspace · same session' : 'Numbered workspace', workspace, 'type="number" min="1" step="1" required list="native-workspace-options"');
+    if (action === 'move-window') fields += choice('workspace', 'Destination numbered workspace · same session', knownWorkspaces(context.session).map(w => ({ value: workspaceId(w), label: workspaceLabel(w) })), workspace);
+    if (['create-window', 'create-agent', 'name-workspace', 'select-workspace', 'close-workspace'].includes(action)) {
+      fields += field('workspace', 'Numbered workspace', workspace, 'type="number" min="1" step="1" required list="native-workspace-options"');
       fields += `<datalist id="native-workspace-options">${knownWorkspaces(context.session).map(w => `<option value="${workspaceId(w)}">${esc(workspaceLabel(w))}</option>`).join('')}</datalist>`;
     }
     if (['create-window', 'create-agent'].includes(action)) {
@@ -238,6 +294,12 @@ export function createTuios({ root, refresh }) {
     for (const name of ['tiling', 'equalize', 'rotate']) if (payload[name] === '') delete payload[name]; else if (payload[name] !== undefined) payload[name] = payload[name] === 'true';
     for (const name of ['cwd', 'host', 'masterPosition']) if (!payload[name]) delete payload[name];
     if (destructive.has(action)) payload.confirmed = values.confirmed === 'on';
+    if (action === 'move-window') {
+      const source = sessions.get(context.session)?.windows.find(w => windowId(w) === context.window);
+      if (!source) throw new Error('This native pane is no longer available. Read again before moving.');
+      if (!knownWorkspaces(context.session).some(w => workspaceId(w) === payload.workspace)) throw new Error('Choose an existing native workspace in this session.');
+      if (Number(source.workspace) === payload.workspace) { announce('Pane is already in workspace ' + payload.workspace + '. No move was sent.'); render(); return {}; }
+    }
     const result = await api('/tuios/action', payload);
     notice = `${names[action]} accepted by TUIOS.`;
     if (result.threadId) {
@@ -259,7 +321,73 @@ export function createTuios({ root, refresh }) {
   });
   root.addEventListener('change', e => {
     if (e.target.dataset.nativeFilter) { filter()[e.target.dataset.nativeFilter] = e.target.value; render(); }
+    if (e.target.hasAttribute('data-native-empty-workspaces')) {
+      showEmptyWorkspaces = e.target.checked;
+      try { sessionStorage.setItem('native-overview.empty-workspaces', showEmptyWorkspaces ? '1' : '0'); } catch {}
+      render();
+    }
   });
+  function announce(text) {
+    if (notice === text) return;
+    notice = text;
+    const status = root.querySelector('#native-overview-status');
+    if (status) { status.hidden = !text; status.textContent = text; }
+  }
+  function endDrag() {
+    dragging = null;
+    root.querySelectorAll('.is-dragging, .is-drop-target').forEach(node => node.classList.remove('is-dragging', 'is-drop-target'));
+  }
+  function flushDragRead() {
+    if (deferredRead && !dragging && !mutation && supports(route)) return read();
+  }
+  function dragSource() {
+    if (!dragging) return null;
+    const s = inventory?.sessions.find(s => s.target === dragging.session);
+    if (!s || unavailableSession(s) || errors.has('session:' + s.target)) return null;
+    return sessions.get(s.target)?.windows.find(w => windowId(w) === dragging.window);
+  }
+  root.addEventListener('dragstart', e => {
+    const tile = e.target.closest('[data-native-pane]');
+    if (!tile || route?.view !== 'overview') return;
+    if (mutation || dialog.open || e.target.closest('a, button, input, select, textarea')) { e.preventDefault(); return; }
+    dragging = { session: tile.dataset.session, window: tile.dataset.window };
+    const source = dragSource();
+    if (!source) { endDrag(); e.preventDefault(); return; }
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-tuios-pane', windowId(source));
+    tile.classList.add('is-dragging');
+    announce('Moving ' + paneName(source) + '. Drop on a workspace in the same session.');
+  });
+  root.addEventListener('dragover', e => {
+    const card = e.target.closest('[data-native-workspace]');
+    if (!card || !dragging) return;
+    e.preventDefault();
+    const source = dragSource(), valid = source && !mutation && card.dataset.session === dragging.session && knownWorkspaces(dragging.session).some(w => workspaceId(w) === Number(card.dataset.workspace));
+    e.dataTransfer.dropEffect = valid ? 'move' : 'none';
+    if (card.dataset.session !== dragging.session) announce('Cannot move panes between sessions. Choose a workspace in the same session.');
+    else if (valid) announce('Drop ' + paneName(source) + ' in workspace ' + card.dataset.workspace + ' of ' + dragging.session + '.');
+    root.querySelectorAll('.is-drop-target').forEach(node => { if (node !== card || !valid) node.classList.remove('is-drop-target'); });
+    if (valid) card.classList.add('is-drop-target');
+  });
+  root.addEventListener('dragleave', e => {
+    const card = e.target.closest('[data-native-workspace]');
+    if (card && !card.contains(e.relatedTarget)) card.classList.remove('is-drop-target');
+  });
+  root.addEventListener('drop', async e => {
+    const card = e.target.closest('[data-native-workspace]');
+    if (!card || !dragging) return;
+    e.preventDefault();
+    const context = dragging, source = dragSource(), destination = Number(card.dataset.workspace);
+    endDrag();
+    if (card.dataset.session !== context.session) { announce('Cannot move panes between sessions. Choose a workspace in the same session.'); render(); await flushDragRead(); return; }
+    if (!source || !knownWorkspaces(context.session).some(w => workspaceId(w) === destination)) { announce('This pane or destination is no longer available. Read again before moving.'); render(); await flushDragRead(); return; }
+    if (mutation) { announce('Another native operation is still in progress.'); render(); await flushDragRead(); return; }
+    mutation = true;
+    try { await mutate('move-window', context, { workspace: destination }); }
+    catch (err) { announce('Move failed: ' + err.message); }
+    finally { mutation = false; render(); await flushDragRead(); }
+  });
+  root.addEventListener('dragend', () => { if (dragging && !notice.startsWith('Cannot move panes between sessions.')) announce('Move canceled.'); endDrag(); render(); flushDragRead(); });
   root.addEventListener('scroll', e => { if (e.target.id === 'native-tree') treeScroll = e.target.scrollTop; }, true);
   root.addEventListener('toggle', e => { if (e.target.dataset.nativeTree) expanded.set(e.target.dataset.nativeTree, e.target.open); }, true);
   root.addEventListener('click', async e => {
@@ -293,9 +421,9 @@ export function createTuios({ root, refresh }) {
     saveDraft(); mutation = true; form.dataset.submitting = '';
     const controls = [...form.querySelectorAll('button, input, select, textarea')].map(control => ({ control, disabled: control.disabled }));
     controls.forEach(({ control }) => control.disabled = true); error.hidden = true;
-    try { await mutate(context.action, context, values); drafts.delete(context.key); if (dialogContext === context) dialog.close(); }
+    try { await mutate(context.action, context, values); drafts.delete(context.key); if (dialogContext === context) { dialog.close(); restoreFocus(context.returnFocus); } }
     catch (err) { error.textContent = err.message; error.hidden = false; }
-    finally { mutation = false; delete form.dataset.submitting; controls.forEach(({ control, disabled }) => control.disabled = disabled); }
+    finally { mutation = false; delete form.dataset.submitting; controls.forEach(({ control, disabled }) => control.disabled = disabled); render(); }
   });
   function interrupt(pane) {
     if (!pane?.session) throw new Error('This pane’s native session is not available. Reconcile sessions before interrupting it.');

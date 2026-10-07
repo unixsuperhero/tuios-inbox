@@ -81,6 +81,12 @@ turn: { id, session, pane_id, pane_name, harness, prompt, response, source, stat
 
 Choose **TUIOS** to browse native sessions, numbered workspaces, and windows. Each window is one terminal pane. An agent is state and harness metadata on that same pane UUID, not another movable child. The hierarchy includes native panes created outside Inbox.
 
+Choose **Overview** (`#tuios-overview`) for a visual inventory of all live sessions. Each session contains workspace cards, with pane tiles showing name, execution state, harness, host, and task assignment. Tiles show membership, not the native terminal layout. **Sessions** retains the detailed table browser.
+
+Use **Inspect** to open a pane’s native details and snapshot. Use **Move pane** to choose any workspace in the same session, or drag a tile onto a workspace card. **Show empty workspaces** reveals empty destinations. Cross-session drops and same-workspace drops send no mutation. Moves retain the native pane UUID and do not change task assignment or future task homes.
+
+**Filter panes** expands search, host, and state controls without crowding the overview. Filters and the empty-workspace preference survive navigation and live reads. The overview reads session metadata, not every pane’s terminal capture. Native updates wait during an active drag, then refresh after it ends. Unavailable sessions and failed reads remain explicit.
+
 Session and pane tables have Name, Host, State, and Actions columns, with search and host/state filters. Pane details show full native metadata, agent state, bounded activity, and a 200-line terminal snapshot. **Read again** refreshes native state. Browsing never selects a terminal workspace or changes terminal focus. **Select in terminal** and **Focus in terminal** are explicit actions.
 
 Create sessions and panes, label or rename sessions, set session accents, name workspaces, rename panes, move panes between workspaces in the same session, and minimize or restore panes. Splits require an attached terminal client with tiling enabled and can change terminal focus. Session layout controls affect the terminal-selected workspace, not the browsed workspace. Native cross-session pane transfer is unavailable. Session rename and kill are local-only.

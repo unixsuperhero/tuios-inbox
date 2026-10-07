@@ -57,10 +57,11 @@ function compose(taskId, agentId) {
   openDialog($('#compose-dialog'));
 }
 let route, page, list, terminalPane = null, refreshTimer, refreshVersion = 0;
-const routeKey = r => r?.kind === 'tuios' ? `tuios/${r.session || ''}/${r.workspace || ''}/${r.window || ''}` : r?.kind === 'index' ? r.page : r?.kind === 'queue' ? `queue/${r.bucket}/${r.item || ''}` : `${r?.kind}/${r?.id}`;
+const routeKey = r => r?.kind === 'tuios' ? r.view === 'overview' ? 'tuios-overview' : `tuios/${r.session || ''}/${r.workspace || ''}/${r.window || ''}` : r?.kind === 'index' ? r.page : r?.kind === 'queue' ? `queue/${r.bucket}/${r.item || ''}` : `${r?.kind}/${r?.id}`;
 function parseRoute(hash) {
   const path = hash.replace(/^#\/?/, '');
   if (!path) return { kind: 'index', page: 'inbox' };
+  if (path === 'tuios-overview') return { kind: 'tuios', view: 'overview' };
   const native = /^tuios(?:\/([^/]+)(?:\/(\d+)(?:\/([^/]+))?)?)?$/.exec(path);
   if (native) { try { return { kind: 'tuios', session: native[1] ? decodeURIComponent(native[1]) : undefined, workspace: native[2] ? Number(native[2]) : undefined, window: native[3] ? decodeURIComponent(native[3]) : undefined }; } catch {} }
   if (Object.hasOwn(pages, path)) return { kind: 'index', page: path };
@@ -70,7 +71,7 @@ function parseRoute(hash) {
   if (queue) { try { return { kind: 'queue', bucket: decodeURIComponent(queue[1]), item: queue[2] ? decodeURIComponent(queue[2]) : undefined }; } catch {} }
   return { kind: 'invalid' };
 }
-const routeHash = r => r.kind === 'tuios' ? `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
+const routeHash = r => r.kind === 'tuios' ? r.view === 'overview' ? '#tuios-overview' : `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
 function navigate(next) {
   const hash = routeHash(next);
   if (location.hash === hash) mount(next); else location.hash = hash;
