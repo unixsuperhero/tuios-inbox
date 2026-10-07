@@ -248,9 +248,13 @@ The Task groups work area includes hierarchy explanations, Manage tasks and Mana
 
 ### Metadata and composer
 
-Task metadata contains actual paths, status, notes, and member panes. Agent metadata describes the native recipient and task assignment. The inline composer lives in a Send work to an agent or pane disclosure; live updates preserve its draft and expanded state. It lists each Agent once and only agentless Panes separately, deduplicated by native ID. Sending accepts real native work, not a completion claim. Task composition remains task-scoped.
+Task metadata is read-first. Title/status, directories, parent, and launch home show plain facts with section-level Edit, Save, and Cancel controls. Created time and Task ID remain immutable. Notes render as Markdown, with independent add/edit/delete actions and an Include in prompts checkbox. Marked notes reach agent prompts; shell commands, mail, and approval answers stay unchanged. Drafts survive live updates and edits made while a save is in flight.
+
+Agent metadata describes the native recipient and task assignment. The inline composer lives in a Send work to an agent or pane disclosure; live updates preserve its draft and expanded state. It lists each Agent once and only agentless Panes separately, deduplicated by native ID. Sending accepts real native work, not a completion claim. Task composition remains task-scoped.
 
 Execution host is pane metadata, not task metadata: task members may run on different hosts. Task groups, member rows, agent/pane indexes and details, work-record summaries, review rows, and recipient selectors show the native execution-host label. A matching detailed native pane listing confirms **local** or the reported host name; absent historical metadata shows **Not reported**. Host labels do not change task assignment, routing, or native host configuration.
+
+New Agent and New Pane dialogs include a Host selector populated from registered native hosts. The choice affects only that launch, not task assignment or the future task home. Unavailable hosts remain visible but disabled. Remote launches use native directories rather than local picker paths.
 
 **The Creation Continuation Rule.** A New Task, New Agent, or New Pane choice uses real creation APIs and returns to its initiating selector. Cancel or failure preserves the caller and draft. Agent selection waits for the exact returned startup thread and native pane, never for an unrelated ready session.
 

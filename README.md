@@ -107,14 +107,17 @@ Working-directory **Browse** opens the backend host’s native directory chooser
 ## Working with a task
 
 1. Create a task with an existing project directory. Optionally associate an existing worktree directory. The app never creates worktrees.
-2. Open an agent or shell from the task. Its dedicated TUIOS session is created on demand by default. An explicit future task home can use an existing session or numbered workspace instead.
-3. Compose a prompt or shell command with a subject. Close the page or switch tasks while it runs.
-4. Read the result in Inbox. Reply to continue in the same pane and thread. Archive or mark threads unread independently of TUIOS's ephemeral read state.
-5. Use Inspect for a terminal snapshot, interruption, and shell keys. The inspector shows the `tuios attach SESSION` command for full interactive access.
+2. Read the task as plain text. Use each section's **Edit** button to change its title/status, directories, parent, or future launch home. **Save** applies that section, and **Cancel** leaves it unchanged. Created time and Task ID are immutable.
+3. Open an agent or shell from the task. Its dedicated TUIOS session is created on demand by default. An explicit future task home can use an existing session or numbered workspace instead. The **Host** selector applies to this new launch only. Choose the task's host or a registered TUIOS host. The task's home and existing panes stay put.
+4. Compose a prompt or shell command with a subject. Close the page or switch tasks while it runs.
+5. Read the result in Inbox. Reply to continue in the same pane and thread. Archive or mark threads unread independently of TUIOS's ephemeral read state.
+6. Use Inspect for a terminal snapshot, interruption, and shell keys. The inspector shows the `tuios attach SESSION` command for full interactive access.
+
+Register remote hosts with `tuios hosts add`. The launch dialog lists native link status and disables unavailable hosts. Remote agents use `HOST:SESSION` and the remote executable/checkout defaults; profile environment overrides cannot cross hosts. From a local task home, a remote shell opens as a hosted window in that session. From a remote task home, a shell on another host requires the destination session to exist. No launch changes the task's home.
 
 Agent profiles configure executable, argv, protocol, and environment. Executable Browse opens the backend host's native macOS file chooser; typing a command resolved through PATH remains valid. Project and existing-worktree Browse controls use the native directory chooser. Canceling either picker preserves the current input. Pickers choose the backend filesystem, not the browser device's filesystem. Put model and reasoning options in argv using your harness's actual CLI flags. Codex app-server and OpenCode ACP profiles use TUIOS's structured terminal adapters. Claude Code and oh-my-pi profiles use their native terminal interfaces. Credentials are inherited from the backend's environment and harness settings. Environment overrides are stored in the local database; prefer inherited credentials.
 
-Task status and notes are editable. The project and optional worktree paths identify the working directories. Panes and conversation metadata belong to the task; terminal lifecycle is independent of the browser lifecycle. Closing the web backend does not terminate TUIOS's panes. On restart, an interrupted dispatch is marked uncertain and is never automatically replayed.
+Task status and paths are editable. A task holds any number of Markdown notes, each created, edited, and deleted on its own (`POST /api/tasks/:id/notes`, `PATCH`/`DELETE /api/tasks/:id/notes/:noteId`). A note marked as context is added, as quoted reference data, to prompts sent to a task's agents (compose, thread replies, direct agent prompts); unmarked notes are never sent, and shell commands, approvals, and mail are never modified. The sent prompt, including notes, is what the thread history records. Existing single-text notes migrate to one unmarked note on first start. The project and optional worktree paths identify the working directories. Panes and conversation metadata belong to the task; terminal lifecycle is independent of the browser lifecycle. Closing the web backend does not terminate TUIOS's panes. On restart, an interrupted dispatch is marked uncertain and is never automatically replayed.
 
 ## Agent mail
 
@@ -244,7 +247,7 @@ A hook-only collector survives backend downtime but cannot provide live control 
 
 ```js
 {
-  task: { id, title, path, worktree, status, notes, session },
+  task: { id, title, path, worktree, status, session, notes: [{ id, body, context, created, updated }] },
   pane: { id, task_id, kind, profile_id, state, conversation_id },
   thread: { id, task_id, pane_id, subject, kind, unread, archived },
   message: { id, thread_id, role, body, status, meta, created }

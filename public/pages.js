@@ -1,6 +1,6 @@
 // Page schemas and record markup; app.js owns navigation, dialogs and delegated actions.
 import { markdown } from '/markdown.js';
-export const store = { state: { tasks: [], panes: [], profiles: [], agents: [], items: [] }, drafts: new Map(), bodies: new Map(), questions: new Map() };
+export const store = { state: { tasks: [], panes: [], profiles: [], agents: [], items: [] }, drafts: new Map(), edits: new Map(), liveSessions: null, bodies: new Map(), questions: new Map() };
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 export async function api(path, body, method = 'POST') {
   const response = await fetch('/api' + path, body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) });
@@ -176,6 +176,51 @@ const itemList = (storageKey, fields, archived, empty) => ({
 // ---- Tasks ----
 const statuses = ['open', 'active', 'done'].map(s => ({ value: s, label: s }));
 const basename = path => path.split('/').filter(Boolean).pop() || path;
+// Edit drafts live in store.edits (keyed by task and section) so periodic refreshes never reset what is being typed.
+export const editKey = (taskId, section) => `${taskId}|${section}`;
+const homeText = t => `${t.session} · ${t.workspace == null ? 'session default workspace' : 'workspace ' + t.workspace}`;
+const sectionHead = (t, section, title) => `<div class="section-head"><h2 class="section-title">${title}</h2>${store.edits.has(editKey(t.id, section)) ? '' : `<button type="button" class="subtle" data-do="edit-section" data-id="${esc(t.id)}" data-section="${section}">Edit</button>`}</div>`;
+const sectionButtons = (t, section) => `<div class="actions"><button type="button" class="primary" data-do="save-section"${store.edits.get(editKey(t.id, section))?.saving ? ' disabled' : ''} data-id="${esc(t.id)}" data-section="${section}">Save</button><button type="button" data-do="cancel-section" data-id="${esc(t.id)}" data-section="${section}">Cancel</button></div>`;
+const field = (t, section, name, value) => `data-edit="${esc(editKey(t.id, section))}" data-field="${name}"${value === undefined ? '' : ` value="${esc(value)}"`}`;
+const fact = (label, html) => `<div><dt>${label}</dt><dd>${html}</dd></div>`;
+const optionList = (choices, current) => choices.map(o => `<option value="${esc(o.value)}"${o.value === (current ?? '') ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+function titleSection(t) {
+  const d = store.edits.get(editKey(t.id, 'title'));
+  if (!d) return `<section class="task-section" data-wb-key="section:title">${sectionHead(t, 'title', 'Task')}<dl class="metadata-facts">${fact('Title', esc(t.title))}${fact('Status', badge(t.status))}</dl></section>`;
+  return `<section class="task-section is-editing" data-wb-key="section:title">${sectionHead(t, 'title', 'Task')}<div class="props"><label class="grow">Title<input ${field(t, 'title', 'title', d.title)} maxlength="200"></label><label>Status<select ${field(t, 'title', 'status')}>${optionList(statuses, d.status)}</select></label></div>${sectionButtons(t, 'title')}</section>`;
+}
+function pathsSection(t) {
+  const d = store.edits.get(editKey(t.id, 'paths'));
+  if (!d) return `<section class="task-section" data-wb-key="section:paths">${sectionHead(t, 'paths', 'Directories')}<dl class="metadata-facts">${fact('Project path', t.path ? esc(t.path) : '<span class="hint">Not set · panes open in your home directory</span>')}${fact('Existing worktree', t.worktree ? esc(t.worktree) : '<span class="hint">None · uses the project path</span>')}</dl></section>`;
+  const box = (name, label, placeholder) => `<label class="grow">${label} <small>Optional</small><span class="browse"><input id="task-${name}-${esc(t.id)}" ${field(t, 'paths', name, d[name])} list="path-options" placeholder="${placeholder}"><button type="button" data-do="browse" data-id="task-${name}-${esc(t.id)}">Browse…</button></span></label>`;
+  return `<section class="task-section is-editing" data-wb-key="section:paths">${sectionHead(t, 'paths', 'Directories')}<div class="props">${box('path', 'Project path', 'Not set · panes open in your home directory')}${box('worktree', 'Existing worktree', 'Leave empty to use the project path')}</div>${sectionButtons(t, 'paths')}</section>`;
+}
+function parentSection(t) {
+  const d = store.edits.get(editKey(t.id, 'parent')), parent = store.state.tasks.find(p => p.id === t.parent_id);
+  const children = store.state.tasks.filter(c => c.parent_id === t.id && !c.archived);
+  const view = d ? `<div class="props"><label class="grow">Parent task<select ${field(t, 'parent', 'parent_id')}>${optionList([{ value: '', label: 'No parent · top-level task' }, ...taskOptions(subtree(t.id))], d.parent_id)}</select></label></div>${sectionButtons(t, 'parent')}`
+    : `<dl class="metadata-facts">${fact('Parent task', parent ? `<a href="${taskHref(parent.id)}">${esc(parent.title)}</a>` : '<span class="hint">None · top-level task</span>')}</dl>`;
+  return `<section class="task-section${d ? ' is-editing' : ''}" data-wb-key="section:parent">${sectionHead(t, 'parent', 'Parent')}${view}<div class="metadata-subtasks"><h2 class="section-title">Subtasks <span>${children.length}</span></h2>${children.length ? `<ul class="subtask-list">${children.map(c => `<li><a href="${taskHref(c.id)}">${esc(c.title)}</a> ${badge(c.status)}</li>`).join('')}</ul>` : ''}<div class="actions"><button data-do="new-subtask" data-id="${esc(t.id)}">New subtask…</button></div></div></section>`;
+}
+function homeSection(t) {
+  const d = store.edits.get(editKey(t.id, 'home'));
+  const link = `<a href="#tuios/${encodeURIComponent(t.session)}${t.workspace == null ? '' : '/' + t.workspace}">${esc(homeText(t))}</a>`;
+  if (!d) return `<section class="task-section" data-wb-key="section:home">${sectionHead(t, 'home', 'Launch home')}<dl class="metadata-facts">${fact('Future launch home', link)}</dl>${hint('Future launches only. Existing panes, assigned work and history are not moved.')}</section>`;
+  const live = store.liveSessions, sessions = [...(live || []), ...(live?.some(s => s.value === d.session) ? [] : [{ value: d.session, label: `${d.session} · not reported live` }])];
+  return `<section class="task-section is-editing" data-wb-key="section:home">${sectionHead(t, 'home', 'Launch home')}<div class="props"><label class="grow">Session<select ${field(t, 'home', 'session')}>${optionList(sessions, d.session)}</select></label><label>Workspace <small>Empty = session default</small><input type="number" min="1" step="1" ${field(t, 'home', 'workspace', d.workspace)}></label></div>${live ? '' : hint('Reading live sessions…')}${hint('Future launches only. Existing panes, assigned work and history are not moved.')}${sectionButtons(t, 'home')}</section>`;
+}
+const notesOf = t => Array.isArray(t.notes) ? t.notes : [];
+function noteHtml(t, n) {
+  const d = store.edits.get(editKey(t.id, `note:${n.id}`)), id = esc(n.id), tid = esc(t.id);
+  const mark = (checked, attrs) => `<label class="note-context"><input type="checkbox" ${attrs}${checked ? ' checked' : ''}> Include in prompts sent to agents</label>`;
+  if (!d) return `<article class="task-note${n.context ? ' is-context' : ''}" data-wb-key="note:${id}"><div class="md">${markdown(n.body)}</div><div class="note-bar">${mark(n.context, `data-do="note-context" data-id="${tid}" data-note="${id}"`)}<small>${esc(time(n.updated || n.created))}</small><button type="button" class="subtle" data-do="note-edit" data-id="${tid}" data-note="${id}">Edit</button><button type="button" class="subtle danger" data-do="note-delete" data-id="${tid}" data-note="${id}">Delete</button></div></article>`;
+  return `<article class="task-note is-editing" data-wb-key="note:${id}"><label>Note <small>Markdown</small><textarea rows="6" ${field(t, `note:${n.id}`, 'body')}>${esc(d.body)}</textarea></label>${mark(d.context, `data-edit="${esc(editKey(t.id, `note:${n.id}`))}" data-field="context"`)}<div class="actions"><button type="button" class="primary" data-do="note-save"${d.saving ? ' disabled' : ''} data-id="${tid}" data-note="${id}">Save</button><button type="button" data-do="note-cancel" data-id="${tid}" data-note="${id}">Cancel</button></div></article>`;
+}
+function notesSection(t) {
+  const d = store.edits.get(editKey(t.id, 'note:new')), notes = notesOf(t);
+  const editor = d ? `<article class="task-note is-editing" data-wb-key="note:new"><label>New note <small>Markdown</small><textarea rows="6" ${field(t, 'note:new', 'body')}>${esc(d.body)}</textarea></label><label class="note-context"><input type="checkbox" data-edit="${esc(editKey(t.id, 'note:new'))}" data-field="context"${d.context ? ' checked' : ''}> Include in prompts sent to agents</label><div class="actions"><button type="button" class="primary" data-do="note-save"${d.saving ? ' disabled' : ''} data-id="${esc(t.id)}" data-note="new">Add note</button><button type="button" data-do="note-cancel" data-id="${esc(t.id)}" data-note="new">Cancel</button></div></article>` : '';
+  return `<section class="task-section" data-wb-key="section:notes"><div class="section-head"><h2 class="section-title">Notes <span>${notes.length}</span></h2>${d ? '' : `<button type="button" class="subtle" data-do="note-new" data-id="${esc(t.id)}">Add note</button>`}</div>${notes.map(n => noteHtml(t, n)).join('') || (d ? '' : hint('No notes yet.'))}${editor}${hint('Notes marked “Include in prompts” are added to the context of work you send from this task. Notes are text only and are never run as commands.')}</section>`;
+}
 function taskDetail(t) {
   const { panes, agents } = store.state, mine = panes.filter(p => p.task_id === t.id);
   const members = [...new Map([
@@ -184,14 +229,10 @@ function taskDetail(t) {
   ]).values()];
   return `<section class="entity-metadata" aria-label="Task details">
     <div class="metadata-heading"><a href="#tasks">← Tasks</a>${archivedTag(t)}</div>
-    <div class="props"><label class="grow">Title<input data-set="task-title" data-id="${esc(t.id)}" value="${esc(t.title)}" maxlength="200"></label>${select('task-status', t.id, t.status, statuses, 'Status')}</div>
-    <div class="props"><label class="grow">Project path <small>Optional</small><span class="browse"><input id="task-path-${esc(t.id)}" data-set="task-path" data-id="${esc(t.id)}" value="${esc(t.path)}" list="path-options" placeholder="Not set · panes open in your home directory"><button type="button" data-do="browse" data-id="task-path-${esc(t.id)}">Browse…</button></span></label><label class="grow">Existing worktree <small>Optional</small><span class="browse"><input id="task-worktree-${esc(t.id)}" data-set="task-worktree" data-id="${esc(t.id)}" value="${esc(t.worktree)}" list="path-options" placeholder="Leave empty to use the project path"><button type="button" data-do="browse" data-id="task-worktree-${esc(t.id)}">Browse…</button></span></label></div>
-    <div class="props">${select('task-parent', t.id, t.parent_id, [{ value: '', label: 'No parent · top-level task' }, ...taskOptions(subtree(t.id))], 'Parent task')}</div>
-    ${(() => { const children = store.state.tasks.filter(c => c.parent_id === t.id && !c.archived), parent = store.state.tasks.find(p => p.id === t.parent_id); return `<div class="metadata-subtasks">${parent ? `<p class="hint">Subtask of <a href="${taskHref(parent.id)}">${esc(parent.title)}</a>.</p>` : ''}<h2 class="section-title">Subtasks <span>${children.length}</span></h2>${children.length ? `<ul class="subtask-list">${children.map(c => `<li><a href="${taskHref(c.id)}">${esc(c.title)}</a> ${badge(c.status)}</li>`).join('')}</ul>` : ''}<div class="actions"><button data-do="new-subtask" data-id="${esc(t.id)}">New subtask…</button></div></div>`; })()}
-    <dl class="metadata-facts"><div><dt>Future launch home</dt><dd><a href="#tuios/${encodeURIComponent(t.session)}${t.workspace == null ? '' : '/' + t.workspace}">${esc(t.session)} · ${t.workspace == null ? 'session default workspace' : 'workspace ' + esc(t.workspace)}</a></dd></div><div><dt>Created</dt><dd>${esc(time(t.created))}</dd></div><div><dt>Task ID</dt><dd>${esc(t.id)}</dd></div></dl>
-    ${hint('Change the future launch home in TUIOS. Existing panes, assigned work and history are not moved. A session per task keeps terminal work separate; sharing a session by workspace is optional.')}
+    ${titleSection(t)}${pathsSection(t)}${parentSection(t)}${homeSection(t)}
+    <dl class="metadata-facts">${fact('Created', esc(time(t.created)))}${fact('Task ID', esc(t.id))}</dl>
     <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}">Compose work</button><button data-do="open-pane" data-kind="agent" data-id="${esc(t.id)}">New Agent…</button><button data-do="open-pane" data-kind="pane" data-id="${esc(t.id)}">New Pane…</button><button data-do="open-mail" data-id="${esc(t.id)}">Send mail</button>${archiveButton('task-archive', t)}</div>
-    <label>Task notes<textarea data-notes="${esc(t.id)}" rows="3">${esc(store.drafts.get(`notes:${t.id}`) ?? t.notes)}</textarea></label><button data-do="save-notes" data-id="${esc(t.id)}" class="subtle">Save notes</button>
+    ${notesSection(t)}
     <div class="metadata-members"><h2 class="section-title">Agents and panes <span>${members.length}</span></h2><div id="member-selection" data-workbench-controls></div>
     ${members.map(m => `<div class="pane" data-wb-key="member:${esc(m.id)}"><div class="member-summary"><input type="checkbox" data-wb-pick="members" data-id="${esc(m.id)}" aria-label="Select ${esc(agentName(m.name, m.id))}"><div><strong>${agents.some(a => a.id === m.id) ? `<a href="${agentHref(m.id)}">${esc(agentName(m.name, m.id))}</a>` : esc(agentName(m.name, m.id))}</strong> ${badge(m.state)}${archivedTag(m)}<span class="host-label">Host: ${esc(hostLabel(m.id))}</span><small>${esc(m.kind)}${m.harness ? ` · ${esc(m.harness)}` : ''} · ${esc(m.id)}${m.pane ? ' · managed here' : ' · assigned here'}</small></div></div><div class="pane-actions">${m.pane ? `<button data-do="inspect" data-id="${esc(m.id)}">Inspect</button>${mine.find(p => p.id === m.id)?.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(m.id)}">Check mail</button>` : ''}` : ''}</div></div>`).join('') || hint('No members yet. Open an agent or pane here, or assign an existing recipient from Agents.')}</div>
     ${hint('Work uses observed recipients assigned to this task. Mail uses only panes opened in this task; assignment does not move native sessions or directories.')}

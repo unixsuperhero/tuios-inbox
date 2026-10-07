@@ -259,3 +259,60 @@ nativeTest('confirmed workspace and exact session closure retain task, pane and 
   expect(retained).toMatchObject({ task_id: task.id, pane_id: pane.id, subject: 'Keep this result' });
   expect(retained.messages.find(m => m.role === 'shell').body).toContain('DURABLE_NATIVE_HISTORY');
 }), 90000);
+
+nativeTest('launch host choice lists registered hosts and refuses invalid or unregistered hosts without creating panes', async () => fixture(async f => {
+  const listed = await f.json('/hosts');
+  expect(listed.hosts.find(h => h.host === 'local')).toMatchObject({ host: 'local', status: 'up' });
+  const task = await f.task('Host choice');
+  await f.shell(task, 'first');
+  const before = (await f.windows(task.session)).windows.length;
+  for (const kind of ['shell', 'agent']) for (const host of ['ghost', 'a:b', 'x y', 42]) {
+    const response = await f.request(`/tasks/${task.id}/panes`, { kind, name: 'nope', host, profileId: 'claude' });
+    expect(response.status).toBe(400);
+  }
+  expect((await f.json('/state')).panes.filter(p => p.task_id === task.id).map(p => p.name)).toEqual(['first']);
+  expect((await f.windows(task.session)).windows.length).toBe(before);
+  // The task's own host, named explicitly, is the ordinary local launch.
+  const pane = await f.json(`/tasks/${task.id}/panes`, { kind: 'shell', name: 'explicit-local', host: 'local' }, 201);
+  expect((await f.state()).agents.find(a => a.id === pane.id)).toMatchObject({ session: task.session, host: 'local', task_id: task.id });
+}), 60000);
+
+test('launch host module offers task default plus registered hosts and labels unreachable ones', async () => {
+  const { setupLaunchHost } = await import('./public/launch-host.js');
+  const select = { value: 'gone', options: [], replaceChildren(...o) { this.options = o; } };
+  const note = { textContent: '' };
+  const form = { querySelector: () => ({ querySelector: s => s === 'select' ? select : note }) };
+  const originalOption = globalThis.Option;
+  globalThis.Option = class { constructor(text, value) { this.text = text; this.value = value; } };
+  try {
+  await setupLaunchHost(form, async () => ({ hosts: [{ host: 'local', status: 'up' }, { host: 'build', status: 'up' }, { host: 'dead', status: 'down', error: 'timeout' }] }), {});
+  expect(select.options.map(o => [o.value, o.disabled || false])).toEqual([['', false], ['local', false], ['build', false], ['dead', true]]);
+  expect(select.options[3].text).toContain('down: timeout');
+  expect(select.value).toBe('');
+  await setupLaunchHost(form, async () => { throw new Error('boom'); }, {});
+  expect(note.textContent).toContain('boom');
+  } finally { if (originalOption === undefined) delete globalThis.Option; else globalThis.Option = originalOption; }
+});
+
+test('launch host module resets per open, ignores stale discovery, and disables unknown hosts', async () => {
+  const { setupLaunchHost } = await import('./public/launch-host.js');
+  const select = { value: '', options: [], replaceChildren(...o) { this.options = o; } };
+  const note = { textContent: '' };
+  const form = { querySelector: () => ({ querySelector: s => s === 'select' ? select : note }) };
+  const originalOption = globalThis.Option;
+  globalThis.Option = class { constructor(text, value) { this.text = text; this.value = value; } };
+  try {
+  const slow = []; const api = () => new Promise(r => slow.push(r));
+  const first = setupLaunchHost(form, api, {});
+  const second = setupLaunchHost(form, api, {});
+  expect(select.options.map(o => o.value)).toEqual(['']);
+  slow[1]({ hosts: [{ host: 'new', status: 'up' }, { host: 'mystery', status: 'unknown' }] });
+  await second;
+  slow[0]({ hosts: [{ host: 'old', status: 'up' }] });
+  await first;
+  expect(select.options.map(o => [o.value, o.disabled || false])).toEqual([['', false], ['new', false], ['mystery', true]]);
+  await setupLaunchHost(form, async () => { throw new Error('boom'); }, {});
+  expect(select.options.map(o => o.value)).toEqual(['']);
+  expect(note.textContent).toContain('boom');
+  } finally { if (originalOption === undefined) delete globalThis.Option; else globalThis.Option = originalOption; }
+});

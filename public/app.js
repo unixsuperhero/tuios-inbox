@@ -3,7 +3,8 @@ import { createList } from '/list.js';
 import { createWorkbench, patchHTML, terminalResponse } from '/workbench.js';
 import { createQueues } from '/queues.js';
 import { createTuios } from '/tuios.js';
-import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, taskTree } from '/pages.js';
+import { setupLaunchHost } from '/launch-host.js';
+import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, taskTree, editKey } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
 const previousValues = new WeakMap(), creations = new Map(), draftRevisions = new Map(), submissions = new WeakMap();
@@ -296,6 +297,7 @@ store.createEntity = ({ kind, taskId, owner, parentId } = {}) => {
     updateMenus();
     if (taskId) { form.elements.taskId.value = taskId; previousValues.set(form.elements.taskId, taskId); }
     $('#pane-startup-status').textContent = ''; paneKind();
+    setupLaunchHost(form, api, store).catch(e => error(e, dialog));
   }
   return new Promise(resolve => {
     // "+ New task" is a batch entry: the dialog stays open after each task. A "New Task…" choice inside a select creates one and returns to it.
@@ -406,12 +408,48 @@ document.addEventListener('click', e => {
       case 'compose': compose(d.id, d.agentId); break;
       case 'open-pane': await store.createEntity({ kind: d.kind === 'pane' ? 'pane' : 'agent', taskId: d.id }); break;
       case 'open-mail': $('#mail-form').dataset.taskId = d.id; updateMenus(); openDialog($('#mail-dialog')); break;
-      case 'save-notes': {
-        const key = `notes:${d.id}`, revision = draftRevisions.get(key), input = document.querySelector(`[data-notes="${CSS.escape(d.id)}"]`);
-        await api(`/tasks/${d.id}`, { notes: input.value }, 'PATCH');
-        if (draftRevisions.get(key) === revision) store.drafts.delete(key);
-        await saved(); toast('Notes saved'); break;
+      case 'edit-section': {
+        const t = store.state.tasks.find(t => t.id === d.id); if (!t) break;
+        const key = editKey(d.id, d.section); if (store.edits.has(key)) break;
+        store.edits.set(key, { title: { title: t.title, status: t.status }, paths: { path: t.path, worktree: t.worktree }, parent: { parent_id: t.parent_id || '' }, home: { session: t.session, workspace: t.workspace ?? '' } }[d.section]);
+        render();
+        if (d.section === 'home') { try { store.liveSessions = ((await api('/tuios')).sessions || []).map(s => ({ value: s.target, label: `${s.display_name || s.label || s.name || s.target}${s.host && s.host !== 'local' ? ' · ' + s.host : ''}` })); } catch (e) { store.liveSessions = []; error(e); } render(); }
+        break;
       }
+      case 'cancel-section': store.edits.delete(editKey(d.id, d.section)); render(); break;
+      case 'save-section': {
+        const key = editKey(d.id, d.section), draft = store.edits.get(key); if (!draft || draft.saving) break;
+        const revision = draft.revision || 0; draft.saving = true; render();
+        try {
+        if (d.section === 'title') await api(`/tasks/${d.id}`, { title: draft.title, status: draft.status }, 'PATCH');
+        else if (d.section === 'paths') await api(`/tasks/${d.id}`, { path: draft.path.trim(), worktree: draft.worktree.trim() }, 'PATCH');
+        else if (d.section === 'parent') await api(`/tasks/${d.id}`, { parent_id: draft.parent_id }, 'PATCH');
+        else if (d.section === 'home') await api('/tuios/action', { action: 'bind-task', session: draft.session, taskId: d.id, workspace: draft.workspace === '' ? null : Number(draft.workspace) });
+        } catch (e) { draft.saving = false; render(); throw e; }
+        // A cancelled or re-opened editor is a different draft; edits typed during the save stay open.
+        if (store.edits.get(key) === draft) { if ((draft.revision || 0) === revision) store.edits.delete(key); else draft.saving = false; }
+        await saved(); toast('Saved'); break;
+      }
+      case 'note-new': if (!store.edits.has(editKey(d.id, 'note:new'))) { store.edits.set(editKey(d.id, 'note:new'), { body: '', context: false }); render(); } break;
+      case 'note-edit': {
+        const n = store.state.tasks.find(t => t.id === d.id)?.notes?.find?.(n => n.id === d.note); if (!n || store.edits.has(editKey(d.id, `note:${d.note}`))) break;
+        store.edits.set(editKey(d.id, `note:${d.note}`), { body: n.body, context: Boolean(n.context) }); render(); break;
+      }
+      case 'note-cancel': store.edits.delete(editKey(d.id, `note:${d.note}`)); render(); break;
+      case 'note-save': {
+        const key = editKey(d.id, `note:${d.note}`), draft = store.edits.get(key); if (!draft || draft.saving) break;
+        const revision = draft.revision || 0; let created; draft.saving = true; render();
+        try {
+          if (d.note === 'new') created = await api(`/tasks/${d.id}/notes`, { body: draft.body, context: draft.context });
+          else await api(`/tasks/${d.id}/notes/${encodeURIComponent(d.note)}`, { body: draft.body, context: draft.context }, 'PATCH');
+        } catch (e) { draft.saving = false; render(); throw e; }
+        if (store.edits.get(key) === draft) {
+          if ((draft.revision || 0) === revision) store.edits.delete(key);
+          else { draft.saving = false; if (created) { store.edits.delete(key); store.edits.set(editKey(d.id, `note:${created.id}`), draft); } }
+        }
+        await saved(); toast('Note saved'); break;
+      }
+      case 'note-delete': if (confirm('Delete this note?')) { await api(`/tasks/${d.id}/notes/${encodeURIComponent(d.note)}`, {}, 'DELETE'); store.edits.delete(editKey(d.id, `note:${d.note}`)); await saved(); } break;
       case 'edit-profile': openProfile(store.state.profiles.find(p => p.id === d.id)); break;
       case 'browse': { button.disabled = true; try { const { path } = await api(d.picker === 'file' ? '/pick-file' : '/pick-directory', {}); const field = button.form ? button.form.elements[d.id] : $(`#${d.id}`); if (path && field) { field.value = path; if (!button.form) field.dispatchEvent(new Event('change', { bubbles: true })); } } finally { button.disabled = false; } break; }
       case 'fill': { const field = button.form.elements[d.id]; field.value = d.value; field.focus(); break; }
@@ -430,12 +468,19 @@ document.addEventListener('input', e => {
   if (e.target.closest('#inbox-composer') && e.target.name === 'body') { const draft = composerDraft(); draft.body = e.target.value; draft.revision++;
     if (route.kind !== 'index') store.drafts.set(`compose:${routeKey(route)}`, draft.body); }
   let key;
-  if (e.target.dataset.notes) key = `notes:${e.target.dataset.notes}`;
-  else if (e.target.name === 'body') key = e.target.closest('form[data-draft]')?.dataset.draft;
+  if (e.target.name === 'body') key = e.target.closest('form[data-draft]')?.dataset.draft;
   if (key) { store.drafts.set(key, e.target.value); draftRevisions.set(key, (draftRevisions.get(key) || 0) + 1); }
 });
+// Section and note drafts are kept in store.edits as they are typed, so a refresh re-renders the same values.
+function rememberEdit(target) {
+  const draft = target.dataset?.edit && store.edits.get(target.dataset.edit); if (!draft) return false;
+  draft[target.dataset.field] = target.type === 'checkbox' ? target.checked : target.value; draft.revision = (draft.revision || 0) + 1; return true;
+}
+document.addEventListener('input', e => { rememberEdit(e.target); });
 document.addEventListener('change', e => {
   const target = e.target;
+  if (target.dataset.do === 'note-context') { const { id, note } = target.dataset; act(async () => { await api(`/tasks/${id}/notes/${encodeURIComponent(note)}`, { context: target.checked }, 'PATCH'); await saved(); }); return; }
+  if (rememberEdit(target)) return;
   if (target.matches('select')) {
     const kind = target.selectedOptions[0]?.dataset.createKind || (target.value.startsWith('__new_') ? target.dataset.createKind : null);
     if (kind) { act(() => chooseCreated(target, kind)); return; }
@@ -448,11 +493,6 @@ document.addEventListener('change', e => {
   act(async () => {
     if (set === 'item-task') await api('/items/update', { ids: [id], set: { task_id: value || null } });
     if (set === 'agent-task') await api('/agents/update', { ids: [id], set: { task_id: value || null } });
-    if (set === 'task-status') await api(`/tasks/${id}`, { status: value }, 'PATCH');
-    if (set === 'task-title') await api(`/tasks/${id}`, { title: value }, 'PATCH');
-    if (set === 'task-path') await api(`/tasks/${id}`, { path: value.trim() }, 'PATCH');
-    if (set === 'task-worktree') await api(`/tasks/${id}`, { worktree: value.trim() }, 'PATCH');
-    if (set === 'task-parent') await api(`/tasks/${id}`, { parent_id: value }, 'PATCH');
     await saved();
   });
 });
@@ -495,6 +535,7 @@ document.addEventListener('submit', e => {
       }
       case 'task-form': {
         if (!context) return;
+        data.notes = data.notes?.trim() ? [{ body: data.notes, context: false }] : [];
         const task = await api('/tasks', data);
         if (!store.state.tasks.some(t => t.id === task.id)) store.state.tasks.unshift(task);
         try { await refresh(); } catch (e) { error(e); render(); }
@@ -512,7 +553,7 @@ document.addEventListener('submit', e => {
       }
       case 'pane-form': {
         if (!context) return;
-        const result = await api(`/tasks/${encodeURIComponent(context.taskId || data.taskId)}/panes`, { name: data.name, kind: context.kind === 'pane' ? 'shell' : 'agent', profileId: data.profileId });
+        const result = await api(`/tasks/${encodeURIComponent(context.taskId || data.taskId)}/panes`, { name: data.name, kind: context.kind === 'pane' ? 'shell' : 'agent', profileId: data.profileId, host: data.host });
         context.accepted = true;
         if (creations.get(context.dialog) !== context) { await refresh(); return; }
         context.threadId = result.threadId; context.paneId = result.id;

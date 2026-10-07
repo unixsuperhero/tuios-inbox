@@ -7,10 +7,10 @@ import { createServer } from 'node:net';
 import { claudeTranscript, ompTranscript, paneTranscript } from './scripts/turn.mjs';
 
 let child, home, base, port;
-async function launch(dir, port) {
+async function launch(dir, port, env = {}) {
   const proc = Bun.spawn([process.execPath, 'server.mjs'], {
     cwd: import.meta.dir,
-    env: { ...process.env, PORT: String(port), TUIOS_INBOX_DATA: dir, TUIOS_INBOX_SPOOL: join(dir, 'events'), TUIOS_BIN: join(dir, 'not-installed') },
+    env: { ...process.env, PORT: String(port), TUIOS_INBOX_DATA: dir, TUIOS_INBOX_SPOOL: join(dir, 'events'), TUIOS_BIN: join(dir, 'not-installed'), ...env },
     stdout: 'pipe', stderr: 'inherit',
   });
   const reader = proc.stdout.getReader();
@@ -55,15 +55,16 @@ const newTask = async title => (await call('/tasks', { title, path: home })).jso
 const tasksOf = (s, ...titles) => titles.map(title => s.items.find(i => i.title === title).task_id);
 
 test('task edits and agent profile arguments survive a backend restart', async () => {
-  const created = await call('/tasks', { title: 'Durable task', path: home, notes: 'before' });
+  const created = await call('/tasks', { title: 'Durable task', path: home, notes: [{ body: 'before', context: true }] });
   expect(created.status).toBe(201);
   const task = await created.json();
-  expect((await call(`/tasks/${task.id}`, { status: 'active', notes: 'after' }, 'PATCH')).status).toBe(200);
+  expect((await call(`/tasks/${task.id}`, { status: 'active' }, 'PATCH')).status).toBe(200);
+  expect((await call(`/tasks/${task.id}`, { notes: 'scalar' }, 'PATCH')).status).toBe(400);
   const configured = await call('/profiles', { name: 'Reviewer', executable: 'codex', args: ['--model', 'configured-model'], protocol: 'codex', env: { PROJECT_MODE: 'review' } });
   const profile = await configured.json();
   await stop(); await start();
   const state = await (await call('/state')).json();
-  expect(state.tasks.find(t => t.id === task.id)).toMatchObject({ title: 'Durable task', path: home, notes: 'after', status: 'active', worktree: '' });
+  expect(state.tasks.find(t => t.id === task.id)).toMatchObject({ title: 'Durable task', path: home, notes: [{ body: 'before', context: true }], status: 'active', worktree: '' });
   expect(state.profiles.find(p => p.id === profile.id)).toMatchObject({ executable: 'codex', args: ['--model', 'configured-model'], protocol: 'codex', env: { PROJECT_MODE: 'review' } });
 });
 
@@ -376,7 +377,8 @@ test('an existing database is migrated once: every kind of row becomes an item o
     CREATE TABLE threads (id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(id), pane_id TEXT, subject TEXT NOT NULL, kind TEXT NOT NULL, unread INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL, updated TEXT NOT NULL, external_key TEXT UNIQUE);
     CREATE TABLE messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id), role TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, meta TEXT NOT NULL DEFAULT '{}', created TEXT NOT NULL);
     CREATE TABLE turns (id TEXT PRIMARY KEY, session TEXT NOT NULL, pane_id TEXT NOT NULL, pane_name TEXT NOT NULL, harness TEXT NOT NULL, prompt TEXT NOT NULL, response TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL, unread INTEGER NOT NULL DEFAULT 0, started TEXT NOT NULL, finished TEXT);
-    INSERT INTO tasks VALUES ('task','Old task','/tmp','','open','','inbox-task','${at}');
+    INSERT INTO tasks VALUES ('task','Old task','/tmp','','open','legacy note','inbox-task','${at}');
+    INSERT INTO tasks VALUES ('blank','Blank task','/tmp','','open',' \n','inbox-blank','${at}');
     INSERT INTO panes VALUES ('app-pane','task','worker','agent','codex','done','');
     INSERT INTO turns VALUES ('t1','inbox-task','app-pane','\u25d0 worker','codex','app pane turn','reply','pane','done',1,'${at}','${at}');
     INSERT INTO turns VALUES ('t2','loose','loose-pane','\u2733 Loose agent','claude-code','loose turn','reply','transcript','done',0,'${at}','${at}');`);
@@ -406,6 +408,39 @@ test('an existing database is migrated once: every kind of row becomes an item o
     expect(second.byTitle.snapshot).toMatchObject({ type: 'snapshot', archived: 0 });
     expect(second.items).toHaveLength(8);
     expect(second.agents).toHaveLength(3);
+    expect(second.tasks.map(t => [t.id, t.notes.map(n => [n.body, n.context])]).sort()).toEqual([['blank', []], ['task', [['legacy note', false]]]]);
+  } finally { proc.kill(); await proc.exited; await rm(dir, { recursive: true, force: true }); }
+});
+
+test('task notes are independent and only marked notes reach agent prompts, never shells', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dispatch-notes-')), log = join(dir, 'calls.log'), fake = join(dir, 'tuios');
+  await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" >> '${log}'\nprintf '\\001' >> '${log}'\necho '{}'\n`);
+  await chmod(fake, 0o755);
+  const at = await freePort(), api = `http://127.0.0.1:${at}`, proc = await launch(dir, at, { TUIOS_BIN: fake });
+  const req = (path, body, method = 'POST') => fetch(`${api}/api${path}`, { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body ?? {}) });
+  const sent = async () => (await Bun.file(log).text().catch(() => '')).split('\x01').filter(Boolean).map(l => l.split('\0').filter(Boolean));
+  try {
+    const task = await (await req('/tasks', { title: 'Notes', path: dir })).json();
+    const keep = await (await req(`/tasks/${task.id}/notes`, { body: 'use the staging db', context: true })).json();
+    const skip = await (await req(`/tasks/${task.id}/notes`, { body: 'private', context: false })).json();
+    expect(await (await req(`/tasks/${task.id}/notes/${skip.id}`, { context: true }, 'PATCH')).json()).toMatchObject({ id: skip.id, body: 'private', context: true });
+    expect(await (await req(`/tasks/${task.id}/notes/${skip.id}`, { context: false }, 'PATCH')).json()).toMatchObject({ body: 'private', context: false });
+    expect((await (await fetch(`${api}/api/state`)).json()).tasks[0].notes.map(n => n.id)).toEqual([keep.id, skip.id]);
+    await Bun.write(join(dir, 'events', 'agent-pane.json'), JSON.stringify({ id: 'agent-pane', time: new Date().toISOString(), values: { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: 'agent-pane' }, turn: { session: 's', pane: 'agent-pane', name: 'agent-pane', harness: 'codex', state: 'done', at: new Date().toISOString(), prompt: 'p', response: 'r', source: 'pane' } }));
+    await Bun.write(join(dir, 'events', 'shell-pane.json'), JSON.stringify({ id: 'shell-pane', time: new Date().toISOString(), values: { TUIOS_EVENT: 'after-command-finished', TUIOS_COMMAND: 'true', TUIOS_EXIT_CODE: '0', TUIOS_WINDOW_ID: 'shell-pane', TUIOS_SESSION_ID: 's', TUIOS_WINDOW_NAME: '' }, capture: '' }));
+    await req('/reconcile');
+    await Bun.sleep(500);
+    await req('/agents/update', { ids: ['agent-pane', 'shell-pane'], set: { task_id: task.id } });
+    expect((await req('/agents/agent-pane/prompt', { body: 'do it' })).status).toBe(202);
+    const call = (await sent()).find(a => a.includes('queue'));
+    const text = call.at(-1);
+    expect(text).toContain('use the staging db');
+    expect(text).not.toContain('private');
+    expect(text.endsWith('Request:\ndo it')).toBe(true);
+    await req('/agents/shell-pane/prompt', { body: 'ls' });
+    expect((await sent()).find(a => a.includes('run')).at(-1)).toBe('ls');
+    expect((await req(`/tasks/${task.id}/notes/${skip.id}`, undefined, 'DELETE')).status).toBe(200);
+    expect((await req(`/tasks/${task.id}/notes/${skip.id}`, { body: 'x' }, 'PATCH')).status).toBe(400);
   } finally { proc.kill(); await proc.exited; await rm(dir, { recursive: true, force: true }); }
 });
 
