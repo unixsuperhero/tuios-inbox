@@ -126,7 +126,7 @@ export function createHistory({ root, report }) {
     return `<tr data-wb-key="src:${esc(s.host)}:${esc(s.source_id)}"><th scope="row"><b>${esc(s.host)}</b><small>${esc(s.source_id || 'no collector registered')}</small>${s.boot_id ? `<small>boot ${esc(s.boot_id)}</small>` : ''}</th>
       <td>${s.last_collected ? esc(time(s.last_collected)) : '<small>Never collected</small>'}</td>
       <td>${s.last_transfer ? esc(time(s.last_transfer)) : '<small>Never transferred</small>'}</td>
-      <td>${pending}</td><td>${gaps ? `<span class="badge uncertain">${gaps}</span>` : '0'}</td>
+      <td>${pending}</td><td>${gaps ? `<details data-wb-key="gaps:${esc(s.source_id)}"><summary><span class="badge uncertain">${gaps} gaps</span></summary>${(s.gaps_detail || []).map(g => `<p>${esc(g.detail || g.reason || JSON.stringify(g))}</p>`).join('')}<a href="#history">Search history with Kind: gap</a></details>` : '0'}</td>
       <td>${failed ? `<span class="badge error">Error</span> ${esc(s.last_error)}` : '<span class="badge done">None</span>'}</td></tr>`;
   }
   function collectorsPage() {

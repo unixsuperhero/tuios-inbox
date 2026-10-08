@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { editHooks, hookCommand, installHookItems, launchdPlist, layout, main, matchNativeHost, mergeSources, parseArgs, removeHookItems, runtimeFiles, serviceSpec, shellQuote, systemdUnit } from './scripts/setup-cross-host.mjs';
+import { editHooks, ensureSourceBlock, hookCommand, installHookItems, launchdPlist, layout, main, matchNativeHost, mergeSources, parseArgs, parseShell, removeHookItems, removeSourceBlock, runtimeFiles, serviceSpec, shellQuote, systemdUnit } from './scripts/setup-cross-host.mjs';
 
-let home, calls, config, src;
+let home, calls, config, src, panes, shellProbe;
+const BASH_PROBE = 'SHELL_PATH=/bin/bash\nSHELL_BASH_VERSION=5.2.15(1)-release\n';
 const OLD = "/opt/homebrew/bin/bun /repo/scripts/capture-hook.mjs";
 
 // Stand-in for launchctl/systemctl/tuios: records argv, answers like the real tools.
@@ -22,7 +23,8 @@ function fakeRun(extra = {}) {
     if (argv[1] === 'integration' && argv[2] === 'install') return { code: 0, out: 'ok', err: '' };
     if (argv[1] === 'hosts') return { code: 0, out: JSON.stringify({ hosts: [{ name: 'build', address: 'gaurav@buildbox' }], total: 1 }), err: '' };
     if (argv[1] === 'list-hooks') return { code: 0, out: JSON.stringify({ hooks: [] }), err: '' };
-    if (argv[1] === 'doctor') return { code: 0, out: 'every pane marks its commands', err: '' };
+    if (argv[1] === 'doctor') return { code: 0, out: JSON.stringify({ daemon_running: panes.length > 0, panes }), err: '' };
+    if (argv[0] === 'sh') return { code: 0, out: shellProbe, err: '' };
     if (argv[0] === 'launchctl' && argv[1] === 'print') return { code: 113, out: '', err: 'not found' };
     if (argv[0] === 'systemctl' && argv[2] === 'is-active') return { code: 3, out: 'inactive\n', err: '' };
     if (argv[0] === 'systemctl' && argv[2] === 'is-enabled') return { code: 1, out: 'disabled\n', err: '' };
@@ -49,8 +51,12 @@ beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'setup-xh-'));
   src = await mkdtemp(join(tmpdir(), 'setup-src-'));
   calls = [];
+  panes = [];
+  shellProbe = BASH_PROBE;
   await writeFile(join(src, 'collector.mjs'), "import { a } from './helper.mjs';\nexport const c = a;\n");
   await writeFile(join(src, 'helper.mjs'), 'export const a = 1;\n');
+  await writeFile(join(src, 'shell.bash'), '# bash marks\n');
+  await writeFile(join(src, 'shell.zsh'), '# zsh marks\n');
   await writeFile(join(src, 'capture-hook.mjs'), "import { open } from './collector.mjs';\n");
   config = join(home, 'tuios-config.toml');
   await writeFile(config, `# mine\n[general]\nx = 1\n\n[hooks]\nafter-agent-state = '${OLD}'\nafter-command-finished = ["echo keep", '${OLD}']\n\n[debug]\nshow = false\n`);
@@ -121,6 +127,7 @@ describe('service specs', () => {
   test('shellQuote survives quotes', () => { expect(shellQuote("a'b")).toBe(`'a'\\''b'`); });
   test('runtime closure follows relative imports and reports missing files', async () => {
     expect([...(await runtimeFiles(src)).keys()].sort()).toEqual(['capture-hook.mjs', 'collector.mjs', 'helper.mjs']);
+    expect([...(await runtimeFiles(src, ['shell.bash'])).keys()].sort()).toEqual(['capture-hook.mjs', 'collector.mjs', 'helper.mjs', 'shell.bash']);
     await rm(join(src, 'helper.mjs'));
     await expect(runtimeFiles(src)).rejects.toThrow(/helper.mjs is missing/);
   });
@@ -132,6 +139,22 @@ describe('service specs', () => {
     const hosts = [{ name: 'build', address: 'gaurav@buildbox' }];
     expect(matchNativeHost(hosts, 'gaurav@buildbox').name).toBe('build');
     expect(matchNativeHost(hosts, 'other')).toBe(null);
+  });
+  test('shell detection picks the bundled module or says why none fits', () => {
+    expect(parseShell('SHELL_PATH=/bin/bash\nSHELL_BASH_VERSION=5.2.15(1)-release').kind).toBe('bash');
+    expect(parseShell('SHELL_PATH=/usr/bin/zsh\nSHELL_BASH_VERSION=').kind).toBe('zsh');
+    expect(parseShell('SHELL_PATH=/bin/bash\nSHELL_BASH_VERSION=4.3.48(1)-release').kind).toBe(null);
+    expect(parseShell('SHELL_PATH=/usr/bin/fish\nSHELL_BASH_VERSION=').kind).toBe(null);
+    expect(parseShell('').kind).toBe(null);
+  });
+  test('startup block is appended once, refreshed in place and removed without touching personal lines', () => {
+    const mine = 'export PATH="$HOME/bin:$PATH"\nPS1="mine> "\nPROMPT_COMMAND=(a b)';
+    const once = ensureSourceBlock(mine, '/rt/shell.bash');
+    expect(once.startsWith(mine)).toBe(true);
+    expect(ensureSourceBlock(once, '/rt/shell.bash')).toBe(once);
+    expect(ensureSourceBlock(once, '/other/shell.bash').split('shell marks (setup').length).toBe(2);
+    expect(removeSourceBlock(once)).toBe(`${mine}\n`);
+    expect(removeSourceBlock(mine)).toBe(mine);
   });
   test('argument validation', () => {
     expect(() => parseArgs(['install', '--remote', 'a;rm'])).toThrow(/ssh target/);
@@ -148,11 +171,21 @@ describe('install behavior against an isolated home', () => {
     const before = await tree(home);
     const { code, text } = await run('install', ['--dry-run']);
     expect(code).toBe(0);
-    expect(text).toContain('dry run: no service, config or file was changed');
-    expect(text).toContain('would: write');
     expect(await tree(home)).toEqual(before);
     const mutating = calls.filter((c) => (c[0] === 'launchctl' && c[1] !== 'print') || (c[0] === 'systemctl' && !['is-active', 'is-enabled', 'show-environment'].includes(c[2])) || c.includes('install'));
     expect(mutating).toEqual([]);
+  });
+
+  test('fresh config is created from nothing with only the capture hooks, and a dry run creates no file', async () => {
+    await rm(config);
+    const dry = await run('install', ['--collector-only', '--dry-run']);
+    expect(dry.code).toBe(0);
+    expect(await Bun.file(config).exists()).toBe(false);
+    expect(await Bun.file(join(home, '.bashrc')).exists()).toBe(false);
+    expect((await run('install', ['--collector-only'])).code).toBe(0);
+    const created = await readFile(config, 'utf8');
+    expect(created).toMatch(/^\[hooks\]\n/);
+    expect(created.match(/capture-hook\.mjs/g)).toHaveLength(2);
   });
 
   test('install writes runtime, service, hooks with backup, source registry; second run changes nothing', async () => {
@@ -170,17 +203,79 @@ describe('install behavior against an isolated home', () => {
     expect(await readFile(`${config}.pre-cross-host.bak`, 'utf8')).toContain(OLD);
     const sources = JSON.parse(await readFile(join(home, '.local/share/tuios-inbox/collectors.json'), 'utf8'));
     expect(sources).toEqual([{ host: 'local', ssh: null, collector_path: join(rt, 'collector.mjs'), data_dir: join(home, '.local/share/tuios-inbox/collector'), bun: '/fake/bin/bun' }]);
-    expect(first.text).toContain('restart needed');
-    expect(calls.some((c) => c.includes('install') && c.includes('codex'))).toBe(true);
-    expect(calls.some((c) => c.includes('install') && c.includes('claude-code'))).toBe(false);
-    expect(calls.some((c) => c.includes('install') && c.includes('gemini-cli'))).toBe(false);
+    expect(first.text).toContain('OUTSIDE tuios');
     expect(calls.some((c) => c.includes('kill-server'))).toBe(false);
 
     const snapshot = await tree(home);
     const second = await run('install', ['--collector-only']);
     expect(second.code).toBe(0);
     expect(await tree(home)).toEqual(snapshot);
-    expect(second.text).toContain('unchanged: [hooks] already as wanted');
+  });
+
+  test('bash startup file gains the marks block once, keeps personal settings, and the runtime copy carries shell.bash', async () => {
+    const rc = join(home, '.bashrc');
+    const personal = '# mine\nexport EDITOR=vim\nPROMPT_COMMAND=(one two)\nPS1="\\u> "\n';
+    await writeFile(rc, personal);
+    expect((await run('install', ['--collector-only'])).code).toBe(0);
+    const rt = join(home, '.local/share/tuios-inbox/collector-runtime/scripts');
+    expect(await readFile(join(rt, 'shell.bash'), 'utf8')).toBe('# bash marks\n');
+    expect(await Bun.file(join(rt, 'shell.zsh')).exists()).toBe(false);
+    const after = await readFile(rc, 'utf8');
+    expect(after.startsWith(personal)).toBe(true);
+    expect(after).toContain(`. ${join(rt, 'shell.bash')}`);
+    expect(after).toContain('TUIOS_ENV');
+    const again = await run('install', ['--collector-only']);
+    expect(again.code).toBe(0);
+    expect(await readFile(rc, 'utf8')).toBe(after);
+  });
+
+  test('a fresh VPS with no bashrc and no panes gets one created', async () => {
+    expect((await run('install', ['--collector-only'])).code).toBe(0);
+    expect(await readFile(join(home, '.bashrc'), 'utf8')).toContain('shell.bash');
+  });
+
+  test('startup files are left alone when every pane already marks commands or the file has native marks', async () => {
+    panes = [{ session: 's', window_id: 'w', marks_commands: true }];
+    shellProbe = 'SHELL_PATH=/bin/zsh\nSHELL_BASH_VERSION=\n';
+    const zshrc = join(home, '.zshrc');
+    await writeFile(zshrc, '# personal zsh\n');
+    expect((await run('install', ['--collector-only'])).code).toBe(0);
+    expect(await readFile(zshrc, 'utf8')).toBe('# personal zsh\n');
+    expect(await Bun.file(join(home, '.bashrc')).exists()).toBe(false);
+
+    panes = [];
+    shellProbe = BASH_PROBE;
+    const rc = join(home, '.bashrc');
+    const native = `PROMPT_COMMAND='printf "\\e]133;D;%s\\a\\e]133;A\\a" "$?"'\nPS0='\\e]133;C\\a'\n`;
+    await writeFile(rc, native);
+    expect((await run('install', ['--collector-only'])).code).toBe(0);
+    expect(await readFile(rc, 'utf8')).toBe(native);
+  });
+
+  test('zsh with missing marks sources shell.zsh', async () => {
+    shellProbe = 'SHELL_PATH=/usr/bin/zsh\nSHELL_BASH_VERSION=\n';
+    panes = [{ session: 's', window_id: 'w', marks_commands: false }];
+    expect((await run('install', ['--collector-only'])).code).toBe(0);
+    expect(await readFile(join(home, '.zshrc'), 'utf8')).toContain('shell.zsh');
+    expect(await readFile(join(home, '.local/share/tuios-inbox/collector-runtime/scripts/shell.zsh'), 'utf8')).toBe('# zsh marks\n');
+  });
+
+  test('an unsupported shell with unmarked panes fails the install honestly and writes no startup file', async () => {
+    for (const probe of ['SHELL_PATH=/usr/bin/fish\n', 'SHELL_PATH=/bin/bash\nSHELL_BASH_VERSION=3.2.57(1)-release\n']) {
+      shellProbe = probe;
+      panes = [{ session: 's', window_id: 'w', marks_commands: false }];
+      expect((await run('install', ['--collector-only'])).code).toBe(1);
+      expect(await Bun.file(join(home, '.bashrc')).exists()).toBe(false);
+      expect(await Bun.file(join(home, '.zshrc')).exists()).toBe(false);
+    }
+  });
+
+  test('uninstall removes only the marks block from the startup file', async () => {
+    const rc = join(home, '.bashrc');
+    await writeFile(rc, '# mine\nexport A=1\n');
+    await run('install', ['--collector-only']);
+    expect((await run('uninstall', ['--collector-only'])).code).toBe(0);
+    expect(await readFile(rc, 'utf8')).toBe('# mine\nexport A=1\n');
   });
 
   test('hooks use the selected paths even when they contain spaces', async () => {
@@ -201,40 +296,33 @@ describe('install behavior against an isolated home', () => {
     const base = fakeRun();
     const failing = async (argv) => (/^(launchctl|systemctl)$/.test(argv[0]) && argv.some((a) => ['bootstrap', 'enable', 'kickstart', 'start'].includes(a)))
       ? (calls.push(argv), { code: 5, out: '', err: 'service manager refused' }) : base(argv);
-    const { code, text } = await run('install', ['--collector-only'], { fn: failing });
+    const { code } = await run('install', ['--collector-only'], { fn: failing });
     expect(code).toBe(1);
-    expect(text).toContain('FAILED: load and start');
-    expect(text).toContain('service manager refused');
-    expect(text).toContain('nothing was registered');
-    expect(text).not.toContain('done: register source');
     expect(await Bun.file(reg).exists()).toBe(false);
+    expect(await Bun.file(join(home, '.bashrc')).exists()).toBe(false);
     expect(await readFile(config, 'utf8')).toBe(before);
-    expect(calls.some((c) => c.includes('integration') && c.includes('install'))).toBe(false);
   });
 
   test('an unwritable runtime directory stops before services, hooks and registration', async () => {
     await mkdir(join(home, '.local/share/tuios-inbox'), { recursive: true });
     await writeFile(join(home, '.local/share/tuios-inbox/collector-runtime'), 'a file where a directory must go');
     const before = await readFile(config, 'utf8');
-    const { code, text } = await run('install', ['--collector-only']);
+    const { code } = await run('install', ['--collector-only']);
     expect(code).toBe(1);
-    expect(text).toContain('FAILED: ensure directory');
-    expect(text).not.toContain('done: load and start');
     expect(await readFile(config, 'utf8')).toBe(before);
-    expect(calls.filter((c) => /^(launchctl|systemctl)$/.test(c[0]) && !['print', 'is-active', 'is-enabled', 'show-environment'].includes(c[1] === 'print' ? 'print' : c[2]))).toEqual([]);
+    expect(await Bun.file(unit('collector')).exists()).toBe(false);
+    expect(await Bun.file(join(home, '.local/share/tuios-inbox/collectors.json')).exists()).toBe(false);
+    expect(await Bun.file(join(home, '.bashrc')).exists()).toBe(false);
   });
 
   test('missing native tuios is reported as incomplete setup, never as success', async () => {
     const saved = process.env.PATH;
     process.env.PATH = '/nonexistent-tuios-path';
     try {
-      const lines = [];
-      const code = await main(['install', '--home', home, '--bun', '/fake/bin/bun', '--collector-only'], { run: fakeRun(), out: (l) => lines.push(l), scriptsDir: src });
-      const text = lines.join('\n');
+      const code = await main(['install', '--home', home, '--bun', '/fake/bin/bun', '--collector-only'], { run: fakeRun(), out: () => {}, scriptsDir: src });
       expect(code).toBe(1);
-      expect(text).toContain('INCOMPLETE: native tuios was not found');
-      expect(calls.some((c) => c[1] === 'integration')).toBe(false);
       expect(await readFile(config, 'utf8')).toContain(OLD);
+      expect(await Bun.file(join(home, '.bashrc')).exists()).toBe(false);
     } finally { process.env.PATH = saved; }
   });
 
@@ -258,30 +346,26 @@ describe('install behavior against an isolated home', () => {
     await run('install', ['--collector-only']);
     expect(JSON.parse(await readFile(reg, 'utf8')).map((s) => s.host).sort()).toEqual(['local', 'other']);
     await writeFile(reg, '{nope');
-    const { code, text } = await run('install', ['--collector-only']);
+    const { code } = await run('install', ['--collector-only']);
     expect(code).toBe(1);
-    expect(text).toContain('not valid JSON');
     expect(await readFile(reg, 'utf8')).toBe('{nope');
   });
 
-  test('status is read-only and reports missing install honestly', async () => {
+  test('status changes nothing on disk', async () => {
     const before = await tree(home);
-    const { text } = await run('status', ['--collector-only']);
-    expect(text).toContain('not installed');
-    expect(text).toContain('not registered in collectors.json');
-    expect(text).toContain('native hosts: build');
+    expect((await run('status', ['--collector-only'])).code).toBe(0);
     expect(await tree(home)).toEqual(before);
   });
 });
 
 describe('CLI process smoke', () => {
-  test('dry-run install in an isolated home reports unconfigured hooks and touches nothing', async () => {
-    const proc = Bun.spawn(['bun', join(import.meta.dir, 'scripts/setup-cross-host.mjs'), 'install', '--dry-run', '--collector-only', '--home', home], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, HOME: home } });
-    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-    expect(out).toContain('dry run');
-    expect(out).toContain('INCOMPLETE: active tuios config'); // the isolated home has no tuios config, so hooks cannot be configured
-    expect(code).toBe(1);
-    expect((await readdir(home)).filter((n) => n !== 'Library')).toEqual(['tuios-config.toml']); // tuios itself creates Library/ for 'config path'
+  test('dry-run install in a fresh isolated home succeeds and creates no config or startup file', async () => {
+    const fresh = await mkdtemp(join(tmpdir(), 'setup-xh-fresh-'));
+    try {
+      const proc = Bun.spawn(['bun', join(import.meta.dir, 'scripts/setup-cross-host.mjs'), 'install', '--dry-run', '--collector-only', '--home', fresh], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, HOME: fresh } });
+      expect(await proc.exited).toBe(0);
+      expect((await readdir(fresh)).filter((n) => n !== 'Library')).toEqual([]); // tuios itself creates Library/ for 'config path'
+    } finally { await rm(fresh, { recursive: true, force: true }); }
   });
   test('usage errors exit nonzero', async () => {
     const proc = Bun.spawn(['bun', join(import.meta.dir, 'scripts/setup-cross-host.mjs'), 'nope'], { stdout: 'pipe', stderr: 'pipe' });

@@ -184,9 +184,10 @@ export const dropSource = (existing, host) => existing.filter((s) => s.host !== 
 
 // ---- runtime file closure ----
 
-export async function runtimeFiles(dir = scriptsDir) {
+// `extra` lists standalone files that nothing imports, such as the shell module chosen for the target.
+export async function runtimeFiles(dir = scriptsDir, extra = []) {
   const seen = new Map();
-  const queue = [...ENTRYPOINTS];
+  const queue = [...ENTRYPOINTS, ...extra];
   while (queue.length) {
     const name = queue.shift();
     if (seen.has(name)) continue;
@@ -385,8 +386,17 @@ const svc = {
     if (t.os === 'Darwin') await t.run(['launchctl', 'bootout', `gui/${t.uid}/${spec.name}`]);
     else await t.run(['systemctl', '--user', 'disable', '--now', spec.name]);
   },
-  async restart(t, spec) {
-    if (t.os === 'Darwin') { await t.run(['launchctl', 'bootout', `gui/${t.uid}/${spec.name}`]); await svc.must(t, ['launchctl', 'bootstrap', `gui/${t.uid}`, spec.file]); }
+  async restart(t, spec, reloadConfig = true) {
+    if (t.os === 'Darwin' && !reloadConfig) return svc.must(t, ['launchctl', 'kickstart', '-k', `gui/${t.uid}/${spec.name}`]);
+    if (t.os === 'Darwin') {
+      await svc.must(t, ['launchctl', 'bootout', `gui/${t.uid}/${spec.name}`]);
+      const deadline = Date.now() + 5000;
+      while ((await svc.loaded(t, spec)).loaded) {
+        if (Date.now() >= deadline) throw new Error(`${spec.name} did not unload within 5 seconds`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      await svc.bootstrap(t, spec);
+    }
     else { await svc.must(t, ['systemctl', '--user', 'daemon-reload']); await svc.must(t, ['systemctl', '--user', 'restart', spec.name]); }
   },
   async start(t, spec) {
@@ -502,12 +512,84 @@ async function harnessIntegrations(t, report) {
   }
 }
 
-async function shellMarks(t, report) {
+// ---- shell marks (OSC 133): the shell module is sourced from the user's startup file ----
+
+const SHELL_PROBE = 'sp="${SHELL:-}"; [ -n "$sp" ] || sp=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f7); echo "SHELL_PATH=$sp"; if [ -x "$sp" ]; then echo "SHELL_BASH_VERSION=$("$sp" -c \'echo "${BASH_VERSION-}"\' 2>/dev/null)"; fi';
+const BLOCK_OPEN = '# >>> tuios-inbox shell marks (setup-cross-host) >>>';
+const BLOCK_CLOSE = '# <<< tuios-inbox shell marks <<<';
+const BLOCK_RE = /\n?^# >>> tuios-inbox shell marks[^\n]*\n[\s\S]*?^# <<< tuios-inbox shell marks <<<[^\n]*(\n|$)/m;
+
+// kind is the bundled module that can mark this shell's commands, or null with the reason it cannot.
+export function parseShell(out) {
+  const facts = Object.fromEntries(out.split('\n').map((l) => l.match(/^(SHELL_[A-Z_]+)=(.*)$/)).filter(Boolean).map((m) => [m[1], m[2].trim()]));
+  const path = facts.SHELL_PATH || '';
+  const name = path.split('/').pop();
+  const version = facts.SHELL_BASH_VERSION || '';
+  const [major, minor] = version.split('.').map(Number);
+  if (name === 'zsh') return { path, name, version, kind: 'zsh' };
+  if (name === 'bash') {
+    if (major > 4 || (major === 4 && minor >= 4)) return { path, name, version, kind: 'bash' };
+    return { path, name, version, kind: null, reason: `bash ${version || 'of unknown version'} is older than 4.4, which ignores PS0, so commands cannot be marked` };
+  }
+  return { path, name, version, kind: null, reason: path ? `${path} has no bundled OSC 133 integration (bash 4.4+ and zsh are supported)` : 'the login shell could not be determined' };
+}
+
+export async function detectShell(t) {
+  const r = await t.run(['sh', '-c', SHELL_PROBE]);
+  return parseShell(r.code === 0 ? r.out : '');
+}
+
+export const sourceBlock = (file) => `${BLOCK_OPEN}\n[ "\${TUIOS_ENV:-}" = 1 ] && [ -r ${shq(file)} ] && . ${shq(file)}\n${BLOCK_CLOSE}\n`;
+
+export function ensureSourceBlock(text, file) {
+  const block = sourceBlock(file);
+  if (BLOCK_RE.test(text)) return text.replace(BLOCK_RE, (m) => (m.startsWith('\n') ? '\n' : '') + block);
+  return `${text}${text && !text.endsWith('\n') ? '\n' : ''}${text ? '\n' : ''}${block}`;
+}
+
+export const removeSourceBlock = (text) => text.replace(BLOCK_RE, '');
+
+async function paneMarks(t) {
+  if (!t.tuios) return null;
+  const r = await t.run([t.tuios, 'doctor', 'shell', '--json']);
+  try { const j = JSON.parse(r.out); return Array.isArray(j.panes) ? j.panes : []; } catch { return null; }
+}
+
+function rcFile(t, shell) { return join(t.home, shell.kind === 'bash' ? '.bashrc' : '.zshrc'); }
+
+async function shellIntegration(t, report, paths, shell) {
   if (!t.tuios) return;
-  const r = await t.run([t.tuios, 'doctor', 'shell']);
-  const text = (r.out || r.err).trim();
-  report.note(`OSC 133 shell marks (${t.label}, tuios doctor shell, exit ${r.code}): ${text.split('\n').slice(0, 6).join(' | ') || 'no output'}`);
-  if (r.code !== 0) report.warn(`some panes do not mark commands; source ${join(repoDir, 'scripts/shell.zsh')} from the pane shell, or use the native shell integration in 'tuios doctor shell'. Personal startup files were not touched.`);
+  const panes = await paneMarks(t);
+  if (panes == null) report.warn(`'tuios doctor shell --json' unusable on ${t.label}; shell marks could not be verified.`);
+  const unmarked = (panes || []).filter((p) => !p.marks_commands);
+  if (panes?.length && !unmarked.length && !shell.kind) { report.note(`shell marks (${t.label}): every pane already marks its commands`); return; }
+  if (!shell.kind) { report.gap(`shell marks on ${t.label}: ${shell.reason}. Switch the login shell to bash 4.4+ or zsh, or add the native recipe from 'tuios doctor shell' to its startup file.`); return; }
+  const rc = rcFile(t, shell);
+  const current = await t.read(rc);
+  const ours = current != null && BLOCK_RE.test(current);
+  if (!ours && panes?.length && !unmarked.length) { report.note(`shell marks (${t.label}): every pane already marks its commands; ${rc} left alone`); return; }
+  if (!ours && current != null && /133;[ABCD]/.test(current)) { report.note(`shell marks (${t.label}): ${rc} already carries OSC 133 marks; left alone`); return; }
+  const next = ensureSourceBlock(current ?? '', join(paths.runtimeScripts, `shell.${shell.kind}`));
+  if (next === current) { report.note(`unchanged: shell marks in ${rc}`); return; }
+  await report.step(`source ${shell.kind} OSC 133 marks from ${rc}`, () => (current == null ? t.write(rc, next, 0o644) : t.writeInPlace(rc, next)));
+  report.note(`shell marks take effect in shells started after this; open a new pane on ${t.label} (existing panes keep their old prompt).`);
+}
+
+async function removeShellIntegration(t, report) {
+  for (const name of ['.bashrc', '.zshrc']) {
+    const rc = join(t.home, name);
+    const current = await t.read(rc);
+    if (current == null || !BLOCK_RE.test(current)) continue;
+    await report.step(`remove tuios-inbox shell marks block from ${rc}`, () => t.writeInPlace(rc, removeSourceBlock(current)));
+  }
+}
+
+async function shellStatus(t, report, shell) {
+  if (!t.tuios) return;
+  const panes = await paneMarks(t);
+  const rc = shell.kind ? rcFile(t, shell) : null;
+  const text = rc ? await t.read(rc) : null;
+  report.note(`shell marks (${t.label}): shell ${shell.name || 'unknown'}${shell.kind ? '' : ` unsupported (${shell.reason})`}; panes marking commands ${panes == null ? 'unknown' : `${panes.filter((p) => p.marks_commands).length}/${panes.length}`}; startup integration ${rc ? (text != null && BLOCK_RE.test(text) ? `present in ${rc}` : `absent from ${rc}`) : 'n/a'}`);
 }
 
 async function readSources(central, path) {
@@ -545,7 +627,8 @@ export async function install(ctx) {
   if (!requireTools(target, report) || !(await requireLinuxUserSystemd(target, report))) return;
   const paths = layout(target, opts);
   const remote = target.kind === 'remote';
-  const files = await runtimeFiles(ctx.scriptsDir);
+  const shell = await detectShell(target);
+  const files = await runtimeFiles(ctx.scriptsDir, target.tuios && shell.kind ? [`shell.${shell.kind}`] : []);
   const collectorOnly = opts.collectorOnly || remote;
   const specs = [serviceSpec(target, paths, 'collector', { host: remote ? ctx.alias : opts.host })];
   if (!collectorOnly) specs.push(serviceSpec(target, paths, 'server', { port: opts.port }));
@@ -574,7 +657,7 @@ export async function install(ctx) {
     }
     const state = ctx.dry ? { loaded: false, running: false } : await svc.loaded(target, spec);
     const needsRestart = state.loaded && (unitChanged.get(spec.which) || (spec.which === 'collector' && runtimeChanged));
-    if (needsRestart) await report.step(`restart ${spec.name}`, () => svc.restart(target, spec));
+    if (needsRestart) await report.step(`restart ${spec.name}`, () => svc.restart(target, spec, unitChanged.get(spec.which)));
     else if (!state.loaded || !state.running) await report.step(`load and start ${spec.name}`, () => svc.start(target, spec));
     else report.note(`unchanged: ${spec.name} already running`);
     if (broken()) return halt('the remaining services, hooks and source registration');
@@ -584,10 +667,10 @@ export async function install(ctx) {
   const hooksChanged = await editConfigHooks(target, report, installHookItems(command), command);
   if (broken()) return halt('harness integrations and source registration');
   if (hooksChanged || (await hooksActive(target, command)) === false) {
-    report.restart.push(`${target.label}: the running tuios daemon still uses its old hook commands; hooks load at daemon start. Restart it at a safe point (this tool never runs kill-server).`);
+    report.restart.push(`${target.label}: hooks in config differ from the running daemon. Run 'tuios config apply' from a terminal OUTSIDE tuios, then rerun 'status'. Existing sessions need not restart. This tool never applies grants or stops native daemons.`);
   }
   await harnessIntegrations(target, report);
-  await shellMarks(target, report);
+  await shellIntegration(target, report, paths, shell);
   if (broken()) return halt('source registration');
 
   const entry = { host: remote ? ctx.alias : 'local', ssh: remote ? target.ssh : null, collector_path: paths.collectorScript, data_dir: paths.collectorData, bun: target.bun };
@@ -626,6 +709,7 @@ export async function uninstall(ctx) {
   const fallback = remote ? null : hookCommand({ bun: target.bun, hookScript: join(repoDir, 'scripts', HOOK_MARK), tuios: target.tuios, collectorData: paths.collectorData });
   const hooksChanged = await editConfigHooks(target, report, removeHookItems(fallback), fallback);
   if (hooksChanged) report.restart.push(`${target.label}: hooks load at daemon start; restart tuios at a safe point to stop calling the removed runtime.`);
+  await removeShellIntegration(target, report);
   await report.step(`remove runtime copy ${paths.runtimeRoot}`, () => target.remove(paths.runtimeRoot, { recursive: true }));
   await registerSource(central, report, layout(central, opts), { host: remote ? ctx.alias : 'local' }, true);
   report.note(`kept data: ${paths.collectorData} (queue, checkpoints, imported record ids) and logs in ${paths.stateDir}`);
@@ -643,7 +727,8 @@ export async function status(ctx) {
     report.note(`service ${spec.name}: ${installed ? 'installed' : 'not installed'}, ${state.running ? `running${state.detail ? ` (${state.detail})` : ''}` : state.loaded ? 'loaded, not running' : 'not loaded'}`);
   }
   let expected;
-  try { expected = await runtimeFiles(ctx.scriptsDir); } catch (e) { report.warn(e.message); }
+  const shell = await detectShell(target);
+  try { expected = await runtimeFiles(ctx.scriptsDir, target.tuios && shell.kind ? [`shell.${shell.kind}`] : []); } catch (e) { report.warn(e.message); }
   if (expected) {
     const stale = [];
     for (const [name, body] of expected) if ((await target.read(join(paths.runtimeScripts, name))) !== body) stale.push(name);
@@ -670,7 +755,7 @@ export async function status(ctx) {
     const r = await target.run([target.bun, paths.collectorScript, 'status', '--data', paths.collectorData]);
     report.note(r.code === 0 ? `collector status: ${r.out.trim().replace(/\s+/g, ' ').slice(0, 400)}` : `collector status failed (exit ${r.code}): ${(r.err || r.out).trim().slice(0, 200)}`);
   }
-  await shellMarks(target, report);
+  await shellStatus(target, report, shell);
 }
 
 // ---- CLI ----
