@@ -3,6 +3,8 @@ import { mkdir, readdir, unlink, stat, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { captureTurn } from './scripts/turn.mjs';
+import { createHistory } from './scripts/history.mjs';
+import { pullCollectors } from './scripts/pull-collectors.mjs';
 
 const root = import.meta.dir;
 const dataDir = process.env.TUIOS_INBOX_DATA || join(homedir(), '.local/share/tuios-inbox');
@@ -145,7 +147,7 @@ function updateItems(ids, set = {}) {
   db.transaction(() => {
     for (const key of ids) {
       const [, type, rowId] = /^(turn|thread):(.+)$/.exec(key) || [];
-      if (!type || !run(`UPDATE ${type}s SET ${fields.join(',')}${type === 'turn' && set.archived !== undefined ? ',auto_archived=0' : ''} WHERE id=?`, ...args, rowId).changes) throw new Error(`Item not found: ${key}`);
+      if (!type || !one(`UPDATE ${type}s SET ${fields.join(',')}${type === 'turn' && set.archived !== undefined ? ',auto_archived=0' : ''} WHERE id=? RETURNING id`, ...args, rowId)) throw new Error(`Item not found: ${key}`);
     }
   })();
   changed(); return ids.length;
@@ -404,10 +406,16 @@ async function handleEvent(e) {
     message(tid, 'system', `Reason: ${e.reason}. Current pane state and available mail will be reconciled; missing output cannot be reconstructed.`, 'partial', e);
     await reconcile(); return;
   }
-  if (!e.session) return;
+  if (e.host && e.host !== 'local' && e.session && !e.session.startsWith(e.host + ':')) e = { ...e, session: e.host + ':' + e.session };
+  if (!e.session) {
+    if (e.boot_id && e.seq) run('INSERT OR REPLACE INTO settings VALUES (?,?)', 'cursor', JSON.stringify({ boot_id: e.boot_id, seq: e.seq }));
+    if (e.type === 'host-changed') await reconcile();
+    return;
+  }
+  if (['session-created', 'session-closed'].includes(e.type)) await reconcile();
   if (e.type === 'agent-message') await importMail(e.session);
   if (e.type === 'agent-state' && e.window && typeof e.state === 'string') {
-    seeAgent(e.window, { session: e.session, state: e.state, seen: e.time ? new Date(e.time / 1e6).toISOString() : now() });
+    seeAgent(e.window, { session: e.session, host: e.host, state: e.state, seen: e.time ? new Date(e.time / 1e6).toISOString() : now() });
     if (!agentFor(e.window).host) { try { await observeHosts(e.session); } catch (error) { lastError = error.message; } }
     await turnState(e);
   }
@@ -424,7 +432,7 @@ async function subscribe() {
   while (!stopping) {
     try {
       const cursor = one('SELECT value FROM settings WHERE key=?', 'cursor');
-      const args = ['subscribe', '--types', 'agent-state,agent-message,window-exit,window-closed'];
+      const args = ['subscribe', '--hosts', '--types', 'agent-state,agent-message,window-exit,window-closed,session-created,session-closed,host-changed'];
       if (cursor) { const c = JSON.parse(cursor.value); args.push('--after-seq', String(c.seq), '--boot-id', c.boot_id); }
       eventProcess = Bun.spawn([tuios, ...args], { stdout: 'pipe', stderr: 'pipe' });
       const errorText = new Response(eventProcess.stderr).text();
@@ -440,7 +448,7 @@ async function observeHosts(session) {
   const result = await cli(['list-windows', '-s', session]);
   const windows = Array.isArray(result) ? result : result.windows || [];
   // The detailed native listing omits host only for a confirmed local process.
-  for (const w of windows) run('UPDATE agents SET host=? WHERE id=?', w.host || 'local', w.window_id || w.id);
+  for (const w of windows) run('UPDATE agents SET host=? WHERE id=?', w.host || (session.includes(':') ? session.split(':')[0] : 'local'), w.window_id || w.id);
   return windows;
 }
 async function reconcile() {
@@ -524,6 +532,28 @@ run("UPDATE messages SET status='uncertain',body=body || '\nBackend restarted wh
 // Turns that ended without a hook report used to stay read and unfinished; they are review work.
 run("UPDATE turns SET unread=1, finished=started WHERE state IN ('done','errored') AND finished IS NULL");
 archiveEmptyTurns();
+const history = createHistory(db);
+const collectorAbort = new AbortController();
+let collectorPull;
+async function collectionSources() {
+  const path = process.env.TUIOS_INBOX_COLLECTORS || join(dataDir, 'collectors.json');
+  const file = Bun.file(path);
+  if (await file.exists()) {
+    const sources = await file.json();
+    if (!Array.isArray(sources)) throw new Error('Collector configuration must be an array');
+    return sources;
+  }
+  return [{ host: 'local', collector_path: join(root, 'scripts/collector.mjs'), data_dir: process.env.TUIOS_INBOX_COLLECTOR_DATA || join(dataDir, 'collector'), bun: process.execPath }];
+}
+async function pullHistory() {
+  if (collectorPull) return collectorPull;
+  collectorPull = (async () => {
+    try { return await pullCollectors({ history, sources: await collectionSources(), onChange: changed, signal: collectorAbort.signal }); }
+    catch (error) { history.noteFailure('configuration', error.message); throw error; }
+    finally { collectorPull = null; changed(); }
+  })();
+  return collectorPull;
+}
 const port = Number(process.env.PORT || 4399);
 const origin = `http://127.0.0.1:${port}`;
 const response = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -534,6 +564,13 @@ const respondHint = process.env.TUIOS_PANE_ID
 async function api(req, url) {
   const parts = url.pathname.split('/').filter(Boolean), method = req.method;
   const body = method === 'POST' || method === 'PATCH' ? await req.json() : {};
+  if (url.pathname === '/api/history' && method === 'GET') return response(history.search(Object.fromEntries(url.searchParams)));
+  if (parts[1] === 'history' && parts[2] && method === 'GET') {
+    const record = history.get(decodeURIComponent(parts[2]));
+    return record ? response(record) : response({ error: 'History record not found' }, 404);
+  }
+  if (url.pathname === '/api/collectors' && method === 'GET') return response({ sources: history.health() });
+  if (url.pathname === '/api/collectors/pull' && method === 'POST') return response(await pullHistory());
   if (url.pathname === '/api/tuios' && method === 'GET') {
     const target = url.searchParams.get('session');
     if (!target) return response(await nativeSessions());
@@ -823,15 +860,18 @@ const server = Bun.serve({ hostname: '127.0.0.1', port, idleTimeout: 0, maxReque
     }
     if (url.pathname.startsWith('/api/')) return await api(req, url);
     const files = { '/': 'index.html', '/app.js': 'app.js', '/tuios.js': 'tuios.js', '/tuios.css': 'tuios.css', '/workbench.js': 'workbench.js', '/pages.js': 'pages.js', '/launch-host.js': 'launch-host.js', '/list.js': 'list.js', '/markdown.js': 'markdown.js', '/queues.js': 'queues.js', '/queue-model.js': 'queue-model.js', '/style.css': 'style.css', '/list.css': 'list.css', '/markdown.css': 'markdown.css', '/queues.css': 'queues.css', '/flight.css': 'flight.css', '/flight-barlow-condensed-600.ttf': 'flight-barlow-condensed-600.ttf' };
+    files['/history.js'] = 'history.js';
     if (!files[url.pathname]) return new Response('Not found', { status: 404 });
     return new Response(Bun.file(join(root, 'public', files[url.pathname])), { headers: { 'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' } });
   } catch (e) { return response({ error: e.message }, 400); }
 } });
 const hookTimer = setInterval(() => background(drainHooks()), 1500);
+const collectorTimer = setInterval(() => background(pullHistory()), 15000);
+background(pullHistory());
 background(drainHooks()); background(subscribe());
 console.log(`TUIOS Inbox listening on ${origin}`);
 for (const signal of ['SIGINT','SIGTERM']) process.on(signal, () => {
-  stopping = true; clearInterval(hookTimer); eventProcess?.kill();
+  stopping = true; clearInterval(hookTimer); clearInterval(collectorTimer); collectorAbort.abort(); eventProcess?.kill();
   for (const child of cliProcesses) child.kill();
   server.stop(); db.close(); process.exit(0);
 });

@@ -256,6 +256,8 @@ const protocol = p => p.protocol || 'native';
 
 export const pages = {
   tuios: { title: 'TUIOS', description: 'Native sessions, workspaces and panes. Browse without changing your terminal. Focus and reorganization are explicit actions.', rows: () => [], list: null },
+  history: { title: 'History', description: 'Every collected prompt, response, tool call and command across hosts. Search the full text; open a record for its complete body and where it came from.', rows: () => [], list: null },
+  collectors: { title: 'Collectors', description: 'The programs that read transcripts and TUIOS events on each host. Collection and transfer are tracked separately.', rows: () => [], list: null },
   queues: {
     title: 'Queues', items: true,
     description: 'Unread work grouped by task, oldest first. Opening a record marks it read; shell commands sit in their own bucket until you ask for them.',

@@ -393,3 +393,20 @@ dialog form { display: grid; gap: 18px; }
 .task-note .note-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 12px; }
 .task-note .note-bar small { margin-left: auto; color: var(--muted); }
 .note-context { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+
+/* History and Collectors */
+.history { min-width: 0; }
+.history-filters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; padding: 0 0 16px; }
+.history-filters label { min-width: 130px; font-size: 12px; }
+.history-filters :is(input, select, button) { min-height: 42px; }
+.history-filters .history-q { flex: 1 1 100%; }
+.history-actions { display: flex; gap: 8px; }
+.history-error { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--danger); color: var(--danger); overflow-wrap: anywhere; }
+.history-text a { color: var(--ink); text-decoration: none; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.history-text a:hover { color: var(--accent); }
+.history-pager { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 16px 0; }
+.history-title { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; font-size: 16px; }
+.history-body { margin: 12px 0; padding: 16px; max-height: 60vh; overflow: auto; background: #101922; border: 1px solid var(--control-line); font: 13px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.history-links { margin: 14px 0; }
+.history .native-empty pre { margin: 8px 0; }
+.history .native-toolbar { margin-bottom: 14px; }

@@ -3,6 +3,7 @@ import { createList } from '/list.js';
 import { createWorkbench, patchHTML, terminalResponse } from '/workbench.js';
 import { createQueues } from '/queues.js';
 import { createTuios } from '/tuios.js';
+import { createHistory } from '/history.js';
 import { setupLaunchHost } from '/launch-host.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, taskTree, editKey } from '/pages.js';
 const $ = s => document.querySelector(s);
@@ -30,6 +31,7 @@ function composerRecipients() {
 const workbench = createWorkbench({ root, navigate, load, review: reviewItem, refresh, report: error });
 const queues = createQueues({ root, navigate, load, review: reviewItem, refresh, report: error });
 const tuios = createTuios({ root, refresh });
+const history = createHistory({ root, report: error });
 async function reviewItem(id, unread = false) {
   await api('/items/update', { ids: [id], set: { unread } });
   await refresh();
@@ -41,6 +43,7 @@ function openRead(id) {
 }
 function routePage(r) {
   if (r.kind === 'queue') return pages.queues;
+  if (r.kind === 'history') return { ...pages.history, title: 'History record', description: 'One archived record in full, with where it came from.' };
   if (r.kind !== 'item') return pageForRoute(r);
   const row = store.state.items.find(i => i.id === r.id);
   return row ? { ...pages.inbox, title: row.title || 'Work record', description: `${row.type} · ${row.status}` } : null;
@@ -66,7 +69,7 @@ function parseRoute(hash) {
   const native = /^tuios(?:\/([^/]+)(?:\/(\d+)(?:\/([^/]+))?)?)?$/.exec(path);
   if (native) { try { return { kind: 'tuios', session: native[1] ? decodeURIComponent(native[1]) : undefined, workspace: native[2] ? Number(native[2]) : undefined, window: native[3] ? decodeURIComponent(native[3]) : undefined }; } catch {} }
   if (Object.hasOwn(pages, path)) return { kind: 'index', page: path };
-  const match = /^(task|agent|item)\/([^/]+)$/.exec(path);
+  const match = /^(task|agent|item|history)\/([^/]+)$/.exec(path);
   if (match) { try { return { kind: match[1], id: decodeURIComponent(match[2]) }; } catch {} }
   const queue = /^queue\/([^/]+)(?:\/(.+))?$/.exec(path);
   if (queue) { try { return { kind: 'queue', bucket: decodeURIComponent(queue[1]), item: queue[2] ? decodeURIComponent(queue[2]) : undefined }; } catch {} }
@@ -134,6 +137,7 @@ function render() {
   }
   if (queues.supports(route)) { page = nextPage; $('#page-title').textContent = page.title; $('#page-description').textContent = page.description; document.title = `tuios inbox · ${page.title}`; queues.render(route); return; }
   if (tuios.supports(route)) { page = nextPage; $('#page-title').textContent = page.title; $('#page-description').textContent = page.description; document.title = `tuios inbox · ${page.title}`; tuios.render(route); return; }
+  if (history.supports(route)) { page = nextPage; $('#page-title').textContent = page.title; $('#page-description').textContent = page.description; document.title = `tuios inbox · ${page.title}`; history.render(route); return; }
   if (!list && !workbench.supports(route)) { mount(route); return; }
   page = nextPage;
   $('#page-title').textContent = page.title;
@@ -197,7 +201,7 @@ function mount(next) {
   }
   route = next; page = routePage(route);
   if (oldKey !== nextKey) { if (next.kind === 'item') openRead(next.id); else if (next.kind === 'queue' && next.item) openRead(next.item); }
-  const index = next.kind === 'tuios' ? 'tuios' : next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : next.kind === 'queue' ? 'queues' : '';
+  const index = next.kind === 'tuios' ? 'tuios' : next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : next.kind === 'queue' ? 'queues' : next.kind === 'history' ? 'history' : '';
   document.body.dataset.routeKind = next.kind;
   document.body.classList.toggle('queues-mode', queues.supports(next));
   document.body.classList.toggle('tuios-mode', tuios.supports(next));
@@ -220,11 +224,12 @@ function mount(next) {
   if (oldKey !== nextKey) metadata.replaceChildren();
   if (!metadata.hidden) patchHTML(metadata, metadataForRoute(next));
   list?.destroy(); list = null;
-  if (page && !workbench.supports(route) && !queues.supports(route) && !tuios.supports(route)) list = createList(root, { ...page.list,
+  if (page && !workbench.supports(route) && !queues.supports(route) && !tuios.supports(route) && !history.supports(route)) list = createList(root, { ...page.list,
     onOpen: page.items ? row => navigate({ kind: 'item', id: row.id }) : undefined,
     actions: (page.list.actions || []).map(a => ({ ...a, run: async (ids, value) => { $('#error').hidden = true; await a.run(ids, value); await refresh(); } })) });
   render();
   tuios.enter(next, oldKey !== nextKey).catch(e => error(e, null));
+  history.enter(next, oldKey !== nextKey).catch(e => error(e, null));
   if (oldKey !== nextKey) main.scrollTop = viewCache.get(nextKey)?.scroll || 0;
 }
 function ownerActive(context) {
@@ -594,6 +599,6 @@ window.addEventListener('hashchange', () => {
 const stream = new EventSource('/api/events');
 stream.onopen = () => $('#connection').textContent = 'Connected locally';
 stream.onerror = () => $('#connection').textContent = 'Reconnecting…';
-stream.onmessage = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().then(() => tuios.update()).catch(error), 150); };
+stream.onmessage = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().then(() => Promise.all([tuios.update(), history.update()])).catch(error), 150); };
 await act(async () => { store.state = await api('/state'); });
 mount(parseRoute(location.hash));

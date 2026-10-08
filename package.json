@@ -8,6 +8,8 @@
     "test": "bun test",
     "build:tui": "go build -o bin/tuios-inbox-tui ./cmd/tuios-inbox-tui",
     "tui": "bin/tuios-inbox-tui",
-    "install:tui": "go install ./cmd/tuios-inbox-tui"
+    "install:tui": "go install ./cmd/tuios-inbox-tui",
+    "collector": "bun scripts/collector.mjs",
+    "setup:cross-host": "bun scripts/setup-cross-host.mjs"
   }
 }
