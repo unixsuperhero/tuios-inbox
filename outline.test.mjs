@@ -1,0 +1,207 @@
+import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:net';
+
+// An isolated server: its own data directory and port, a TUIOS that only records what it is asked, and a scripted gh.
+let child, home, base, repo, plain, log;
+const sh = async (cwd, ...argv) => { const p = Bun.spawn(argv, { cwd, stdout: 'pipe', stderr: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }); const out = await new Response(p.stdout).text(); await p.exited; return out.trim(); };
+const call = (path, body, method = 'POST') => fetch(base + '/api' + path, body === undefined && method === 'POST' ? {} : { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body ?? {}) });
+const json = async (...args) => (await call(...args)).json();
+const outline = () => json('/outline');
+const sent = async () => (await Bun.file(log).text().catch(() => '')).split('\x01').filter(Boolean).map(l => l.split('\0').filter(Boolean));
+const stamp = () => new Date().toISOString();
+async function hook(key, values, rest = {}) {
+  const path = join(home, 'events', key + '.json');
+  await Bun.write(path, JSON.stringify({ id: key, time: stamp(), values, ...rest }));
+  await call('/reconcile', {});
+  for (let i = 0; i < 40 && await Bun.file(path).exists(); i++) await Bun.sleep(100);
+  await call('/reconcile', {});
+}
+// A finished turn on a pane, as capture-hook.mjs reports it. It also makes the pane known and at rest.
+const turnDone = (key, pane, prompt, state = 'done') => hook(key, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: state, TUIOS_WINDOW_ID: pane, TUIOS_SESSION_ID: 's' },
+  { turn: { session: 's', pane, name: pane, harness: 'omp', state, at: stamp(), prompt, response: `reply to ${prompt}`, source: 'pane' } });
+async function pane(name, taskId) { await turnDone('seed-' + name, name, 'earlier'); await call('/agents/update', { ids: [name], set: { task_id: taskId } }); await Bun.sleep(5); return name; }
+const promptOf = async key => (await outline()).prompts.find(p => p.id === key);
+
+beforeAll(async () => {
+  home = await mkdtemp(join(tmpdir(), 'outline-test-'));
+  repo = join(home, 'repo'); plain = join(home, 'plain'); log = join(home, 'calls.log');
+  await mkdir(repo); await mkdir(plain);
+  await sh(repo, 'git', 'init', '-q', '-b', 'main'); await Bun.write(join(repo, 'a.txt'), 'a'); await sh(repo, 'git', 'add', '.'); await sh(repo, 'git', 'commit', '-q', '-m', 'first');
+  const fake = join(home, 'tuios'), gh = join(home, 'gh');
+  await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" >> '${log}'\nprintf '\\001' >> '${log}'\ncase "$1" in start-agent) echo '{"window_id":"launched-1","ready":true}';; *) echo '{}';; esac\n`);
+  await Bun.write(gh, `#!/bin/sh\ncase "$3" in main) echo '{"number":42,"state":"OPEN","url":"https://example.test/pr/42","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE"}]}';; nopr) echo 'no pull requests found for branch "nopr"' >&2; exit 1;; *) echo 'could not connect' >&2; exit 1;; esac\n`);
+  await chmod(fake, 0o755); await chmod(gh, 0o755);
+  const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
+  const port = socket.address().port; await new Promise(r => socket.close(r));
+  base = `http://127.0.0.1:${port}`;
+  child = Bun.spawn([process.execPath, 'server.mjs'], { cwd: import.meta.dir, stdout: 'pipe', stderr: 'inherit',
+    env: { ...process.env, PORT: String(port), TUIOS_INBOX_DATA: home, TUIOS_INBOX_SPOOL: join(home, 'events'), TUIOS_BIN: fake, TUIOS_INBOX_GH: gh, TUIOS_INBOX_COLLECTORS: join(home, 'none.json'), PI_CODING_AGENT_DIR: join(home, 'omp') } });
+  const reader = child.stdout.getReader();
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain('listening on');
+  reader.releaseLock();
+});
+afterAll(async () => { if (child) { child.kill(); await child.exited; } if (home) await rm(home, { recursive: true, force: true }); });
+
+test('the outline modules are served', async () => {
+  const res = await fetch(base + '/outline-model.js');
+  expect(res.status).toBe(200);
+  expect(await res.text()).toContain('export function resolve');
+});
+
+test('a prompt is saved without a task, without text, and without anywhere to run', async () => {
+  const saved = await call('/prompts', { body: 'what does settle_seconds default to?' });
+  expect(saved.status).toBe(201);
+  const { prompt, ran, preflight } = await saved.json();
+  expect(prompt).toMatchObject({ body: 'what does settle_seconds default to?', task_id: null, target: '', state: 'queued', error: '' });
+  expect(ran).toBe(false);
+  expect(preflight.blocks.map(b => b.code)).toEqual(['nowhere']);
+  expect(prompt.resolved.harness).toEqual({ value: 'omp', from: 'default' });
+  const empty = await call('/prompts', {});
+  expect(empty.status).toBe(201);
+  expect((await empty.json()).preflight.blocks.map(b => b.code)).toContain('no_text');
+  const o = await outline();
+  expect(o.defaults).toEqual({ harness: 'omp', queue_mode: 'manual' });
+  expect(o.prompts.map(p => p.id)).toContain(prompt.id);
+  expect((await call(`/prompts/${prompt.id}`, undefined, 'DELETE')).status).toBe(200);
+  expect((await outline()).prompts.map(p => p.id)).not.toContain(prompt.id);
+});
+
+test('a blocked run answers 409, keeps the prompt as blocked, and can be queued again', async () => {
+  const { prompt } = await json('/prompts', { body: 'orphan' });
+  const res = await call(`/prompts/${prompt.id}/run`, {});
+  expect(res.status).toBe(409);
+  const refused = await res.json();
+  expect(refused.error).toContain('Nowhere to run');
+  expect(refused.preflight.blocks[0]).toMatchObject({ code: 'nowhere', fix: 'repo' });
+  expect(await promptOf(prompt.id)).toMatchObject({ state: 'blocked' });
+  expect(await json(`/prompts/${prompt.id}`, { state: 'queued', body: 'orphan, edited' }, 'PATCH')).toMatchObject({ state: 'queued', body: 'orphan, edited', error: '' });
+  const now = await json('/prompts', { body: 'run me', target: 'no-such-pane', run: true });
+  expect(now).toMatchObject({ ran: false, prompt: { state: 'blocked' } });
+  expect(now.preflight.blocks.map(b => b.code)).toEqual(['pane_gone']);
+  expect((await call('/tasks/none/run-next', {})).status).toBe(409);
+  expect(await sent()).toEqual((await sent()).filter(a => a[0] !== 'queue'));
+});
+
+test('task facts are set by alias, inherited by lookup, and cleared back to inherit', async () => {
+  const parent = await json('/tasks', { title: 'Fix parser', repo, branch: 'main', harness: 'omp', model: 'gpt-x', queue_mode: 'auto' });
+  const kid = await json('/tasks', { title: 'Tokenizer', parent_id: parent.id });
+  expect((await call('/tasks', { title: 'Bad', queue_mode: 'sometimes' })).status).toBe(400);
+  let o = await outline(), p = o.tasks.find(t => t.id === parent.id), k = o.tasks.find(t => t.id === kid.id);
+  expect(p.own).toMatchObject({ branch: 'main', harness: 'omp', model: 'gpt-x', queue_mode: 'auto', session: '', workspace: null });
+  expect(p.own.repo.endsWith('/repo')).toBe(true);
+  expect(k.own).toMatchObject({ repo: '', branch: '', queue_mode: '' });
+  expect(k.resolved.repo).toEqual({ value: p.own.repo, from: parent.id });
+  expect(k.resolved.queue_mode).toEqual({ value: 'auto', from: parent.id });
+  expect(k.git).toMatchObject({ state: 'ok', head: 'main', dirty: false });
+  expect(k.git.commits.map(c => c.subject)).toEqual(['first']);
+  await call(`/tasks/${kid.id}`, { queue_mode: 'manual', model: 'other' }, 'PATCH');
+  await call(`/tasks/${parent.id}`, { model: null }, 'PATCH');
+  o = await outline(); k = o.tasks.find(t => t.id === kid.id);
+  expect(k.resolved.queue_mode).toEqual({ value: 'manual', from: 'self' });
+  expect(o.tasks.find(t => t.id === parent.id).resolved.model).toEqual({ value: null, from: 'none' });
+  await call(`/tasks/${kid.id}`, { parent_id: null }, 'PATCH');
+  expect((await outline()).tasks.find(t => t.id === kid.id).resolved.repo.from).toBe('none');
+});
+
+test('git facts name a pull request, its absence, and an unreachable service without failing', async () => {
+  const withPr = await json('/tasks', { title: 'Has PR', repo, branch: 'main' });
+  const git = await json('/git/refresh', { task_id: withPr.id });
+  expect(git).toMatchObject({ state: 'ok', head: 'main', pr_state: 'ok', pr: { number: 42, state: 'open', checks: 'failing' } });
+  const { prompt } = await json('/prompts', { body: 'x', task_id: withPr.id });
+  expect(prompt.preflight.warns.map(w => w.code)).toEqual(['checks_failing']);
+  expect(await json('/git/refresh', { task_id: (await json('/tasks', { title: 'No PR', repo, branch: 'nopr' })).id })).toMatchObject({ state: 'ok', pr: null, pr_state: 'none' });
+  expect(await json('/git/refresh', { task_id: (await json('/tasks', { title: 'Down', repo, branch: 'elsewhere' })).id })).toMatchObject({ state: 'ok', pr: null, pr_state: 'unavailable' });
+  expect(await json('/git/refresh', { task_id: (await json('/tasks', { title: 'Plain', repo: plain })).id })).toMatchObject({ state: 'not_a_repo', pr_state: 'none' });
+  expect(await json('/git/refresh', { task_id: (await json('/tasks', { title: 'Bare' })).id })).toMatchObject({ state: 'none' });
+  await call(`/prompts/${prompt.id}`, undefined, 'DELETE');
+});
+
+test('a run goes to a ready pane, is linked to the next turn there, and records its commits', async () => {
+  const task = await json('/tasks', { title: 'Runs', repo });
+  const a = await pane('pane-run', task.id);
+  const o = await outline();
+  expect(o.panes.find(p => p.id === a)).toMatchObject({ task_id: task.id, kind: 'agent', ready: true });
+  // Typed at a pane: the prompt lands in the pane's task.
+  const made = await json('/prompts', { body: 'add a file', target: a, run: true });
+  expect(made).toMatchObject({ ran: true, prompt: { task_id: task.id, state: 'running', pane_id: a } });
+  expect((await sent()).find(c => c[0] === 'queue' && c.includes(a)).at(-1)).toBe('add a file');
+  expect((await call(`/prompts/${made.prompt.id}/run`, {})).status).toBe(409);
+  expect((await outline()).panes.find(p => p.id === a).ready).toBe(false);
+  await Bun.write(join(repo, 'b.txt'), 'b'); await sh(repo, 'git', 'add', '.'); await sh(repo, 'git', 'commit', '-q', '-m', 'add b');
+  await turnDone('run-1', a, 'add a file');
+  const after = await outline(), runs = after.runs.filter(r => r.prompt_id === made.prompt.id);
+  expect(after.prompts.find(p => p.id === made.prompt.id)).toMatchObject({ state: 'done' });
+  expect(runs).toHaveLength(1);
+  expect(runs[0]).toMatchObject({ pane_id: a, task_id: task.id, state: 'done', response_captured: true, harness: 'omp' });
+  expect(runs[0].commits.map(c => c.subject)).toEqual(['add b']);
+  // The turn that was there before the run stays a run of no prompt.
+  expect(after.runs.find(r => r.pane_id === a && r.prompt_id === null)).toBeTruthy();
+  const turn = await (await call('/turns/' + runs[0].id.slice(5))).json();
+  expect(turn.head_before).not.toBe(turn.head_after);
+  // A reply is a new prompt on the same pane; an errored run marks its prompt errored.
+  const reply = await json('/prompts', { body: 'again', task_id: task.id, target: a, run: true });
+  expect(reply.ran).toBe(true);
+  await turnDone('run-2', a, 'again', 'errored');
+  expect(await promptOf(reply.prompt.id)).toMatchObject({ state: 'errored' });
+});
+
+test('a pane on its own question is never typed at', async () => {
+  const task = await json('/tasks', { title: 'Asking' });
+  const a = await pane('pane-ask', task.id);
+  await hook('ask-1', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'needs_input', TUIOS_WINDOW_ID: a, TUIOS_SESSION_ID: 's' });
+  const made = await json('/prompts', { body: 'yes', target: a, run: true });
+  expect(made).toMatchObject({ ran: false, prompt: { state: 'blocked' } });
+  expect(made.preflight.blocks.map(b => b.code)).toEqual(['pane_blocked']);
+  expect((await sent()).some(c => c[0] === 'queue' && c.includes(a))).toBe(false);
+});
+
+test('queues run lowest position first; an automatic queue advances when its pane rests and holds at a block', async () => {
+  const task = await json('/tasks', { title: 'Queue', queue_mode: 'auto' });
+  const a = await pane('pane-queue', task.id);
+  const ids = [];
+  for (const body of ['one', 'two', 'three']) ids.push((await json('/prompts', { body, task_id: task.id })).prompt.id);
+  const blocked = (await json('/prompts', { body: 'four', task_id: task.id, target: 'gone-pane' })).prompt.id;
+  const last = (await json('/prompts', { body: 'five', task_id: task.id })).prompt.id;
+  // Saving never runs, even in an automatic queue with a pane at rest.
+  expect((await sent()).some(c => c[0] === 'queue' && c.includes(a))).toBe(false);
+  await call(`/prompts/${ids[2]}/move`, { before: ids[0] });
+  const order = (await outline()).prompts.filter(p => p.task_id === task.id).map(p => p.body);
+  expect(order).toEqual(['three', 'one', 'two', 'four', 'five']);
+  const first = await call(`/tasks/${task.id}/run-next`, {});
+  expect(first.status).toBe(202);
+  expect((await first.json()).prompt).toMatchObject({ id: ids[2], state: 'running' });
+  const bodies = async () => (await sent()).filter(c => c[0] === 'queue' && c.includes(a)).map(c => c.at(-1));
+  expect(await bodies()).toEqual(['three']);
+  await turnDone('q-1', a, 'three');
+  expect(await bodies()).toEqual(['three', 'one']);
+  await turnDone('q-2', a, 'one');
+  expect(await bodies()).toEqual(['three', 'one', 'two']);
+  await turnDone('q-3', a, 'two');
+  // "four" names a pane that is gone: it becomes blocked and "five" waits behind it.
+  await turnDone('q-4', a, 'typed by hand');
+  expect(await bodies()).toEqual(['three', 'one', 'two']);
+  const state = Object.fromEntries((await outline()).prompts.filter(p => p.task_id === task.id).map(p => [p.body, p.state]));
+  expect(state).toEqual({ three: 'done', one: 'done', two: 'done', four: 'blocked', five: 'queued' });
+  // Moving a prompt to another queue takes it out of this one.
+  expect(await json(`/prompts/${last}/move`, { task_id: null })).toMatchObject({ task_id: null });
+  await call(`/prompts/${blocked}`, undefined, 'DELETE'); await call(`/prompts/${last}`, undefined, 'DELETE');
+});
+
+test('with no pane at rest a run launches an agent in the repo and sends there', async () => {
+  const task = await json('/tasks', { title: 'Launch', repo, model: 'gpt-x' });
+  const { prompt } = await json('/prompts', { body: 'start here', task_id: task.id });
+  expect(prompt.preflight.blocks).toEqual([]);
+  expect((await call(`/prompts/${prompt.id}/run`, {})).status).toBe(202);
+  let calls = [];
+  for (let i = 0; i < 50 && !calls.some(c => c[0] === 'queue' && c.includes('launched-1')); i++) { await Bun.sleep(100); calls = await sent(); }
+  const start = calls.find(c => c[0] === 'start-agent');
+  expect(start[start.indexOf('--cwd') + 1].endsWith('/repo')).toBe(true);
+  expect(start.includes('omp')).toBe(true);
+  expect(start.slice(-3)).toEqual(['--', '--model', 'gpt-x']);
+  expect(calls.find(c => c[0] === 'queue' && c.includes('launched-1')).at(-1)).toBe('start here');
+  expect(await promptOf(prompt.id)).toMatchObject({ state: 'running', pane_id: 'launched-1' });
+  expect((await outline()).panes.find(p => p.id === 'launched-1')).toMatchObject({ task_id: task.id, ready: false });
+});

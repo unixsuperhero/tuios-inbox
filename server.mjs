@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { captureTurn } from './scripts/turn.mjs';
 import { createHistory } from './scripts/history.mjs';
 import { pullCollectors } from './scripts/pull-collectors.mjs';
+import { DEFAULTS, resolve as resolveFields, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos } from './public/outline-model.js';
 
 const root = import.meta.dir;
 const dataDir = process.env.TUIOS_INBOX_DATA || join(homedir(), '.local/share/tuios-inbox');
@@ -77,6 +78,12 @@ if (!one("SELECT 1 FROM settings WHERE key='migrated_items'")) db.transaction(()
   run("UPDATE threads SET task_id=(SELECT task_id FROM agents WHERE id=threads.pane_id) WHERE task_id IS NULL AND kind='command'");
   run("INSERT INTO settings VALUES ('migrated_items','1')");
 })();
+// Task-first outline: a task carries optional run facts ('' inherits from its parent), prompts wait in queues, and a turn is the run of a prompt.
+const columns = table => all(`SELECT name FROM pragma_table_info('${table}')`).map(c => c.name);
+for (const c of ['branch', 'harness', 'model', 'queue_mode', 'source']) if (!columns('tasks').includes(c)) db.exec(`ALTER TABLE tasks ADD COLUMN ${c} TEXT NOT NULL DEFAULT ''`);
+// pane_id, head_before and ran describe the run in flight: where it was sent, the commit it started from, and when.
+db.exec("CREATE TABLE IF NOT EXISTS prompts (id TEXT PRIMARY KEY, body TEXT NOT NULL, task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL, target TEXT NOT NULL DEFAULT '', harness TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', position REAL NOT NULL, state TEXT NOT NULL DEFAULT 'queued', error TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, updated TEXT NOT NULL, pane_id TEXT NOT NULL DEFAULT '', head_before TEXT NOT NULL DEFAULT '', ran TEXT NOT NULL DEFAULT '')");
+for (const [c, type] of [['prompt_id', 'TEXT'], ['head_before', "TEXT NOT NULL DEFAULT ''"], ['head_after', "TEXT NOT NULL DEFAULT ''"], ['commits', "TEXT NOT NULL DEFAULT '[]'"]]) if (!columns('turns').includes(c)) db.exec(`ALTER TABLE turns ADD COLUMN ${c} ${type}`);
 const tuios = process.env.TUIOS_BIN || '/opt/homebrew/bin/tuios';
 const active = new Map();
 let lastError = '', boot = '', eventProcess;
@@ -260,11 +267,12 @@ async function ensureSession(t) {
   if (t.session !== `inbox-${t.id?.slice(0, 8)}` || t.workspace != null) throw new Error('Task home is no longer available; select a live native home');
   await cli(['new', sessionName(t.session), '--detach'], 15000, false);
 }
-function startProfile(t, name, profileId, cwd) {
+function startProfile(t, name, profileId, cwd, opts = {}) {
   const profile = one('SELECT * FROM profiles WHERE id=?', profileId); if (!profile) throw new Error('Profile not found');
   const tid = thread(t.id, null, `Starting ${name}`, 'system');
   const mid = message(tid, 'system', 'Starting agent…', 'running');
   background((async () => {
+    let started = null, outcome = null, failure = '';
     try {
       if (t.session.includes(':') && Object.keys(JSON.parse(profile.env)).length) throw new Error('Profile environment does not cross machines; use a profile without env for another host');
       const args = ['start-agent', '-s', t.session, '--name', name, '--grants', 'read,write,fan', '--ready-timeout', '120000'];
@@ -272,7 +280,7 @@ function startProfile(t, name, profileId, cwd) {
       if (t.workspace != null) args.push('--workspace', String(t.workspace));
       if (profile.protocol) args.push('--protocol', profile.protocol);
       for (const [k,v] of Object.entries(JSON.parse(profile.env))) args.push('--env', `${k}=${v}`);
-      args.push(profile.executable, '--', ...JSON.parse(profile.args));
+      args.push(profile.executable, '--', ...JSON.parse(profile.args), ...(opts.args || []));
       const r = await cli(args, 130000);
       const paneId = r.window_id || r.id || r.window;
       if (!paneId) throw new Error(JSON.stringify(r));
@@ -281,7 +289,9 @@ function startProfile(t, name, profileId, cwd) {
       run('UPDATE agents SET session=? WHERE id=?', t.session, paneId);
       run('UPDATE threads SET pane_id=? WHERE id=?', paneId, tid);
       finish(mid, r.ready === true && r.outcome !== 'window_closed' ? `${name} is ready. Compose a prompt to begin.` : `Agent startup outcome: ${JSON.stringify(r)}`, r.outcome === 'window_closed' ? 'failed' : r.ready === true ? 'complete' : 'blocked', r);
-    } catch (e) { finish(mid, e.message, 'failed'); }
+      outcome = r; if (r.outcome === 'window_closed') failure = 'Agent window closed during startup'; else started = paneId;
+    } catch (e) { finish(mid, e.message, 'failed'); failure = e.message; }
+    if (opts.after) await opts.after(started, outcome, failure);
   })());
   return tid;
 
@@ -362,6 +372,7 @@ async function turnState(e) {
     if (['done', 'errored'].includes(e.state) || (e.state === 'idle' && !open.prompt.trim() && !open.response.trim())) run('UPDATE turns SET state=?, unread=?, finished=COALESCE(finished, ?) WHERE id=?', e.state, Number(e.state !== 'idle'), new Date(e.time / 1e6).toISOString(), open.id);
     else run('UPDATE turns SET state=? WHERE id=?', e.state, open.id);
     archiveEmptyTurns(open.id);
+    if (['done', 'errored'].includes(e.state)) rested.add(e.window);
     return;
   }
   // Replayed history is not a turn starting now.
@@ -396,6 +407,7 @@ function importTurn(t, eventId) {
     else run('INSERT INTO turns (id,session,pane_id,pane_name,harness,prompt,response,source,state,unread,started,finished,task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', turnId, t.session, t.pane, t.name, t.harness, t.prompt, complete ? t.response : '', t.source, t.state, Number(complete), t.at, complete ? t.at : null, agentTask(t.pane));
     archiveEmptyTurns(turnId);
   })();
+  if (complete) rested.add(t.pane);
   changed();
 }
 async function handleEvent(e) {
@@ -554,6 +566,204 @@ async function pullHistory() {
   })();
   return collectorPull;
 }
+// ---- Task-first outline: prompts, queues, runs and git facts ----
+const ghBin = process.env.TUIOS_INBOX_GH || 'gh';
+const tilde = value => typeof value === 'string' ? value.replace(/^~(?=\/|$)/, homedir()) : value;
+function text(value, name, max, trim = true) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string' || value.length > max) throw new Error(`${name} must be text of at most ${max} characters`);
+  return trim ? value.trim() : value;
+}
+// The facts a task may set for itself; '' or null hands the field back to inheritance.
+function taskFacts(body, t = {}) {
+  const out = {};
+  for (const f of ['branch', 'harness', 'model', 'queue_mode']) {
+    out[f] = body[f] === undefined ? t[f] || '' : text(body[f], f, 200);
+    if (/[\x00-\x1f]/.test(out[f])) throw new Error(`${f} must be one line`);
+  }
+  if (!['', 'manual', 'auto'].includes(out.queue_mode)) throw new Error('Queue mode is manual or auto');
+  if (/^-|\s/.test(out.branch)) throw new Error('Branch must be a git branch name');
+  return out;
+}
+function promptFor(key) { const p = one('SELECT * FROM prompts WHERE id=?', key); if (!p) throw new Error('Prompt not found'); return p; }
+const lastPosition = () => one('SELECT COALESCE(MAX(position),0) AS position FROM prompts').position;
+// Never throws: a missing binary, a missing directory and a timeout all read as a failed command.
+async function sh(argv, cwd, timeout = 4000) {
+  try {
+    const child = Bun.spawn(argv, { cwd: cwd || undefined, stdout: 'pipe', stderr: 'pipe', env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0', NO_COLOR: '1' } });
+    const timer = setTimeout(() => child.kill(), timeout);
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    clearTimeout(timer);
+    return { out: out.trim(), err, code };
+  } catch (e) { return { out: '', err: e.message, code: -1 }; }
+}
+const commitRows = out => out.split('\n').filter(Boolean).map(line => { const [sha, subject, at] = line.split('\x1f'); return { sha, subject, at }; });
+const gitLog = (repo, ...range) => sh(['git', '-C', repo, 'log', '--format=%H%x1f%s%x1f%cI', ...range]);
+const gitHead = async repo => repo ? (await sh(['git', '-C', repo, 'rev-parse', '-q', '--verify', 'HEAD'])).out : '';
+// Facts are cached per repo and branch, so every task that resolves to the same pair shares one read.
+const gitCache = new Map(), gitPending = new Map(), prPending = new Map();
+const gitKey = (repo, branch) => `${repo || ''}\0${branch || ''}`;
+async function gitLocal(repo, branch) {
+  const git = { state: 'none', head: '', sha: '', dirty: false, commits: [], pr: null, pr_state: 'none', fetched: now() };
+  if (!repo) return git;
+  if ((await sh(['git', '-C', repo, 'rev-parse', '--is-inside-work-tree'])).out !== 'true') return { ...git, state: 'not_a_repo' };
+  const [head, sha, status, own, any] = await Promise.all([sh(['git', '-C', repo, 'symbolic-ref', '--short', '-q', 'HEAD']), gitHead(repo), sh(['git', '-C', repo, 'status', '--porcelain']),
+    branch ? gitLog(repo, '-n', '10', branch, '--') : { code: 1 }, gitLog(repo, '-n', '10')]);
+  return { ...git, state: 'ok', head: head.out || 'HEAD', sha, dirty: Boolean(status.out), commits: commitRows(own.code ? any.out : own.out) };
+}
+function checksOf(rollup) {
+  const runs = Array.isArray(rollup) ? rollup : [];
+  if (!runs.length) return 'none';
+  if (runs.some(c => ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE'].includes(c.conclusion || c.state))) return 'failing';
+  if (runs.some(c => c.status ? c.status !== 'COMPLETED' : ['PENDING', 'EXPECTED'].includes(c.state))) return 'pending';
+  return 'passing';
+}
+async function gitPr(repo, ref) {
+  if (!ref || ref === 'HEAD') return { pr: null, pr_state: 'none' };
+  const r = await sh([ghBin, 'pr', 'view', ref, '--json', 'number,state,url,statusCheckRollup'], repo, 8000);
+  if (r.code) return { pr: null, pr_state: /no pull requests? found/i.test(r.err) ? 'none' : 'unavailable' };
+  try { const pr = JSON.parse(r.out); return { pr: { number: pr.number, state: String(pr.state || '').toLowerCase(), url: pr.url, checks: checksOf(pr.statusCheckRollup) }, pr_state: 'ok' }; }
+  catch { return { pr: null, pr_state: 'unavailable' }; }
+}
+// The local read is awaited; the pull request arrives later and announces itself, so a slow or missing gh never delays a page.
+async function gitFacts(repo, branch, force = false) {
+  const key = gitKey(repo, branch);
+  if (!repo) return { state: 'none', head: '', sha: '', dirty: false, commits: [], pr: null, pr_state: 'none', fetched: null };
+  if (!force && gitCache.has(key)) return gitCache.get(key);
+  if (!gitPending.has(key)) gitPending.set(key, (async () => {
+    const git = await gitLocal(repo, branch), previous = gitCache.get(key);
+    if (previous) Object.assign(git, { pr: previous.pr, pr_state: previous.pr_state });
+    gitCache.set(key, git); gitPending.delete(key);
+    if (git.state === 'ok') {
+      git.pr_loading = true;
+      prPending.set(key, gitPr(repo, branch || git.head).then(pr => { Object.assign(git, pr, { pr_loading: false, fetched: now() }); prPending.delete(key); changed(); }));
+    }
+    return git;
+  })());
+  return gitPending.get(key);
+}
+function outlineContext() {
+  const tasks = all('SELECT * FROM tasks ORDER BY created DESC').map(t => ({ id: t.id, title: t.title, parent_id: t.parent_id, status: t.status, archived: Boolean(t.archived), created: t.created, source: t.source,
+    // A home the app made up for the task is not a choice; it inherits.
+    own: { repo: t.path, branch: t.branch, harness: t.harness, model: t.model, queue_mode: t.queue_mode, session: t.session === `inbox-${t.id.slice(0, 8)}` ? '' : t.session, workspace: t.workspace } }));
+  const busy = new Set(all("SELECT pane_id FROM prompts WHERE state='running' AND pane_id<>''").map(p => p.pane_id));
+  const panes = all("SELECT id,name,session,COALESCE(host,'') AS host,harness,kind,state,task_id FROM agents WHERE archived=0 ORDER BY seen DESC")
+    .map(p => ({ ...p, ready: !['working', 'needs_input', 'closed'].includes(p.state) && !busy.has(p.id) && !active.has(p.id) }));
+  const profiles = all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) }));
+  return { tasks, byId: new Map(tasks.map(t => [t.id, t])), panes, profiles };
+}
+async function promptView(p, ctx = outlineContext()) {
+  const resolved = resolveFields(p, ctx.byId), git = await gitFacts(resolved.repo.value, resolved.branch.value);
+  return { ...p, resolved, preflight: preflight({ prompt: p, resolved, panes: ctx.panes, git, profiles: ctx.profiles }) };
+}
+async function outline() {
+  const ctx = outlineContext();
+  const tasks = await Promise.all(ctx.tasks.map(async t => { const resolved = resolveFields(t, ctx.byId); return { ...t, resolved, git: await gitFacts(resolved.repo.value, resolved.branch.value), notes: notesOf(t.id) }; }));
+  const prompts = await Promise.all(all('SELECT * FROM prompts ORDER BY position,created').map(p => promptView(p, ctx)));
+  const runs = all(`SELECT 'turn:'||t.id AS id, t.prompt_id, t.task_id, t.pane_id, COALESCE(NULLIF(a.name,''),t.pane_name) AS pane_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, COALESCE(a.host,'') AS host, t.state, t.unread, t.archived,
+    t.started, t.finished, substr(t.prompt,1,400) AS prompt, t.response<>'' AS response_captured, t.source, t.head_before, t.head_after, t.commits FROM turns t LEFT JOIN agents a ON a.id=t.pane_id ORDER BY t.started DESC LIMIT 1000`)
+    .map(r => ({ ...r, unread: Boolean(r.unread), archived: Boolean(r.archived), response_captured: Boolean(r.response_captured), commits: JSON.parse(r.commits) }));
+  return { defaults: DEFAULTS, tasks, prompts, runs, panes: ctx.panes, profiles: ctx.profiles };
+}
+const failPrompt = (key, message) => { run("UPDATE prompts SET state='errored',error=?,updated=? WHERE id=?", message, now(), key); changed(); };
+// A shell runs the text as a command and reports through its own command row, so there is no turn to wait for.
+async function sendPrompt(key, paneId) {
+  const p = one('SELECT * FROM prompts WHERE id=?', key); if (!p) return;
+  const a = agentFor(paneId);
+  await promptAgent(a, withContext(a, p.task_id, p.body));
+  run('UPDATE prompts SET state=?,pane_id=?,updated=? WHERE id=?', a.kind === 'agent' ? 'running' : 'done', paneId, now(), key); changed();
+}
+// Running is the only strict moment: every block is named, the prompt is kept as blocked, and nothing is typed.
+async function runPrompt(key, prefer = null) {
+  const p = promptFor(key), ctx = outlineContext(), resolved = resolveFields(p, ctx.byId), repo = resolved.repo.value;
+  const pf = preflight({ prompt: p, resolved, panes: ctx.panes, git: await gitFacts(repo, resolved.branch.value), profiles: ctx.profiles });
+  if (pf.blocks.length) { run("UPDATE prompts SET state='blocked',error=?,updated=? WHERE id=?", pf.blocks.map(b => b.message).join('; '), now(), p.id); changed(); return { ran: false, preflight: pf }; }
+  const pane = p.target ? ctx.panes.find(x => x.id === p.target) : ctx.panes.find(x => x.id === prefer && x.ready && x.kind === 'agent') || pickPane(p, ctx.panes);
+  run("UPDATE prompts SET state='running',error='',pane_id=?,head_before=?,ran=?,updated=? WHERE id=?", pane?.id || '', await gitHead(repo), now(), now(), p.id);
+  if (pane) {
+    try { await sendPrompt(p.id, pane.id); }
+    catch (e) { failPrompt(p.id, e.message); return { ran: false, preflight: pf, error: e.message }; }
+    return { ran: true, preflight: pf };
+  }
+  // No pane at rest: start one in the home the task resolves to, in the repo, then send.
+  const t = one('SELECT * FROM tasks WHERE id=?', p.task_id), home = one('SELECT * FROM tasks WHERE id=?', resolved.session.from) || t;
+  const profile = profileFor(resolved.harness.value, ctx.profiles), model = resolved.model.value;
+  background((async () => {
+    try {
+      await ensureSession(home);
+      startProfile({ id: t.id, session: home.session, workspace: home.workspace }, `${profile.id}-${p.id.slice(0, 6)}`, profile.id, home.session.includes(':') ? null : repo, { args: model ? ['--model', model] : [], after: async (paneId, r, failure) => {
+        if (!paneId) return failPrompt(p.id, failure || 'Agent did not start');
+        if (r.ready !== true) { run("UPDATE prompts SET state='blocked',error=?,pane_id=?,updated=? WHERE id=?", 'The launched pane is not ready for input', paneId, now(), p.id); changed(); return; }
+        try { await sendPrompt(p.id, paneId); } catch (e) { failPrompt(p.id, e.message); }
+      } });
+    } catch (e) { failPrompt(p.id, e.message); }
+  })());
+  changed(); return { ran: true, preflight: pf };
+}
+async function runResponse(p) {
+  if (p.state === 'running') return response({ error: 'This prompt is already running', preflight: (await promptView(p)).preflight }, 409);
+  const result = await runPrompt(p.id);
+  if (!result.ran) return response({ error: result.error || result.preflight.blocks.map(b => b.message).join('; '), preflight: result.preflight, prompt: await promptView(promptFor(p.id)) }, 409);
+  return response({ prompt: await promptView(promptFor(p.id)) }, 202);
+}
+// An automatic queue sends its next prompt to the pane that just came to rest. The No task queue is always manual.
+async function autoDrain(taskId, paneId) {
+  if (!taskId) return;
+  const ctx = outlineContext(), task = ctx.byId.get(taskId), pane = ctx.panes.find(x => x.id === paneId);
+  if (!task || resolveFields(task, ctx.byId).queue_mode.value !== 'auto') return;
+  const prompts = all('SELECT * FROM prompts WHERE task_id=?', taskId), next = nextInQueue(prompts, taskId);
+  if (!next || queueHeld(prompts, next)) return;
+  // A prompt that names another live pane waits for that pane to rest; one that names a pane that is gone goes on to be blocked.
+  const named = next.target && next.target !== paneId ? ctx.panes.find(x => x.id === next.target) : null;
+  if ((named && named.state !== 'closed') || !pane?.ready) return;
+  await runPrompt(next.id, paneId);
+}
+// One-way import: each todo of an oh-my-pi pane becomes a subtask of the pane's task, matched by title so a repeat changes nothing.
+async function importTodos(paneId) {
+  const a = one('SELECT * FROM agents WHERE id=?', paneId);
+  if (!a?.task_id || a.harness !== 'omp' || !a.session || a.session.includes(':')) return;
+  const sid = rows(await cli(['list-agents', '-s', a.session]), 'agents').find(x => x.window_id === paneId)?.agent_session_id;
+  if (!sid || !/^[\w-]+$/.test(sid)) return;
+  const dir = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.omp/agent'), 'sessions');
+  const [file] = await Array.fromAsync(new Bun.Glob(`*/*_${sid}.jsonl`).scan(dir));
+  if (!file) return;
+  const entries = (await Bun.file(join(dir, file)).text()).split('\n').filter(l => l.includes('"todo"')).map(l => { try { return JSON.parse(l); } catch { return null; } });
+  let touched = false;
+  for (const todo of ompTodos(entries)) {
+    const title = todo.title.slice(0, 200), existing = one("SELECT id,status FROM tasks WHERE parent_id=? AND source='omp-todo' AND title=?", a.task_id, title);
+    if (!existing) { const key = id(); run("INSERT INTO tasks (id,title,path,status,session,created,parent_id,source) VALUES (?,?,'',?,?,?,?,'omp-todo')", key, title, todo.done ? 'done' : 'open', `inbox-${key.slice(0, 8)}`, now(), a.task_id); touched = true; }
+    else if (todo.done && existing.status !== 'done') { run("UPDATE tasks SET status='done' WHERE id=?", existing.id); touched = true; }
+  }
+  if (touched) changed();
+}
+// Panes whose turn just ended. The hook drain empties this; there is no timer of its own.
+const rested = new Set();
+let settling = false;
+async function settlePrompts() {
+  if (settling) return; settling = true;
+  try {
+    const drains = [];
+    for (const p of all("SELECT * FROM prompts WHERE state='running' AND pane_id<>''")) {
+      let turn = one('SELECT * FROM turns WHERE prompt_id=? ORDER BY started DESC LIMIT 1', p.id);
+      if (!turn) {
+        // The next turn captured on the pane after the send is this prompt's run.
+        turn = one('SELECT * FROM turns WHERE pane_id=? AND prompt_id IS NULL AND started>=? ORDER BY started LIMIT 1', p.pane_id, p.ran);
+        if (!turn) continue;
+        run('UPDATE turns SET prompt_id=?,head_before=?,task_id=COALESCE(task_id,?) WHERE id=?', p.id, p.head_before, p.task_id, turn.id); changed();
+      }
+      if (!['done', 'errored'].includes(turn.state)) continue;
+      const ctx = outlineContext(), resolved = resolveFields(p, ctx.byId), repo = resolved.repo.value, after = await gitHead(repo);
+      const commits = p.head_before && after && after !== p.head_before ? commitRows((await gitLog(repo, `${p.head_before}..${after}`)).out) : [];
+      run('UPDATE turns SET head_after=?,commits=? WHERE id=?', after, JSON.stringify(commits), turn.id);
+      run('UPDATE prompts SET state=?,error=?,updated=? WHERE id=?', turn.state, turn.state === 'errored' ? 'The run ended in an error' : '', now(), p.id);
+      if (repo) background(gitFacts(repo, resolved.branch.value, true));
+      drains.push([p.task_id, p.pane_id]); changed();
+    }
+    for (const paneId of [...rested]) { rested.delete(paneId); drains.push([agentTask(paneId), paneId]); background(importTodos(paneId)); }
+    for (const [taskId, paneId] of drains) await autoDrain(taskId, paneId);
+  } catch (e) { lastError = `Prompt queue: ${e.message}`; }
+  finally { settling = false; }
+}
 const port = Number(process.env.PORT || 4399);
 const origin = `http://127.0.0.1:${port}`;
 const response = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -563,7 +773,52 @@ const respondHint = process.env.TUIOS_PANE_ID
   : 'To answer from the browser, run TUIOS with respond_from_shell = true under [daemon] in its config.';
 async function api(req, url) {
   const parts = url.pathname.split('/').filter(Boolean), method = req.method;
-  const body = method === 'POST' || method === 'PATCH' ? await req.json() : {};
+  const body = method === 'POST' || method === 'PATCH' ? await req.json().catch(() => ({})) || {} : {};
+  if (url.pathname === '/api/outline' && method === 'GET') return response(await outline());
+  if (url.pathname === '/api/git/refresh' && method === 'POST') {
+    const ctx = outlineContext(), t = ctx.byId.get(body.task_id); if (!t) throw new Error('Task not found');
+    const r = resolveFields(t, ctx.byId), git = await gitFacts(r.repo.value, r.branch.value, true);
+    await prPending.get(gitKey(r.repo.value, r.branch.value));
+    return response(git);
+  }
+  if (url.pathname === '/api/prompts' && method === 'POST') {
+    const key = id(), at = now(), target = text(body.target, 'Target', 200);
+    // A prompt typed at a pane lands in that pane's task unless it names one, even null.
+    const task = body.task_id ? taskFor(body.task_id).id : body.task_id === undefined && target ? agentTask(target) : null;
+    run('INSERT INTO prompts (id,body,task_id,target,harness,model,position,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?)', key, text(body.body, 'Body', 60000, false), task, target, text(body.harness, 'Harness', 200), text(body.model, 'Model', 200), lastPosition() + 1, 'queued', at, at);
+    const result = body.run === true ? await runPrompt(key) : { ran: false };
+    changed(); const prompt = await promptView(promptFor(key));
+    return response({ prompt, ran: result.ran, preflight: prompt.preflight, ...(result.error ? { error: result.error } : {}) }, 201);
+  }
+  if (parts[1] === 'prompts' && parts[2]) {
+    const p = promptFor(parts[2]);
+    if (parts.length === 3 && method === 'PATCH') {
+      const set = ['updated=?'], args = [now()];
+      if (body.body !== undefined) { set.push('body=?'); args.push(text(body.body, 'Body', 60000, false)); }
+      for (const f of ['target', 'harness', 'model']) if (body[f] !== undefined) { set.push(`${f}=?`); args.push(text(body[f], f, 200)); }
+      if (body.task_id !== undefined) { set.push('task_id=?'); args.push(body.task_id ? taskFor(body.task_id).id : null); }
+      if (body.state !== undefined) { if (body.state !== 'queued') throw new Error('A prompt can only be set back to queued'); set.push("state='queued'", "error=''", "pane_id=''"); }
+      run(`UPDATE prompts SET ${set.join(',')} WHERE id=?`, ...args, p.id);
+      changed(); return response(await promptView(promptFor(p.id)));
+    }
+    if (parts.length === 3 && method === 'DELETE') { run('UPDATE turns SET prompt_id=NULL WHERE prompt_id=?', p.id); run('DELETE FROM prompts WHERE id=?', p.id); changed(); return response({ ok: true }); }
+    if (parts[3] === 'run' && method === 'POST') return runResponse(p);
+    if (parts[3] === 'move' && method === 'POST') {
+      const task = body.task_id === undefined ? p.task_id : body.task_id ? taskFor(body.task_id).id : null;
+      let position = lastPosition() + 1;
+      if (body.before) {
+        const before = promptFor(body.before), previous = one('SELECT MAX(position) AS position FROM prompts WHERE task_id IS ? AND position<? AND id<>?', task, before.position, p.id).position;
+        position = previous == null ? before.position - 1 : (previous + before.position) / 2;
+      }
+      run('UPDATE prompts SET task_id=?,position=?,updated=? WHERE id=?', task, position, now(), p.id);
+      changed(); return response(await promptView(promptFor(p.id)));
+    }
+  }
+  if (parts[1] === 'tasks' && parts[3] === 'run-next' && method === 'POST') {
+    const task = parts[2] === 'none' ? null : taskFor(parts[2]).id, next = nextInQueue(all('SELECT * FROM prompts WHERE task_id IS ?', task), task);
+    if (!next) return response({ error: 'Nothing is queued here' }, 409);
+    return runResponse(next);
+  }
   if (url.pathname === '/api/history' && method === 'GET') return response(history.search(Object.fromEntries(url.searchParams)));
   if (parts[1] === 'history' && parts[2] && method === 'GET') {
     const record = history.get(decodeURIComponent(parts[2]));
@@ -722,11 +977,11 @@ async function api(req, url) {
   }
   if (url.pathname === '/api/tasks' && method === 'POST') {
     // A task may start without a directory; its panes then open in the home directory until one is set.
-    const key = id(), path = body.path ? await directory(body.path) : '', worktree = body.worktree ? await directory(body.worktree) : '';
+    const key = id(), repo = body.path ?? body.repo, path = repo ? await directory(tilde(repo)) : '', worktree = body.worktree ? await directory(body.worktree) : '', facts = taskFacts(body);
     const parent = body.parent_id ? parentFor(body.parent_id).id : null;
     const home = body.session !== undefined ? await taskHome(body.session, body.workspace) : { session: `inbox-${key.slice(0, 8)}`, workspace: null };
     if (body.session === undefined && body.workspace != null) throw new Error('Choose a live session for the workspace home');
-    run('INSERT INTO tasks (id,title,path,worktree,status,session,created,parent_id,workspace) VALUES (?,?,?,?,?,?,?,?,?)', key, required(body.title, 'Title', 200), path, worktree, 'open', home.session, now(), parent, home.workspace);
+    run('INSERT INTO tasks (id,title,path,worktree,status,session,created,parent_id,workspace,branch,harness,model,queue_mode) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', key, required(body.title, 'Title', 200), path, worktree, 'open', home.session, now(), parent, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode);
     if (body.notes !== undefined) {
       if (!Array.isArray(body.notes)) throw new Error('Notes must be a list of {body, context} notes');
       for (const n of body.notes) run('INSERT INTO task_notes (id,task_id,body,context,created,updated) VALUES (?,?,?,?,?,?)', id(), key, noteBody(n?.body), noteContext(n?.context ?? false), now(), now());
@@ -753,10 +1008,11 @@ async function api(req, url) {
     if (parts.length === 3 && method === 'PATCH') {
       if (body.notes !== undefined) throw new Error('Edit notes through /tasks/:id/notes');
       if (!['open', 'active', 'done'].includes(body.status || t.status)) throw new Error('Unknown task status');
-      const path = body.path === undefined ? t.path : body.path ? await directory(body.path) : '', worktree = body.worktree === undefined ? t.worktree : body.worktree ? await directory(body.worktree) : '';
+      const repo = body.path !== undefined ? body.path : body.repo, facts = taskFacts(body, t);
+      const path = repo === undefined ? t.path : repo ? await directory(tilde(repo)) : '', worktree = body.worktree === undefined ? t.worktree : body.worktree ? await directory(body.worktree) : '';
       const parent = body.parent_id === undefined ? t.parent_id : body.parent_id ? parentFor(body.parent_id, t.id).id : null;
-      const home = body.session !== undefined || body.workspace !== undefined ? await taskHome(body.session === undefined ? t.session : body.session, body.workspace === undefined ? t.workspace : body.workspace) : t;
-      run('UPDATE tasks SET title=?,status=?,path=?,worktree=?,parent_id=?,session=?,workspace=? WHERE id=?', required(body.title || t.title, 'Title', 200), body.status || t.status, path, worktree, parent, home.session, home.workspace, t.id); changed(); return response(taskFor(t.id));
+      const home = body.session === '' || body.session === null ? { session: `inbox-${t.id.slice(0, 8)}`, workspace: null } : body.session !== undefined || body.workspace !== undefined ? await taskHome(body.session === undefined ? t.session : body.session, body.workspace === undefined ? t.workspace : body.workspace) : t;
+      run('UPDATE tasks SET title=?,status=?,path=?,worktree=?,parent_id=?,session=?,workspace=?,branch=?,harness=?,model=?,queue_mode=? WHERE id=?', required(body.title || t.title, 'Title', 200), body.status || t.status, path, worktree, parent, home.session, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode, t.id); changed(); return response(taskFor(t.id));
     }
     if (parts[3] === 'panes' && method === 'POST') {
       const name = required(body.name || `shell-${id().slice(0, 6)}`, 'Pane name', 120);
@@ -843,7 +1099,7 @@ const p = paneFor(parts[2]);
       await cli(['queue', '-s', p.session, '-w', p.id, '--', text], 15000, false); return response({ ok: true });
     }
   }
-  if (url.pathname === '/api/reconcile' && method === 'POST') { await reconcile(); await drainHooks(); return response({ ok: true }); }
+  if (url.pathname === '/api/reconcile' && method === 'POST') { await reconcile(); await drainHooks(); await settlePrompts(); return response({ ok: true }); }
   return response({ error: 'Not found' }, 404);
 }
 let stopping = false;
@@ -861,11 +1117,12 @@ const server = Bun.serve({ hostname: '127.0.0.1', port, idleTimeout: 0, maxReque
     if (url.pathname.startsWith('/api/')) return await api(req, url);
     const files = { '/': 'index.html', '/app.js': 'app.js', '/tuios.js': 'tuios.js', '/tuios.css': 'tuios.css', '/workbench.js': 'workbench.js', '/pages.js': 'pages.js', '/launch-host.js': 'launch-host.js', '/list.js': 'list.js', '/markdown.js': 'markdown.js', '/queues.js': 'queues.js', '/queue-model.js': 'queue-model.js', '/style.css': 'style.css', '/list.css': 'list.css', '/markdown.css': 'markdown.css', '/queues.css': 'queues.css', '/flight.css': 'flight.css', '/flight-barlow-condensed-600.ttf': 'flight-barlow-condensed-600.ttf' };
     files['/history.js'] = 'history.js';
+    for (const name of ['outline.js', 'outline.css', 'outline-model.js']) files['/' + name] = name;
     if (!files[url.pathname]) return new Response('Not found', { status: 404 });
     return new Response(Bun.file(join(root, 'public', files[url.pathname])), { headers: { 'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' } });
   } catch (e) { return response({ error: e.message }, 400); }
 } });
-const hookTimer = setInterval(() => background(drainHooks()), 1500);
+const hookTimer = setInterval(() => background(drainHooks().then(settlePrompts)), 1500);
 const collectorTimer = setInterval(() => background(pullHistory()), 15000);
 background(pullHistory());
 background(drainHooks()); background(subscribe());
