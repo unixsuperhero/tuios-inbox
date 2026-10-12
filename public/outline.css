@@ -55,6 +55,7 @@
 .ic-idle, .ic-ended { color: #c9d6df; }
 .ic-queued { color: var(--ol-warning); }
 .ic-doc { color: var(--ink); }
+.ic-shell { flex: none; color: #93a5b2; }
 /* read: thin and dim, whatever the kind */
 .ic.is-read { color: #7c8f9d; stroke-width: 1; }
 @keyframes ic-spin { to { transform: rotate(360deg); } }
@@ -92,6 +93,8 @@
 .rt-name { flex: 0 1 auto; min-width: 4ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--ink); }
 .rt-row.is-unread .rt-name { font-weight: 700; color: #fff; }
 .rt-row.is-dim .rt-name { font-weight: 400; color: #93a5b2; }
+.rt-row.is-empty { background: transparent; }
+.rt-via { flex: none; font-size: 11.5px; color: #7c8f9d; white-space: nowrap; }
 .rt-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .rt-row.is-unread .rt-item > .rt-sum { color: var(--ink); }
 .rt-row.is-dim .rt-item > .rt-sum { color: #7c8f9d; }
@@ -215,6 +218,9 @@
 #outline-root.is-queue .ol-filter { margin: 0 16px; padding: 0; border: 0; gap: 8px 14px; }
 .q-count { font-size: 13.5px; color: var(--muted); white-space: nowrap; }
 .q-count b { font: 700 15px var(--mono); color: #fff; }
+#outline-root .q-markall { min-height: 28px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+#outline-root .q-markall:hover { background: var(--ol-row); color: var(--ink); }
+#outline-root .q-markall.is-armed { border-color: var(--accent); background: var(--ol-soft); color: #fff; font-weight: 700; }
 .q-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .q-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 28px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 2px; color: var(--ink); font-size: 12.5px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .q-chip span { font: 11.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }
@@ -415,7 +421,7 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
   #outline-root.is-queue .ol-filter { margin: 0 16px; border: 0; }
   .is-queue .ol-head { padding-bottom: 6px; }
   .q-row { min-height: 52px; }
-  .q-chip { min-height: 36px; }
+  .q-chip, #outline-root .q-markall { min-height: 36px; }
   .ol-qlink { min-height: 44px; }
   #outline-root.is-focus .ol-detail { display: block; padding: 14px 16px 48px; }
   .is-focus .ol-head { padding-inline: 16px; }

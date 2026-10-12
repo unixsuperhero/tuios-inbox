@@ -93,11 +93,16 @@ export function queueStatus(prompts, taskId, mode, panes = []) {
   if (busy) return { state: 'waiting', next: next.id, by: null, pane: busy.id, text: `Waiting for ${busy.name || 'the pane'} to come to rest` };
   return { state: 'start', next: next.id, by: null, pane: null, text: 'Not started: press Run next' };
 }
-/** The task a run is filed under, everywhere it is shown: its prompt's task when it ran from a prompt, else its own. */
+/**
+ * The task a run is filed under, everywhere it is shown: its prompt's task when it ran from a prompt, else its own;
+ * with neither, the task it inherits (`inherits`: its pane's task, else the task whose session the pane lives in).
+ */
 export function runTask(run, promptsById) {
   const prompt = get(promptsById, run?.prompt_id);
-  return (prompt ? prompt.task_id : run?.task_id) ?? null;
+  return (prompt ? prompt.task_id : run?.task_id) ?? run?.inherits ?? null;
 }
+/** The task a pane is filed under: its own, else the one it inherits from its session. */
+export const paneTask = pane => pane?.task_id ?? pane?.inherits ?? null;
 
 /**
  * The todo list an oh-my-pi conversation ends with, replayed from its `todo` tool calls.
@@ -238,17 +243,34 @@ function waitingItems({ tasks = [], runs = [], prompts = [], panes = [] } = {}, 
  */
 export function queueItems(data = {}, scope = { type: 'all' }, keep = new Set()) {
   const { items, paneById } = waitingItems(data, keep), type = scope?.type || 'all', id = scope?.id;
-  const inScope = i => type === 'task' ? id === 'none' ? !i.path.length : i.path.some(t => t.id === id) : type === 'session' ? i.session === id : type === 'pane' ? i.pane_id === id : true;
-  return items.filter(inScope).map(({ path, ...i }) => ({ ...i, ind: itemKind(i), summary: firstLine(i.kind === 'run' ? i.rec.prompt : i.rec.body), task_id: path.at(-1)?.id ?? null, task: path.map(t => t.title).join(' / '),
+  return items.filter(i => scopesOf(i).includes(scopeKey({ type, id }))).map(({ path, ...i }) => ({ ...i, ind: itemKind(i), summary: firstLine(i.kind === 'run' ? i.rec.prompt : i.rec.body), task_id: path.at(-1)?.id ?? null, task: path.map(t => t.title).join(' / '),
     pane: paneById.get(i.pane_id)?.name || i.pane_name || '', docs: i.kind === 'run' ? i.rec.docs?.length || 0 : 0 }));
 }
+
+// Every scope an item is listed in, as keys; the Queue page and every count beside a queue link read the same ones.
+const scopeKey = scope => !scope?.type || scope.type === 'all' ? 'all' : `${scope.type}:${scope.id ?? ''}`;
+const scopesOf = i => ['all', `pane:${i.pane_id}`, `session:${i.session}`, ...(i.path.length ? i.path.map(t => `task:${t.id}`) : ['task:none'])];
+/**
+ * How many items each queue scope lists, worked out in one pass: count(scope) === queueItems(data, scope).length.
+ * @returns {(scope: {type: string, id?: string}) => number}
+ */
+export function queueCounts(data = {}) {
+  const n = new Map();
+  for (const i of waitingItems(data).items) for (const k of scopesOf(i)) n.set(k, (n.get(k) || 0) + 1);
+  return scope => n.get(scopeKey(scope)) || 0;
+}
+/**
+ * What Mark all read clears in a list of queue items: the unread turns. A turn on a question stays, and so do blocked and errored prompts.
+ * @returns {string[]} run ids ('turn:<id>'), as POST /api/items/update takes them
+ */
+export const markable = items => items.filter(i => i.kind === 'run' && i.rec.unread && !i.rec.archived && i.rec.state !== 'needs_input').map(i => i.rec.id);
 
 // One row per pane under each task that owns something of it; prompts that name no pane share one 'prompts' row.
 function rollup({ tasks = [], runs = [], prompts = [], panes = [] } = {}, keep = new Set()) {
   const byId = new Map(tasks.map(t => [t.id, t])), promptById = new Map(prompts.map(p => [p.id, p])), paneById = new Map(panes.map(p => [p.id, p])), chain = chainOf(byId);
-  const owners = new Map(), newest = new Map();
+  const owners = new Map(), newest = new Map(), shown = new Set();
   const place = (taskId, id) => { const path = chain(taskId); return path.some(t => t.archived) && !keep.has(id) ? null : path.length ? path.at(-1).id : 'none'; };
-  const rowOf = (owner, pane) => { const o = owners.get(owner) || owners.set(owner, new Map()).get(owner), key = pane ? `pane:${pane}` : 'prompts'; return o.get(key) || o.set(key, { id: key, pane_id: pane, runs: [], prompts: [] }).get(key); };
+  const rowOf = (owner, pane) => { const o = owners.get(owner) || owners.set(owner, new Map()).get(owner), key = pane ? `pane:${pane}` : 'prompts'; shown.add(pane); return o.get(key) || o.set(key, { id: key, pane_id: pane, runs: [], prompts: [] }).get(key); };
   for (const r of runs) {
     const id = `run:${r.id}`, waits = Boolean(r.unread) || r.state === 'needs_input';
     if (r.pane_id && !(String(newest.get(r.pane_id)?.started) >= String(r.started))) newest.set(r.pane_id, r);
@@ -263,6 +285,8 @@ function rollup({ tasks = [], runs = [], prompts = [], panes = [] } = {}, keep =
     const owner = place(p.task_id, id); if (!owner) continue;
     rowOf(owner, p.target || p.pane_id || '').prompts.push({ id, kind: 'prompt', rec: p, at: ms(p.updated) || ms(p.created), unread: ['blocked', 'errored'].includes(p.state), word: p.state, summary: firstLine(p.body), docs: [] });
   }
+  // A live pane with nothing of its own still has a row, under its task (own or inherited), else under No task.
+  for (const p of panes) if (p.state !== 'closed' && !shown.has(p.id)) { const path = chain(paneTask(p)); rowOf(path.length && !path.some(t => t.archived) ? path.at(-1).id : 'none', p.id); }
   const out = new Map();
   for (const [owner, rows] of owners) {
     const list = [];
@@ -276,7 +300,8 @@ function rollup({ tasks = [], runs = [], prompts = [], panes = [] } = {}, keep =
       const items = [...waiting, ...queued, ...(latest && !waiting.includes(latest) ? [{ ...latest, last: true }] : [])];
       const really = waiting.filter(i => i.unread), lead = really[0] || waiting[0] || queued[0] || latest;
       list.push({ id: row.id, kind: row.pane_id ? 'pane' : row.runs.length ? 'nopane' : 'prompts', pane_id: row.pane_id, name: row.pane_id ? pane?.name || row.runs[0]?.rec.pane_name || '' : row.runs.length ? 'No pane' : 'Prompts',
-        working, unread: really.length, oldest: really.length ? really[0].at : null, at: lead.at, lead: lead.id, lead_kind: lead.kind, summary: lead.summary, dim: !really.length && !working,
+        pane_kind: pane?.kind || '', via: Boolean(pane) && !pane.task_id && pane.inherits === owner, empty: !lead,
+        working, unread: really.length, oldest: really.length ? really[0].at : null, at: lead?.at ?? 0, lead: lead?.id ?? null, lead_kind: lead?.kind ?? null, summary: lead?.summary ?? '', dim: !really.length && !working,
         indicators: indicators(items.filter(i => !i.last), +working), items });
     }
     // Waiting rows first, oldest first; then the rest, newest first.
@@ -292,13 +317,15 @@ function rollup({ tasks = [], runs = [], prompts = [], panes = [] } = {}, keep =
  *   documents; then its queued prompts in queue order; then its latest turn when that one is not waiting (`last: true`).
  *   summary = first line of the OLDEST waiting item; with nothing waiting, of the next queued prompt, else of the latest turn (`dim`).
  * Prompts that name no pane share one 'prompts' row per task. A pane with nothing waiting or queued has a row only while it is open.
+ * Every pane that is not closed has a row, even with no turn at all (`empty`, no lead): under its own task, else the one it inherits
+ * from its session (`via`), else No task. A run with no task of its own is filed with its pane the same way (runTask).
  * Every row, subtask group and root carries `indicators`; a group's and a root's are the union of everything beneath.
  * Archived runs and runs under an archived task are left out. Roots with something waiting come first, oldest first, then the
  * rest by creation; No task comes last, only when it has rows.
  * @param {{tasks?: object[], runs?: object[], prompts?: object[], panes?: object[]}} data the GET /api/outline payload
  * @param {Set<string>} keep item ids ('run:<id>', 'prompt:<id>') that stay listed even once read: the item that is open
  * @returns {{id: string, title: string, unread: number, oldest: number|null, indicators: object[], rows: object[], groups: {id: string, title: string, unread: number, oldest: number|null, indicators: object[], rows: object[]}[]}[]}
- *   a row is {id: 'pane:<pane id>'|'prompts', kind: 'pane'|'prompts'|'nopane', pane_id, name, working, unread, oldest, lead, summary, dim, indicators, items}
+ *   a row is {id: 'pane:<pane id>'|'prompts', kind: 'pane'|'prompts'|'nopane', pane_id, pane_kind, name, via, empty, working, unread, oldest, lead, summary, dim, indicators, items}
  *   an item is {id, kind: 'run'|'prompt', rec, at, unread, word, summary, docs, last?}; a doc is {id: 'doc:<run id>:<n>', kind: 'mdoc'|'file', href, title, run, unread}
  */
 export function railTree(data = {}, keep = new Set()) {

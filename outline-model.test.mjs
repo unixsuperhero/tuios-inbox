@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask, indicators, sumIndicators, itemKind, queueItems, taskIndicators, INDICATORS } from './public/outline-model.js';
+import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask, indicators, sumIndicators, itemKind, queueItems, queueCounts, markable, paneTask, taskIndicators, INDICATORS } from './public/outline-model.js';
 
 const tasks = {
   root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2 },
@@ -367,4 +367,82 @@ test('a run is filed under its prompt\'s task, and under its own only when it ha
   const data = { tasks: [{ id: 'a', title: 'A', created: '1' }, { id: 'b', title: 'B', created: '2' }], prompts: [{ id: 'p', task_id: 'b', state: 'done', body: 'x', position: 1 }], runs: [{ id: 'r', prompt_id: 'p', task_id: 'a', unread: 1, state: 'done', started: '2026-01-01T00:00:00Z', prompt: 'x' }], panes: [] };
   expect(railTree(data).find(g => g.rows.length).id).toBe(runTask(data.runs[0], new Map(data.prompts.map(p => [p.id, p]))));
   expect(reviewQueue(data).map(g => g.id)).toEqual(['b']);
+});
+
+// A pane opened by hand in a task's session has no task of its own; the server names the one it inherits, and never overwrites task_id.
+const inheritData = () => ({
+  tasks: [{ id: 'a', title: 'Alpha', parent_id: null, status: 'open', archived: false, created: '2026-01-01' }, { id: 'b', title: 'Beta', parent_id: null, status: 'open', archived: false, created: '2026-01-02' }],
+  panes: [
+    { id: 'h1', name: 'hand', kind: 'agent', state: 'idle', session: 'inbox-a', task_id: null, inherits: 'a' },
+    { id: 'm1', name: 'mixed', kind: 'agent', state: 'idle', session: 's', task_id: 'b', inherits: null },
+    { id: 'e1', name: 'fresh', kind: 'agent', state: 'idle', session: 'inbox-a', task_id: null, inherits: 'a' },
+    { id: 'e2', name: '', kind: 'agent', state: 'idle', session: 's', task_id: 'b', inherits: null },
+    { id: 'sh123456789', name: '', kind: 'shell', state: 'idle', session: 'other', task_id: null, inherits: null },
+    { id: 'gone', name: 'gone', kind: 'shell', state: 'closed', session: 'other', task_id: null, inherits: null },
+  ],
+  prompts: [{ id: 'q0', body: 'no task prompt', task_id: null, state: 'done', position: 1 }, { id: 'qb', body: 'stuck', task_id: 'b', target: 'm1', state: 'blocked', created: '2026-03-03T00:00:00Z', updated: '2026-03-03T00:00:00Z' }],
+  runs: [
+    { id: 'turn:i1', task_id: null, inherits: 'a', pane_id: 'h1', session: 'inbox-a', state: 'done', unread: true, started: '2026-03-01T10:00:00Z', finished: '2026-03-01T10:05:00Z', prompt: 'by hand' },
+    { id: 'turn:i2', task_id: null, inherits: 'a', pane_id: 'h1', session: 'inbox-a', state: 'needs_input', unread: true, started: '2026-03-01T11:00:00Z', finished: null, prompt: 'asking' },
+    // an older turn of an assigned pane that never got the task: it inherits the pane's
+    { id: 'turn:m1', task_id: null, inherits: 'b', pane_id: 'm1', session: 's', state: 'done', unread: true, started: '2026-03-02T10:00:00Z', finished: '2026-03-02T10:05:00Z', prompt: 'older' },
+    { id: 'turn:m2', task_id: 'b', inherits: null, pane_id: 'm1', session: 's', state: 'done', unread: true, started: '2026-03-02T11:00:00Z', finished: '2026-03-02T11:05:00Z', prompt: 'newer' },
+    { id: 'turn:m3', prompt_id: 'q0', task_id: null, inherits: 'b', pane_id: 'm1', session: 's', state: 'done', unread: false, started: '2026-03-02T12:00:00Z', finished: '2026-03-02T12:05:00Z', prompt: 'no task prompt' },
+    { id: 'turn:x1', task_id: null, inherits: null, pane_id: 'old', pane_name: 'old', session: 'other', state: 'done', unread: true, started: '2026-03-04T10:00:00Z', finished: '2026-03-04T10:05:00Z', prompt: 'stray' },
+  ],
+});
+test('a run with no task of its own is filed under the one it inherits, in the rail, the review queue and the Queue page', () => {
+  const data = inheritData(), prompts = new Map(data.prompts.map(p => [p.id, p]));
+  expect(data.runs.map(r => runTask(r, prompts))).toEqual(['a', 'a', 'b', 'b', 'b', null]);
+  expect(runTask({ task_id: 'own', inherits: 'x' }, prompts)).toBe('own');
+  expect(runTask({ prompt_id: 'qb', task_id: null, inherits: 'x' }, prompts)).toBe('b');
+  expect(paneTask(data.panes[0])).toBe('a'); expect(paneTask(data.panes[1])).toBe('b'); expect(paneTask(data.panes[4])).toBe(null);
+  const tree = railTree(data), rowsOf = id => tree.find(g => g.id === id).rows;
+  // One row per pane in the whole rail: the assigned pane's taskless turns sit with the rest of it.
+  const every = tree.flatMap(g => [g, ...g.groups]).flatMap(g => g.rows.map(r => r.id));
+  expect(new Set(every).size).toBe(every.length);
+  expect(rowsOf('a').find(r => r.pane_id === 'h1')).toMatchObject({ unread: 2, via: true, empty: false, lead: 'run:turn:i1' });
+  expect(rowsOf('b').find(r => r.pane_id === 'm1')).toMatchObject({ unread: 3, via: false });
+  expect(rowsOf('b').find(r => r.pane_id === 'm1').items.map(i => i.id)).toEqual(['run:turn:m1', 'run:turn:m2', 'prompt:qb', 'run:turn:m3']);
+  expect(rowsOf('none').map(r => r.pane_id).sort()).toEqual(['old', 'sh123456789']);
+  const list = scope => queueItems(data, scope).map(i => i.id);
+  expect(list({ type: 'task', id: 'a' })).toEqual(['run:turn:i1', 'run:turn:i2']);
+  expect(list({ type: 'task', id: 'b' })).toEqual(['run:turn:m1', 'run:turn:m2', 'prompt:qb']);
+  expect(list({ type: 'task', id: 'none' })).toEqual(['run:turn:x1']);
+  expect(queueItems(data, { type: 'pane', id: 'h1' })[0]).toMatchObject({ task_id: 'a', task: 'Alpha' });
+  expect(reviewQueue(data).map(g => [g.id, g.count])).toEqual([['a', 2], ['b', 3], ['none', 1]]);
+  expect(taskIndicators(data).get('a').waiting).toBe(2);
+  // Without the field nothing is inherited: the payload decides, not the model.
+  for (const r of data.runs) r.inherits = null; for (const p of data.panes) p.inherits = null;
+  expect(list({ type: 'task', id: 'a' })).toEqual([]);
+  expect(railTree(data).find(g => g.id === 'none').rows.map(r => r.pane_id).sort()).toEqual(['e1', 'h1', 'm1', 'old', 'sh123456789']);
+});
+test('every pane that is not closed has a row, even with no turns: under its task, the one it inherits, or No task', () => {
+  const tree = railTree(inheritData()), row = id => tree.flatMap(g => g.rows.map(r => ({ ...r, owner: g.id }))).filter(r => r.pane_id === id);
+  expect(row('e1')).toEqual([expect.objectContaining({ owner: 'a', empty: true, via: true, dim: true, unread: 0, lead: null, summary: '', items: [], indicators: [], name: 'fresh', pane_kind: 'agent' })]);
+  expect(row('e2')).toEqual([expect.objectContaining({ owner: 'b', empty: true, via: false, name: '' })]);
+  expect(row('sh123456789')).toEqual([expect.objectContaining({ owner: 'none', empty: true, pane_kind: 'shell', dim: true })]);
+  expect(row('gone')).toEqual([]);
+  // Empty rows come after the rows that have something, and add nothing to the counts.
+  expect(tree.find(g => g.id === 'a')).toMatchObject({ unread: 2 });
+  expect(tree.find(g => g.id === 'a').rows.map(r => r.pane_id)).toEqual(['h1', 'e1']);
+  // A pane whose task is archived is still shown, under No task.
+  const data = inheritData(); data.tasks[0].archived = true;
+  expect(railTree(data).find(g => g.id === 'none').rows.map(r => r.pane_id)).toContain('e1');
+});
+test('queue counts are the length of the list each scope shows, and Mark all read takes the unread turns of the scope only', () => {
+  for (const data of [railData(), inheritData()]) {
+    const count = queueCounts(data), scopes = [{ type: 'all' }, { type: 'task', id: 'none' }, ...data.tasks.map(t => ({ type: 'task', id: t.id })), ...data.panes.map(p => ({ type: 'pane', id: p.id })), { type: 'pane', id: 'old' }, { type: 'pane', id: 'nope' }, ...['s', 'other', 'inbox-a'].map(id => ({ type: 'session', id }))];
+    for (const s of scopes) expect([s, count(s)]).toEqual([s, queueItems(data, s).length]);
+    expect(count()).toBe(queueItems(data).length);
+  }
+  const data = inheritData(), marks = scope => markable(queueItems(data, scope));
+  // The turn on a question and the blocked prompt stay.
+  expect(marks({ type: 'all' })).toEqual(['turn:i1', 'turn:m1', 'turn:m2', 'turn:x1']);
+  expect(marks({ type: 'task', id: 'a' })).toEqual(['turn:i1']);
+  expect(marks({ type: 'pane', id: 'm1' })).toEqual(['turn:m1', 'turn:m2']);
+  expect(marks({ type: 'session', id: 'other' })).toEqual(['turn:x1']);
+  // The open item, kept in the list once read, is not counted again.
+  data.runs[0].unread = false;
+  expect(markable(queueItems(data, { type: 'task', id: 'a' }, new Set(['run:turn:i1'])))).toEqual([]);
 });

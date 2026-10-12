@@ -394,3 +394,43 @@ list-agents) echo '${JSON.stringify({ agents: [{ window_id: 'missed', name: 'mis
     expect(await (await call('/turns/' + recovered.id.slice(5))).json()).toMatchObject({ prompt: 'ask missed', response: 'the recovered answer', state: 'done' });
   } finally { ({ home, base } = main); second.kill(); await second.exited; await rm(data, { recursive: true, force: true }); }
 });
+
+test('a pane and a run without a task inherit the task whose session they live in, for filing only; a scope is marked read in one call', async () => {
+  const { id } = await json('/tasks', { title: 'Home of a session' }), session = `inbox-${id.slice(0, 8)}`;
+  const turn = (key, pane, s, prompt) => hook(key, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: pane, TUIOS_SESSION_ID: s }, { turn: { session: s, pane, name: pane, harness: 'omp', state: 'done', at: stamp(), prompt, response: 'ok', source: 'pane' } });
+  await turn('inh-1', 'hand-pane', session, 'typed by hand'); await turn('inh-2', 'hand-pane', session, 'typed again');
+  await turn('inh-3', 'far-pane', `box:${session}`, 'on another host'); await turn('inh-4', 'stray-pane', 'nobody', 'in no task session');
+  // An assigned pane with an older turn that never got the task.
+  const other = (await json('/tasks', { title: 'Assigned' })).id;
+  await turn('inh-5', 'own-pane', 'nobody', 'before the task'); await call('/agents/update', { ids: ['own-pane'], set: { task_id: other } });
+  const db = new (await import('bun:sqlite')).Database(join(home, 'inbox.sqlite')); db.run("UPDATE turns SET task_id=NULL WHERE prompt='before the task'");
+  let o = await outline();
+  const pane = name => o.panes.find(p => p.id === name), run = prompt => o.runs.find(r => r.prompt === prompt);
+  expect(pane('hand-pane')).toMatchObject({ task_id: null, inherits: id });
+  expect(pane('far-pane')).toMatchObject({ task_id: null, inherits: null });
+  expect(pane('stray-pane')).toMatchObject({ task_id: null, inherits: null });
+  expect(pane('own-pane')).toMatchObject({ task_id: other, inherits: null });
+  expect(run('typed by hand')).toMatchObject({ task_id: null, inherits: id });
+  expect(run('on another host').inherits).toBe(null);
+  expect(run('in no task session').inherits).toBe(null);
+  expect(run('before the task')).toMatchObject({ task_id: null, inherits: other });
+  expect('pane_task' in run('typed by hand')).toBe(false);
+  // Two tasks naming one session: nobody inherits.
+  const twin = (await json('/tasks', { title: 'Twin' })).id;
+  const home2 = one => { db.run('UPDATE tasks SET session=? WHERE id=?', [one, twin]); return call('/tasks/' + twin, { title: 'Twin ' + one }, 'PATCH'); };
+  await home2(session);
+  expect((await outline()).panes.find(p => p.id === 'hand-pane').inherits).toBe(null);
+  await home2('elsewhere'); db.close();
+  o = await outline();
+  expect(pane('hand-pane').inherits).toBe(id);
+  // Mark all read for the task's scope: the existing bulk endpoint, the ids the model picks.
+  const { queueItems, markable } = await import('./public/outline-model.js');
+  const ids = markable(queueItems(o, { type: 'task', id }));
+  expect(ids.length).toBe(2);
+  expect((await call('/items/update', { ids, set: { unread: false } })).status).toBe(200);
+  o = await outline();
+  expect(queueItems(o, { type: 'task', id })).toEqual([]);
+  expect(run('in no task session').unread).toBe(true);
+  // Nothing was written: the pane and its turns still have no task.
+  expect(pane('hand-pane').task_id).toBe(null); expect(run('typed by hand').task_id).toBe(null);
+});

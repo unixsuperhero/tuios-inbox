@@ -4,7 +4,7 @@
 import { api, apiCached, NOT_MODIFIED, esc, agentName } from '/pages.js';
 import { patchHTML } from '/workbench.js';
 import { markdown } from '/markdown.js';
-import { reviewQueue, reviewItems, railTree, queueStatus, runTask, queueItems, taskIndicators, itemKind } from '/outline-model.js';
+import { reviewQueue, reviewItems, railTree, queueStatus, runTask, paneTask, queueItems, queueCounts, markable, taskIndicators, itemKind } from '/outline-model.js';
 import { nextAfter, waitingFor } from '/queue-model.js';
 
 const VIEWS = { queue: 'Queue', tasks: 'Tasks', open: 'Tasks', everything: 'Everything', 'needs-me': 'Needs me', running: 'Running', queued: 'Queued', 'no-task': 'No task', archive: 'Archive' };
@@ -32,6 +32,7 @@ const ICONS = {
   queued: ['Queued prompt', '<path d="M2.5 3.5h9M2.5 7h9M2.5 10.5h5.5"/>'],
   doc: ['Document', '<path d="M3.5 1.5H8l2.5 2.5v8.5h-7zM8 1.5V4h2.5"/>'],
   queue: ['Queue', '<path d="M1.6 8l1.8-5.2h7.2L12.4 8v4.2H1.6zM1.6 8h3.2l.8 1.7h2.8L9.2 8h3.2"/>'],
+  shell: ['Shell pane', '<path d="M2.2 4l3 3-3 3M7.4 10.4h4.4"/>'],
   chev: ['', '<path d="M5 3l4 4-4 4"/>'],
 };
 const IND_WORDS = { working: ['agent working', 'agents working'], needs_input: ['turn waiting on your answer', 'turns waiting on your answer'], done: ['unread finished turn', 'unread finished turns'], errored: ['unread failed turn', 'unread failed turns'],
@@ -70,7 +71,8 @@ export function createOutline({ report }) {
   const paint = (el, html) => { if (painted.get(el) === html) return; painted.set(el, html); patchHTML(el, html); };
   // Derived from `data` alone, so worked out once per payload.
   const once = (key, make) => { if (!memo.has(key)) memo.set(key, make()); return memo.get(key); };
-  const qCount = scope => once(`q:${scope.type}:${scope.id ?? ''}`, () => queueItems(data || {}, scope).length);
+  // Every count beside a queue link, and the Queue page's own, come from the one pass that lists the page.
+  const qCount = scope => once('qcounts', () => queueCounts(data || {}))(scope);
   const taskInd = () => once('tasks', () => taskIndicators(data || {}));
   let selected = null, destCleared = false, detailOpen = false, confirming = null, notice = null, noticeTimer;
   const collapsed = new Set(), expanded = new Set(), showAll = new Set(), drafts = new Map(), busy = new Set(), bodies = new Map(), fieldErrors = new Map(), docNotes = new Map();
@@ -95,7 +97,7 @@ export function createOutline({ report }) {
     const promptsBy = by([...(data?.prompts || [])].sort((a, b) => a.position - b.position), p => tasks.has(p.task_id) ? p.task_id : '');
     const runs = [...(data?.runs || [])].sort((a, b) => String(b.started).localeCompare(String(a.started)));
     const runsByPrompt = by(runs.filter(r => prompts.has(r.prompt_id)), r => r.prompt_id);
-    const runsByTask = by(runs.filter(r => !prompts.has(r.prompt_id)), r => tasks.has(r.task_id) ? r.task_id : '');
+    const runsByTask = by(runs.filter(r => !prompts.has(r.prompt_id)), r => { const id = runTask(r, prompts); return tasks.has(id) ? id : ''; });
     const kids = by([...tasks.values()].sort((a, b) => String(a.created).localeCompare(String(b.created))), t => tasks.has(t.parent_id) ? t.parent_id : '');
     const add = n => { index.set(n.key, n); for (const c of n.children) c.parent = n; return n; };
     const runNode = (r, depth) => add({ key: `run:${r.id}`, kind: 'run', rec: r, depth, children: [], stats: { queued: 0, blocked: 0, running: +(r.state === 'working'), needs: +(r.state === 'needs_input' && !r.archived), unread: +(r.unread && !r.archived) } });
@@ -186,6 +188,8 @@ export function createOutline({ report }) {
   const taskOf = key => { const n = node(key); return !n ? null : n.kind === 'task' ? n.rec.id : n.kind === 'none' ? null : ownTask(n); };
   // A run is filed under its prompt's task, here as in the rail.
   const ownTask = n => { const id = n.kind === 'run' ? runTask(n.rec, model.prompts) : n.rec.task_id; return model.tasks.has(id) ? id : null; };
+  // The task a run was given, by itself or by its prompt; null when the one it is filed under is only inherited.
+  const assignedTask = n => { const p = model.prompts.get(n.rec.prompt_id), id = p ? p.task_id : n.rec.task_id; return model.tasks.has(id) ? id : null; };
   const destination = () => destCleared ? null : taskOf(selected);
   const sourceNote = (r, tasks = model.tasks) => !r || r.from === 'none' ? 'not set' : r.from === 'self' ? '' : r.from === 'default' ? '(default)' : `(from ${tasks.get(r.from)?.title || 'parent'})`;
   // Only profile ids resolve on the backend (profileFor also maps claude-code to claude); a stored value outside that list stays selectable so it is never dropped silently.
@@ -262,7 +266,10 @@ export function createOutline({ report }) {
     if (qScope.type !== 'all') add(qScope);
     if (cur) { add({ type: 'task', id: cur.task_id ?? 'none' }); add({ type: 'session', id: cur.session }); add({ type: 'pane', id: cur.pane_id }); }
     const n = qCount(qScope);
-    return `<span class="q-count" role="status"><b>${n}</b> waiting</span><span class="q-chips" role="navigation" aria-label="Queue scope">${chips.map(s => `<a class="q-chip" data-wb-key="chip:${esc(s.type)}:${esc(s.id ?? '')}" href="${queueHash(s)}"${sameScope(s, qScope) ? ' aria-current="page"' : ''}>${esc(scopeLabel(s))} <span>${qCount(s)}</span></a>`).join('')}</span>`;
+    // Two steps, in the page: the first click arms it with the number it will clear, the second does it.
+    const marks = markable(qItems).length, armed = confirming === 'markall' && marks > 0;
+    const mark = marks ? `<button type="button" class="q-markall${armed ? ' is-armed' : ''}" data-wb-key="markall" data-act="${armed ? 'mark-all' : 'ask-mark-all'}"${dis('mark-all')}${armed ? ' title="Turns on a question and blocked or errored prompts stay. Escape cancels."' : ''}>${armed ? `Mark ${marks} read — confirm` : 'Mark all read'}</button>` : '';
+    return `<span class="q-count" role="status"><b>${n}</b> waiting</span>${mark}<span class="q-chips" role="navigation" aria-label="Queue scope">${chips.map(s => `<a class="q-chip" data-wb-key="chip:${esc(s.type)}:${esc(s.id ?? '')}" href="${queueHash(s)}"${sameScope(s, qScope) ? ' aria-current="page"' : ''}>${esc(scopeLabel(s))} <span>${qCount(s)}</span></a>`).join('')}</span>`;
   }
   function qOpen(id) {
     qSel = id; confirming = null; destCleared = false; render();
@@ -332,7 +339,7 @@ export function createOutline({ report }) {
     const queue = (data.prompts || []).filter(p => p.task_id === id && ['queued', 'blocked', 'running'].includes(p.state)).sort((a, b) => a.position - b.position);
     const mode = res.queue_mode?.value || 'manual', modeNote = sourceNote(res.queue_mode);
     const modeSwitch = `<div class="ol-switch" role="group" aria-label="Queue mode">${['manual', 'auto'].map(m => `<button type="button" data-act="mode" data-id="${esc(id)}" data-arg="${m}" aria-pressed="${mode === m}"${dis(`mode:${id}`)}>${m === 'manual' ? 'Manual' : 'Auto'}</button>`).join('')}</div>`;
-    const panes = (data.panes || []).filter(p => p.task_id === id && p.state !== 'closed'), g = t.git || { state: 'none' };
+    const panes = (data.panes || []).filter(p => paneTask(p) === id && p.state !== 'closed'), g = t.git || { state: 'none' };
     const gitFacts = g.state === 'none' ? '<p class="ol-dim">No repo is set for this task.</p>' : g.state === 'not_a_repo' ? `<p class="ol-dim">${esc(res.repo?.value || 'The directory')} is not a git repository.</p>` : `<dl class="ol-dl"><dt>HEAD</dt><dd class="ol-mono">${esc(g.head || 'unknown')}${g.sha ? ` <span class="ol-dim">${esc(String(g.sha).slice(0, 7))}</span>` : ''}</dd><dt>Working tree</dt><dd>${g.dirty ? 'uncommitted changes' : 'clean'}</dd><dt>Pull request</dt><dd>${g.pr ? `<a href="${esc(g.pr.url)}" target="_blank" rel="noreferrer">PR ${esc(g.pr.number)}</a> ${state(g.pr.state, 'plain')} ${state(g.pr.checks === 'none' ? 'no checks' : `checks ${g.pr.checks}`, g.pr.checks)}` : g.pr_loading ? 'Checking…' : g.pr_state === 'unavailable' ? 'Not available: gh could not be reached' : 'None for this branch'}</dd></dl>${g.commits?.length ? `<ul class="ol-list ol-commits">${g.commits.map(c => `<li><span class="ol-mono">${esc(String(c.sha).slice(0, 7))}</span> <span class="ol-clip">${esc(c.subject)}</span> <span class="ol-mono ol-dim">${esc(when(c.at))}</span></li>`).join('')}</ul>` : ''}`;
     const notes = (t.notes || []).map(note => `<li>${esc(typeof note === 'string' ? note : note.body ?? note.text ?? JSON.stringify(note))}${note?.created ? ` <span class="ol-mono ol-dim">${esc(when(note.created))}</span>` : ''}</li>`).join('');
     return head('Task', (t.source === 'omp-todo' ? ' · from omp todo' : '') + (t.archived ? ' · archived' : '')) +
@@ -340,7 +347,7 @@ export function createOutline({ report }) {
 <div class="ol-inline" data-wb-key="meta"><label>Status<select data-save="task:${esc(id)}:status">${options(['open', 'active', 'done'].map(s => [s, s]), t.status)}</select></label><label>Move under<select data-save="task:${esc(id)}:parent_id">${options([['', 'Top level'], ...taskOptions(subtreeIds(n))], t.parent_id || '')}</select></label></div>` +
       section('facts', 'Facts', `<p class="ol-dim ol-sec-note">${parent ? `Empty fields are inherited from ${esc(parent.title)}.` : 'Empty fields fall back to the app defaults.'}</p>${rows}`) +
       section('queue', `Queue <span class="ol-count">${queue.length}</span>`, `${queueLine(queueNote(id))}${queueRows(queue, id)}<p class="ol-dim ol-sec-note">${mode === 'auto' ? 'Auto: each next prompt runs when the pane comes to rest; start the first with Run next. A blocked prompt holds the queue.' : 'Manual: nothing runs until you press Run.'}${modeNote ? ` ${esc(modeNote)}` : ''}</p>`, `${modeSwitch}${button('run-next', id, 'Run next', 'primary', queue.some(p => p.state === 'queued') ? '' : ' disabled')}`) +
-      section('panes', `Panes <span class="ol-count">${panes.length}</span>`, panes.length ? `<ul class="ol-list">${panes.map(p => `<li><a href="#agent/${encodeURIComponent(p.id)}">${esc(agentName(p.name, p.id))}</a> <span class="ol-mono">${esc(p.harness || p.kind)}</span> ${state(p.state)} <span class="ol-mono ol-dim">${esc([p.host, p.session].filter(Boolean).join(' / '))}</span></li>`).join('')}</ul>` : '<p class="ol-dim">No panes are assigned. Running a prompt launches one in the repo.</p>') +
+      section('panes', `Panes <span class="ol-count">${panes.length}</span>`, panes.length ? `<ul class="ol-list">${panes.map(p => `<li><a href="#agent/${encodeURIComponent(p.id)}">${esc(agentName(p.name, p.id))}</a> <span class="ol-mono">${esc(p.harness || p.kind)}</span> ${state(p.state)} <span class="ol-mono ol-dim">${esc([p.host, p.session].filter(Boolean).join(' / '))}</span>${p.task_id ? '' : ' <span class="ol-dim">via session</span>'}</li>`).join('')}</ul>` : '<p class="ol-dim">No panes are assigned. Running a prompt launches one in the repo.</p>') +
       section('git', 'Git', `${gitFacts}${g.fetched ? `<p class="ol-dim ol-sec-note">Read <span class="ol-mono">${esc(when(g.fetched))}</span></p>` : ''}`, button('git-refresh', id, busy.has(`git-refresh:${id}`) ? 'Refreshing…' : 'Refresh')) +
       section('notes', 'Notes', notes ? `<ul class="ol-list ol-notes">${notes}</ul>` : '<p class="ol-dim">No notes.</p>') +
       `<div class="ol-actions" data-wb-key="foot">${button('archive-task', id, t.archived ? 'Unarchive' : 'Archive', '', ` data-arg="${t.archived ? '' : '1'}"`)}<a href="#task/${encodeURIComponent(id)}">Open the task page</a></div>`;
@@ -392,22 +399,23 @@ export function createOutline({ report }) {
     const r = n.rec, id = r.id, body = bodies.get(id), pane = (data.panes || []).find(p => p.id === r.pane_id), taskId = ownTask(n) || '';
     const waiting = r.state === 'needs_input' || pane?.state === 'needs_input', prompt = model.prompts.get(r.prompt_id), turn = body?.data;
     const provenance = [r.source ? `Source: ${r.source}` : 'Source not recorded', r.response_captured === false ? 'response not captured' : '', prompt ? '' : 'typed straight into the pane'].filter(Boolean).join(' · ');
-    const paneName = agentName(r.pane_name, r.pane_id || ''), ownerId = taskId;
+    const paneName = agentName(r.pane_name, r.pane_id || ''), ownerId = taskId, own = assignedTask(n) || '';
+    const via = ownerId && !own ? pane?.task_id === ownerId ? 'via pane' : 'via session' : '';
     const older = r.pane_id ? (data.runs || []).filter(x => x.pane_id === r.pane_id && x.id !== id && String(x.started) < String(r.started)).sort((a, b) => String(b.started).localeCompare(String(a.started))) : [];
     const cap = histShown.get(id) || CHUNK;
     return head('Run', ` · ${state(r.state)}${r.unread ? ' · <b class="ol-unread">Unread</b>' : ''}`) + nextBar(`run:${id}`) +
       `<h2 class="ol-title ol-item-title" data-wb-key="title">${esc(oneLine(turn?.prompt ?? r.prompt)) || 'Typed in pane'}</h2>
-<p class="ol-where" data-wb-key="where">${pane ? `<a href="#agent/${encodeURIComponent(pane.id)}">${esc(paneName)}</a>` : `${esc(paneName)} <span class="ol-dim">(closed)</span>`} <span class="ol-sep">·</span> ${ownerId ? `<a href="${outlineHash(`task:${ownerId}`)}">${esc(model.tasks.get(ownerId).title)}</a>` : 'No task'} <span class="ol-sep">·</span> <span class="ol-mono ol-dim">${esc(when(r.finished || r.started))}</span></p>
+<p class="ol-where" data-wb-key="where">${pane ? `<a href="#agent/${encodeURIComponent(pane.id)}">${esc(paneName)}</a>` : `${esc(paneName)} <span class="ol-dim">(closed)</span>`} <span class="ol-sep">·</span> ${ownerId ? `<a href="${outlineHash(`task:${ownerId}`)}">${esc(model.tasks.get(ownerId).title)}</a>${via ? ` <span class="ol-dim">${via}</span>` : ''}` : 'No task'} <span class="ol-sep">·</span> <span class="ol-mono ol-dim">${esc(when(r.finished || r.started))}</span></p>
 <p class="ol-qlinks" data-wb-key="queues">${r.pane_id ? queueLink({ type: 'pane', id: r.pane_id }, 'Pane queue') : ''}${queueLink({ type: 'task', id: ownerId || 'none' }, 'Task queue')}${r.session ? queueLink({ type: 'session', id: r.session }, 'Session queue') : ''}</p>` +
       section('prompt', 'Prompt', `<pre class="ol-pre">${esc(turn?.prompt ?? r.prompt ?? '')}</pre>`, prompt ? button('select', `prompt:${prompt.id}`, 'Open the prompt', 'subtle') : '') +
       (r.docs?.length ? section('docs', `Documents <span class="ol-count">${r.docs.length}</span>`, `<ul class="ol-list ol-docs">${r.docs.map((d, i) => docRow(r, d, i, taskId)).join('')}</ul>`) : '') +
       section('response', 'Response', body?.error ? `<p class="ol-error-text">The response could not be read: ${esc(body.error)}</p>${button('reload-run', id, 'Try again')}` : !turn ? '<p class="ol-dim" role="status">Loading the response…</p>' : turn.response ? `<div class="md">${markdown(turn.response)}</div>` : `<p class="ol-dim">${r.state === 'working' ? 'Still working. The response appears here when the turn ends.' : 'No response was captured for this run.'}</p>`) +
       `${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a question and will not be typed at. <a href="#item/${encodeURIComponent(id)}">Read and answer the question</a></p>` : ''}
-<form class="ol-reply" data-wb-key="reply" data-reply-run="${esc(id)}"><label for="olf-reply">Reply <small>a new prompt for the same pane${taskId ? `, under ${esc(model.tasks.get(taskId).title)}` : ''}</small></label><textarea id="olf-reply" rows="3" data-draft="reply:${esc(id)}" maxlength="16000" placeholder="Follow up…">${esc(val(`reply:${id}`, ''))}</textarea><div class="ol-actions"><button class="primary" type="submit"${dis(`reply:${id}`)}${waiting ? ' disabled' : ''}>Reply</button><span class="ol-dim">Cmd+Enter sends</span></div></form>` +
+<form class="ol-reply" data-wb-key="reply" data-reply-run="${esc(id)}"><label for="olf-reply">Reply <small>a new prompt for the same pane${own ? `, under ${esc(model.tasks.get(own).title)}` : ''}</small></label><textarea id="olf-reply" rows="3" data-draft="reply:${esc(id)}" maxlength="16000" placeholder="Follow up…">${esc(val(`reply:${id}`, ''))}</textarea><div class="ol-actions"><button class="primary" type="submit"${dis(`reply:${id}`)}${waiting ? ' disabled' : ''}>Reply</button><span class="ol-dim">Cmd+Enter sends</span></div></form>` +
       section('history', `History <span class="ol-count">${older.length}</span>`, older.length ? `<div class="ol-hists">${older.slice(0, cap).map(historyRow).join('')}</div>${older.length > cap ? `<p class="ol-sec-note" data-wb-key="hmore">${button('hist-more', id, `Show more (${older.length - cap} older)`, 'subtle')}</p>` : ''}` : `<p class="ol-dim">${r.pane_id ? 'Nothing earlier was captured on this pane.' : 'This run names no pane, so it has no thread.'}</p>`) +
       `<details class="ol-facts" data-wb-key="facts"><summary>Details, task and commits</summary>
 <dl class="ol-dl"><dt>Harness</dt><dd class="ol-mono">${esc(r.harness)}</dd><dt>Host</dt><dd class="ol-mono">${esc(r.host || 'local')}</dd><dt>Started</dt><dd class="ol-mono">${esc(when(r.started))}</dd><dt>Finished</dt><dd class="ol-mono">${esc(when(r.finished)) || 'not yet'}</dd><dt>Capture</dt><dd>${esc(provenance)}</dd></dl>
-<div class="ol-inline"><label>Task<select data-save="run:${esc(id)}:task_id"${prompt ? ' disabled' : ''}>${options([['', 'No task'], ...taskOptions()], taskId)}</select></label>${prompt ? '<span class="ol-dim">Filed with its prompt; move the prompt to move this run.</span>' : ''}</div>
+<div class="ol-inline"><label>Task<select data-save="run:${esc(id)}:task_id"${prompt ? ' disabled' : ''}>${options([['', via ? `Not assigned (filed under ${model.tasks.get(ownerId).title} ${via})` : 'No task'], ...taskOptions()], own)}</select></label>${prompt ? '<span class="ol-dim">Filed with its prompt; move the prompt to move this run.</span>' : ''}</div>
 <h4>Commits <span class="ol-count">${r.commits?.length || 0}</span></h4>${r.commits?.length ? `<ul class="ol-list ol-commits">${r.commits.map(c => `<li><span class="ol-mono">${esc(String(c.sha).slice(0, 7))}</span> <span class="ol-clip">${esc(c.subject)}</span></li>`).join('')}</ul>` : '<p class="ol-dim">No commits were made during this run.</p>'}</details>
 <div class="ol-actions" data-wb-key="tools">${button('unread', id, r.unread ? 'Mark read' : 'Mark unread', '', ` data-arg="${r.unread ? '' : '1'}"`)}${button('archive-run', id, r.archived ? 'Unarchive' : 'Archive', '', ` data-arg="${r.archived ? '' : '1'}"`)}</div>`;
   }
@@ -441,16 +449,19 @@ export function createOutline({ report }) {
     if (!data) return `<p class="rt-empty" role="status">${loadError ? 'The tasks could not be loaded.' : 'Loading…'}</p>`;
     if (!groups.length) return '<p class="rt-empty">No open tasks.</p>';
     const here = id => id === cur ? ' aria-current="page"' : '', blank = i => i.kind === 'run' ? 'typed in pane' : 'empty prompt';
-    const qlink = (scope, n, what) => `<a class="rt-q" href="${queueHash(scope)}" title="Queue of ${esc(what)}: ${n} waiting" aria-label="Queue of ${esc(what)}: ${n} waiting">${icon('queue', '')}<b>${n}</b></a>`;
+    const qlink = (scope, what, n = qCount(scope)) => !n ? '' : `<a class="rt-q" href="${queueHash(scope)}" title="Queue of ${esc(what)}: ${n} waiting" aria-label="Queue of ${esc(what)}: ${n} waiting">${icon('queue', '')}<b>${n}</b></a>`;
     // A document a run reported sits under its turn. A local .md cannot be opened by the browser, so it leads to its run.
     const doc = d => `<li data-wb-key="d:${esc(d.id)}"><a class="rt-leaf rt-leaf-doc${d.unread ? '' : ' is-read'}" href="${d.kind === 'mdoc' ? esc(d.href) : outlineHash(d.run)}"${d.kind === 'mdoc' ? ' target="_blank" rel="noopener"' : ''} title="${esc(d.href)}">${icon('doc', d.unread ? 'Document' : 'Document (read)', d.unread ? '' : ' is-read')}<span class="rt-sum">${esc(d.title)}</span></a></li>`;
     const leaf = i => { const kind = itemKind(i), lit = i.unread || kind === 'working' || kind === 'queued'; return `<li data-wb-key="i:${esc(i.id)}"><a class="rt-leaf${lit ? '' : ' is-read'}" href="${outlineHash(i.id)}"${here(i.id)} title="${esc(i.summary)}">${icon(kind, lit ? ICONS[kind][0] : `${i.word} (read)`, lit ? '' : ' is-read')}<span class="rt-sum">${esc(i.summary) || blank(i)}</span></a></li>${i.docs.map(doc).join('')}`; };
     const row = (r, owner) => {
-      const key = `${owner}|${r.id}`, open = railOpen.has(key), name = r.kind === 'pane' ? agentName(r.name, r.pane_id) : r.name, on = cur && r.items.some(i => i.id === cur);
-      return `<li class="rt-row${r.unread ? ' is-unread' : ''}${r.dim ? ' is-dim' : ''}${r.working ? ' is-working' : ''}" data-wb-key="r:${esc(key)}"><div class="rt-rowhead"><button type="button" class="rt-twist" data-rail-act="row" data-id="${esc(key)}" aria-expanded="${open}" aria-label="${open ? 'Hide' : 'Show'} everything of ${esc(name)}">${icon('chev', '')}</button><a class="rt-item" href="${outlineHash(r.lead)}"${on && !open ? ' aria-current="page"' : ''} title="${esc(r.summary)}"><span class="rt-line"><span class="rt-name">${esc(name)}</span>${strip(r.indicators)}</span><span class="rt-sum">${esc(r.summary) || blank({ kind: r.lead_kind })}</span></a>${r.kind === 'pane' && r.unread ? qlink({ type: 'pane', id: r.pane_id }, r.unread, name) : ''}</div>${open ? `<ul class="rt-detail">${r.items.map(leaf).join('')}</ul>` : ''}</li>`;
+      const shell = r.pane_kind === 'shell', key = `${owner}|${r.id}`, open = railOpen.has(key), on = cur && r.items.some(i => i.id === cur);
+      const name = r.kind !== 'pane' ? r.name : String(r.name || '').trim() ? agentName(r.name, r.pane_id) : `${r.pane_kind || 'pane'} ${r.pane_id.slice(0, 8)}`;
+      // A live pane with nothing captured: no item to open, so it leads to the pane itself.
+      if (r.empty) return `<li class="rt-row is-dim is-empty" data-wb-key="r:${esc(key)}"><div class="rt-rowhead"><span class="rt-twist rt-twist-gap"></span><a class="rt-item" href="#agent/${encodeURIComponent(r.pane_id)}" title="${esc(name)}: open the pane"><span class="rt-line">${shell ? icon('shell') : ''}<span class="rt-name">${esc(name)}</span>${r.via ? '<span class="rt-via">via session</span>' : ''}</span><span class="rt-sum">${shell ? 'shell' : 'no turns yet'}</span></a>${qlink({ type: 'pane', id: r.pane_id }, name)}</div></li>`;
+      return `<li class="rt-row${r.unread ? ' is-unread' : ''}${r.dim ? ' is-dim' : ''}${r.working ? ' is-working' : ''}" data-wb-key="r:${esc(key)}"><div class="rt-rowhead"><button type="button" class="rt-twist" data-rail-act="row" data-id="${esc(key)}" aria-expanded="${open}" aria-label="${open ? 'Hide' : 'Show'} everything of ${esc(name)}">${icon('chev', '')}</button><a class="rt-item" href="${outlineHash(r.lead)}"${on && !open ? ' aria-current="page"' : ''} title="${esc(r.summary)}"><span class="rt-line">${shell ? icon('shell') : ''}<span class="rt-name">${esc(name)}</span>${r.via ? '<span class="rt-via">via session</span>' : ''}${strip(r.indicators)}</span><span class="rt-sum">${esc(r.summary) || blank({ kind: r.lead_kind })}</span></a>${r.kind === 'pane' ? qlink({ type: 'pane', id: r.pane_id }, name) : ''}</div>${open ? `<ul class="rt-detail">${r.items.map(leaf).join('')}</ul>` : ''}</li>`;
     };
     const rows = g => g.rows.length ? `<ul class="rt-items">${g.rows.map(r => row(r, g.id)).join('')}</ul>` : '';
-    const head = (g, cls, key, twist) => `<div class="rt-head">${twist}<a class="${cls}${g.unread ? ' is-unread' : ''}" href="${outlineHash(key)}"${here(key)} title="${esc(g.title)}"><span class="rt-title">${esc(g.title)}</span></a>${g.unread ? qlink({ type: 'task', id: g.id }, g.unread, g.title) : ''}${strip(g.indicators, ' rt-inds')}</div>`;
+    const head = (g, cls, key, twist) => `<div class="rt-head">${twist}<a class="${cls}${g.unread ? ' is-unread' : ''}" href="${outlineHash(key)}"${here(key)} title="${esc(g.title)}"><span class="rt-title">${esc(g.title)}</span></a>${qlink({ type: 'task', id: g.id }, g.title)}${strip(g.indicators, ' rt-inds')}</div>`;
     return groups.map(g => {
       const shut = railShut.has(g.id), has = g.rows.length || g.groups.length;
       const twist = has ? `<button type="button" class="rt-twist" data-rail-act="task" data-id="${esc(g.id)}" aria-expanded="${!shut}" aria-label="${shut ? 'Expand' : 'Collapse'} ${esc(g.title)}">${icon('chev', '')}</button>` : '<span class="rt-twist rt-twist-gap"></span>';
@@ -637,6 +648,11 @@ export function createOutline({ report }) {
     twist: id => toggle(id),
     next: id => { if (view === 'queue') return qOpen(nextAfter(qItems, id)); const next = nextAfter(review.items, id); if (next) acts.select(next); },
     'q-more': () => { qShown += CHUNK; render(); },
+    'ask-mark-all': () => { confirming = 'markall'; render(); },
+    'mark-all': () => {
+      const ids = markable(qItems); confirming = null; if (!ids.length) return render();
+      write('mark-all', async () => { for (let i = 0; i < ids.length; i += 1000) await api('/items/update', { ids: ids.slice(i, i + 1000), set: { unread: false } }); }, () => say(`Marked ${plural(ids.length, 'turn')} read.`));
+    },
     'tree-more': () => { treeShown += CHUNK; render(); },
     'hist-more': id => { histShown.set(id, (histShown.get(id) || CHUNK) + CHUNK); render(); },
     'show-more': id => { showAll.add(id); render(); },
@@ -700,12 +716,14 @@ export function createOutline({ report }) {
     if (e.target.id === 'ol-capture') return void submitCapture(false);
     const id = e.target.dataset.replyRun; if (!id) return;
     const run = node(`run:${id}`)?.rec, body = (drafts.get(`reply:${id}`) || '').trim(); if (!run || !body) return;
-    write(`reply:${id}`, () => api('/prompts', { body, task_id: ownTask(node(`run:${id}`)), target: run.pane_id, run: true }), result => {
+    write(`reply:${id}`, () => api('/prompts', { body, task_id: assignedTask(node(`run:${id}`)), target: run.pane_id, run: true }), result => {
       drafts.delete(`reply:${id}`);
       if (result && !result.ran) { open(`prompt:${result.prompt.id}`); say(`Reply saved, not run: ${result.preflight?.blocks?.[0]?.message || 'preflight found a block'}.`, true); }
       else say('Reply sent.');
     });
   });
+  // An armed Mark all read is let go by a click anywhere else.
+  document.addEventListener('click', e => { if (confirming === 'markall' && !e.target.closest?.('.q-markall')) { confirming = null; render(); } });
   // toggle does not bubble, hence the capture. An opened history row fetches its run once.
   root.addEventListener('toggle', e => { const id = e.target.open && e.target.dataset?.hist, n = id && node(`run:${id}`); if (n) ensureRun(n.rec); }, true);
   // Near the end of a long list the next chunk is drawn.
@@ -728,6 +746,7 @@ export function createOutline({ report }) {
   });
   document.addEventListener('keydown', e => {
     if (!active || e.defaultPrevented || document.querySelector('dialog[open]')) return;
+    if (e.key === 'Escape' && confirming === 'markall') { confirming = null; render(); return; }
     const t = e.target, typing = t.matches?.('input, textarea, select, [contenteditable]');
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (view === 'queue') {
