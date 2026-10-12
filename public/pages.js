@@ -255,6 +255,7 @@ const protocols = [{ value: 'native', label: 'Native terminal' }, { value: 'code
 const protocol = p => p.protocol || 'native';
 
 export const pages = {
+  outline: { title: 'Outline', description: 'Every task, prompt and run in one tree.', rows: () => [], list: null },
   tuios: { title: 'TUIOS', description: 'Native sessions, workspaces and panes. Browse without changing your terminal. Focus and reorganization are explicit actions.', rows: () => [], list: null },
   history: { title: 'History', description: 'Every collected prompt, response, tool call and command across hosts. Search the full text; open a record for its complete body and where it came from.', rows: () => [], list: null },
   collectors: { title: 'Collectors', description: 'The programs that read transcripts and TUIOS events on each host. Collection and transfer are tracked separately.', rows: () => [], list: null },
@@ -371,6 +372,7 @@ export const pages = {
 };
 
 export function pageForRoute(route) {
+  if (route.kind === 'outline') return pages.outline;
   if (route.kind === 'tuios') return pages.tuios;
   if (route.kind === 'index') return pages[route.page] || null;
   const task = route.kind === 'task';

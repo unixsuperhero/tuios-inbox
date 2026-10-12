@@ -5,6 +5,7 @@ import { createQueues } from '/queues.js';
 import { createTuios } from '/tuios.js';
 import { createHistory } from '/history.js';
 import { setupLaunchHost } from '/launch-host.js';
+import { createOutline } from '/outline.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, taskTree, editKey } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
@@ -32,6 +33,7 @@ const workbench = createWorkbench({ root, navigate, load, review: reviewItem, re
 const queues = createQueues({ root, navigate, load, review: reviewItem, refresh, report: error });
 const tuios = createTuios({ root, refresh });
 const history = createHistory({ root, report: error });
+const outline = createOutline({ report: error });
 async function reviewItem(id, unread = false) {
   await api('/items/update', { ids: [id], set: { unread } });
   await refresh();
@@ -61,10 +63,11 @@ function compose(taskId, agentId) {
   openDialog($('#compose-dialog'));
 }
 let route, page, list, terminalPane = null, refreshTimer, refreshVersion = 0;
-const routeKey = r => r?.kind === 'tuios' ? r.view === 'overview' ? 'tuios-overview' : `tuios/${r.session || ''}/${r.workspace || ''}/${r.window || ''}` : r?.kind === 'index' ? r.page : r?.kind === 'queue' ? `queue/${r.bucket}/${r.item || ''}` : `${r?.kind}/${r?.id}`;
+const routeKey = r => r?.kind === 'tuios' ? r.view === 'overview' ? 'tuios-overview' : `tuios/${r.session || ''}/${r.workspace || ''}/${r.window || ''}` : r?.kind === 'outline' ? 'outline' : r?.kind === 'index' ? r.page : r?.kind === 'queue' ? `queue/${r.bucket}/${r.item || ''}` : `${r?.kind}/${r?.id}`;
 function parseRoute(hash) {
   const path = hash.replace(/^#\/?/, '');
-  if (!path) return { kind: 'index', page: 'inbox' };
+  const outlineView = /^(?:outline(?:\/([\w-]+))?)?$/.exec(path);
+  if (outlineView) return { kind: 'outline', view: outlineView[1] || 'everything' };
   if (path === 'tuios-overview') return { kind: 'tuios', view: 'overview' };
   const native = /^tuios(?:\/([^/]+)(?:\/(\d+)(?:\/([^/]+))?)?)?$/.exec(path);
   if (native) { try { return { kind: 'tuios', session: native[1] ? decodeURIComponent(native[1]) : undefined, workspace: native[2] ? Number(native[2]) : undefined, window: native[3] ? decodeURIComponent(native[3]) : undefined }; } catch {} }
@@ -75,7 +78,7 @@ function parseRoute(hash) {
   if (queue) { try { return { kind: 'queue', bucket: decodeURIComponent(queue[1]), item: queue[2] ? decodeURIComponent(queue[2]) : undefined }; } catch {} }
   return { kind: 'invalid' };
 }
-const routeHash = r => r.kind === 'tuios' ? r.view === 'overview' ? '#tuios-overview' : `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
+const routeHash = r => r.kind === 'outline' ? `#outline${r.view && r.view !== 'everything' ? '/' + r.view : ''}` : r.kind === 'tuios' ? r.view === 'overview' ? '#tuios-overview' : `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
 function navigate(next) {
   const hash = routeHash(next);
   if (location.hash === hash) mount(next); else location.hash = hash;
@@ -135,6 +138,7 @@ function render() {
     root.innerHTML = '<p class="list-empty">No record at this address.</p>';
     return;
   }
+  if (outline.supports(route)) { page = nextPage; outline.render(); return; }
   if (queues.supports(route)) { page = nextPage; $('#page-title').textContent = page.title; $('#page-description').textContent = page.description; document.title = `tuios inbox · ${page.title}`; queues.render(route); return; }
   if (tuios.supports(route)) { page = nextPage; $('#page-title').textContent = page.title; $('#page-description').textContent = page.description; document.title = `tuios inbox · ${page.title}`; tuios.render(route); return; }
   if (history.supports(route)) { page = nextPage; $('#page-title').textContent = page.title; $('#page-description').textContent = page.description; document.title = `tuios inbox · ${page.title}`; history.render(route); return; }
@@ -201,8 +205,9 @@ function mount(next) {
   }
   route = next; page = routePage(route);
   if (oldKey !== nextKey) { if (next.kind === 'item') openRead(next.id); else if (next.kind === 'queue' && next.item) openRead(next.item); }
-  const index = next.kind === 'tuios' ? 'tuios' : next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : next.kind === 'queue' ? 'queues' : next.kind === 'history' ? 'history' : '';
+  const index = next.kind === 'outline' ? 'outline' : next.kind === 'tuios' ? 'tuios' : next.kind === 'index' ? next.page : next.kind === 'task' ? 'tasks' : next.kind === 'agent' ? 'agents' : next.kind === 'item' ? 'inbox' : next.kind === 'queue' ? 'queues' : next.kind === 'history' ? 'history' : '';
   document.body.dataset.routeKind = next.kind;
+  document.body.classList.toggle('outline-mode', outline.supports(next));
   document.body.classList.toggle('queues-mode', queues.supports(next));
   document.body.classList.toggle('tuios-mode', tuios.supports(next));
   document.querySelectorAll('[data-page]').forEach(link => {
@@ -224,10 +229,11 @@ function mount(next) {
   if (oldKey !== nextKey) metadata.replaceChildren();
   if (!metadata.hidden) patchHTML(metadata, metadataForRoute(next));
   list?.destroy(); list = null;
-  if (page && !workbench.supports(route) && !queues.supports(route) && !tuios.supports(route) && !history.supports(route)) list = createList(root, { ...page.list,
+  if (page && !outline.supports(route) && !workbench.supports(route) && !queues.supports(route) && !tuios.supports(route) && !history.supports(route)) list = createList(root, { ...page.list,
     onOpen: page.items ? row => navigate({ kind: 'item', id: row.id }) : undefined,
     actions: (page.list.actions || []).map(a => ({ ...a, run: async (ids, value) => { $('#error').hidden = true; await a.run(ids, value); await refresh(); } })) });
   render();
+  outline.enter(next);
   tuios.enter(next, oldKey !== nextKey).catch(e => error(e, null));
   history.enter(next, oldKey !== nextKey).catch(e => error(e, null));
   if (oldKey !== nextKey) main.scrollTop = viewCache.get(nextKey)?.scroll || 0;
@@ -599,6 +605,6 @@ window.addEventListener('hashchange', () => {
 const stream = new EventSource('/api/events');
 stream.onopen = () => $('#connection').textContent = 'Connected locally';
 stream.onerror = () => $('#connection').textContent = 'Reconnecting…';
-stream.onmessage = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().then(() => Promise.all([tuios.update(), history.update()])).catch(error), 150); };
+stream.onmessage = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().then(() => Promise.all([tuios.update(), history.update(), outline.update()])).catch(error), 150); };
 await act(async () => { store.state = await api('/state'); });
 mount(parseRoute(location.hash));
