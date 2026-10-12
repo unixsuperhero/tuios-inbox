@@ -6,6 +6,18 @@ export async function api(path, body, method = 'POST') {
   const response = await fetch('/api' + path, body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) });
   const result = await response.json(); if (!response.ok) throw Error(result.error || 'Request failed'); return result;
 }
+// The two whole-page payloads carry an ETag. This sends the last one back and answers NOT_MODIFIED on 304, so the caller can do nothing at all.
+// Only the newest request of a path may record its tag: an overtaken response is dropped by its caller, and its tag must go with it.
+const etags = new Map(), asked = new Map();
+export const NOT_MODIFIED = Symbol('not modified');
+export async function apiCached(path) {
+  const tag = etags.get(path), n = (asked.get(path) || 0) + 1; asked.set(path, n);
+  const response = await fetch('/api' + path, tag ? { headers: { 'If-None-Match': tag } } : {});
+  if (response.status === 304) return NOT_MODIFIED;
+  const result = await response.json(); if (!response.ok) throw Error(result.error || 'Request failed');
+  if (asked.get(path) === n) { const next = response.headers.get('ETag'); if (next) etags.set(path, next); else etags.delete(path); }
+  return result;
+}
 const badge = value => value ? `<span class="badge ${esc(value)}">${esc(value)}</span>` : '';
 const time = value => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 // A pane's name is its title, which harnesses prefix with a spinner glyph (oh-my-pi also with "π"). Shells have no name.

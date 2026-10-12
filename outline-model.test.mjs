@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask } from './public/outline-model.js';
+import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask, indicators, sumIndicators, itemKind, queueItems, taskIndicators, INDICATORS } from './public/outline-model.js';
 
 const tasks = {
   root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2 },
@@ -178,13 +178,20 @@ const railData = () => ({
     { id: 'r10', task_id: 'a', pane_id: 'p1', pane_name: 'worker', state: 'done', unread: true, archived: true, started: '2026-03-01T06:00:00Z', finished: '2026-03-01T06:05:00Z', prompt: 'archived run' },
   ],
 });
-const shape = g => ({ id: g.id, unread: g.unread, items: g.items.map(i => [i.id, i.unread, i.word, i.newer.map(n => n.id)]) });
+const shape = g => ({ id: g.id, unread: g.unread, rows: g.rows.map(r => [r.id, r.unread, r.lead, r.items.map(i => i.id)]) });
+const inds = list => list.map(i => `${i.kind}:${i.count}`).join(' ');
 
-test('the rail shows one entry per pane: the oldest waiting run, with the newer ones stacked behind it', () => {
+test('the rail shows exactly one row per pane, with everything of the pane rolled up inside it', () => {
   const tree = railTree(railData()), alpha = tree.find(g => g.id === 'a');
-  expect(shape(alpha).items).toEqual([['run:r1', true, 'done', ['run:r2', 'run:r3']], ['run:r5', false, 'done', []]]);
-  expect(alpha.items[0]).toMatchObject({ summary: 'first thing', pane_name: 'worker', kind: 'run' });
-  expect(alpha.items[0].newer.map(n => n.word)).toEqual(['idle', 'needs input']);
+  expect(shape(alpha).rows).toEqual([['pane:p1', 3, 'run:r1', ['run:r1', 'run:r2', 'run:r3']], ['pane:p2', 0, 'run:r5', ['run:r5']]]);
+  // The summary is the OLDEST waiting item's first line; a pane with nothing waiting shows its latest turn, dimmed.
+  expect(alpha.rows[0]).toMatchObject({ kind: 'pane', pane_id: 'p1', name: 'worker', summary: 'first thing', dim: false, working: false });
+  expect(alpha.rows[1]).toMatchObject({ name: 'reader', summary: 'read late', dim: true });
+  expect(alpha.rows[1].items[0]).toMatchObject({ id: 'run:r5', last: true, unread: false });
+  expect(alpha.rows[0].items.map(i => i.word)).toEqual(['done', 'idle', 'needs input']);
+  // No pane appears twice under one task, and a closed pane with nothing waiting has no row.
+  for (const g of tree.flatMap(t => [t, ...t.groups])) expect(new Set(g.rows.map(r => r.id)).size).toBe(g.rows.length);
+  expect(alpha.rows.some(r => r.pane_id === 'p3')).toBe(false);
 });
 
 test('the rail is three levels: descendants flatten under their root with a path title, and counts roll up', () => {
@@ -197,17 +204,93 @@ test('the rail is three levels: descendants flatten under their root with a path
 test('rail roots: unread first by oldest waiting, then open tasks by creation, done and archived left out, No task last', () => {
   const tree = railTree(railData());
   expect(tree.map(g => g.id)).toEqual(['b', 'a', 'c', 'none']);
-  expect(shape(tree[0]).items).toEqual([['prompt:q1', true, 'blocked', []]]);
-  expect(shape(tree.at(-1))).toEqual({ id: 'none', unread: 1, items: [['run:r9', true, 'ended', []]] });
+  expect(shape(tree.at(-1))).toEqual({ id: 'none', unread: 1, rows: [['pane:p9', 1, 'run:r9', ['run:r9']]] });
+  expect(tree.at(-1).rows[0].name).toBe('stray');
   expect(railTree({ tasks: railData().tasks })).toHaveLength(3);
 });
 
-test('the open item stays in the rail once read, at the head of its pane stack', () => {
+test('a prompt aimed at a pane rolls into that pane\'s row; prompts that name no pane share one Prompts row per task', () => {
+  const data = railData();
+  data.prompts.push({ id: 'q3', body: 'failed', task_id: 'b', state: 'errored', position: 3, created: '2026-02-03T00:00:00Z', updated: '2026-02-03T00:00:00Z' }, { id: 'q4', body: 'later', task_id: 'b', state: 'queued', position: 1, created: '2026-02-04T00:00:00Z' },
+    { id: 'q5', body: 'for the worker', task_id: 'b', target: 'p1', state: 'queued', position: 5, created: '2026-02-05T00:00:00Z' }, { id: 'q6', body: 'sent', task_id: 'b', state: 'done', position: 6 });
+  data.prompts.find(p => p.id === 'q2').position = 2;
+  const beta = railTree(data).find(g => g.id === 'b');
+  expect(shape(beta).rows).toEqual([['pane:p1', 1, 'prompt:q1', ['prompt:q1', 'prompt:q5']], ['prompts', 1, 'prompt:q3', ['prompt:q3', 'prompt:q4', 'prompt:q2']]]);
+  expect(beta.rows[1]).toMatchObject({ kind: 'prompts', name: 'Prompts', summary: 'failed', pane_id: '' });
+  expect(inds(beta.rows[0].indicators)).toBe('blocked:1 queued:1');
+  expect(inds(beta.rows[1].indicators)).toBe('prompt_error:1 queued:2');
+  expect(inds(beta.indicators)).toBe('prompt_error:1 blocked:1 queued:3');
+  // With nothing blocked or errored the Prompts row is about the next queued prompt, and it is dim.
+  const quiet = railTree(railData()).find(g => g.id === 'b').rows.find(r => r.kind === 'prompts');
+  expect(quiet).toMatchObject({ summary: 'waiting', lead: 'prompt:q2', dim: true, unread: 0 });
+});
+
+test('the open item stays in its pane row once read; the row still leads with the oldest item that really waits', () => {
   const data = railData(); data.runs.find(r => r.id === 'r1').unread = false;
-  expect(shape(railTree(data).find(g => g.id === 'a')).items[0]).toEqual(['run:r2', true, 'idle', ['run:r3']]);
-  expect(shape(railTree(data, new Set(['run:r1'])).find(g => g.id === 'a')).items[0]).toEqual(['run:r1', false, 'done', ['run:r2', 'run:r3']]);
-  const closed = railTree(data, new Set(['run:r6'])).find(g => g.id === 'a').items.map(i => i.id);
-  expect(closed).toEqual(['run:r2', 'run:r5', 'run:r6']);
+  expect(shape(railTree(data).find(g => g.id === 'a')).rows[0]).toEqual(['pane:p1', 2, 'run:r2', ['run:r2', 'run:r3']]);
+  expect(shape(railTree(data, new Set(['run:r1'])).find(g => g.id === 'a')).rows[0]).toEqual(['pane:p1', 2, 'run:r2', ['run:r1', 'run:r2', 'run:r3']]);
+  expect(railTree(data, new Set(['run:r6'])).find(g => g.id === 'a').rows.map(r => r.id)).toEqual(['pane:p1', 'pane:p2', 'pane:p3']);
+});
+
+test('indicators: one entry per kind in a fixed order, counts summed, read runs silent, a working agent always shown', () => {
+  const run = (state, unread, docs = 0) => ({ kind: 'run', rec: { state, unread, docs: Array(docs).fill({}) } }), prompt = state => ({ kind: 'prompt', rec: { state } });
+  expect(['working', 'needs_input', 'done', 'errored', 'idle', 'closed', 'unknown', undefined].map(s => itemKind(run(s)))).toEqual(['working', 'needs_input', 'done', 'errored', 'idle', 'ended', 'ended', 'ended']);
+  expect(['blocked', 'errored', 'queued', 'running', 'done'].map(s => itemKind(prompt(s)))).toEqual(['blocked', 'prompt_error', 'queued', 'working', 'ended']);
+  const all = [run('done', true, 2), run('done', true), run('errored', true, 1), run('idle', true), run('closed', true), run('needs_input', false), run('working', false), run('done', false, 4), prompt('blocked'), prompt('errored'), prompt('queued'), prompt('queued'), prompt('done')];
+  expect(inds(indicators(all))).toBe('working:1 needs_input:1 errored:1 prompt_error:1 blocked:1 done:2 idle:1 ended:1 queued:2 doc:3');
+  expect(indicators(all).map(i => i.kind)).toEqual(INDICATORS);
+  expect(indicators([run('done', false, 3)])).toEqual([]);
+  expect(indicators([])).toEqual([]);
+  // A pane row is one agent however many of its turns say working.
+  expect(inds(indicators([run('working', false), run('working', false)], 1))).toBe('working:1');
+  expect(inds(indicators([run('working', false)], 0))).toBe('');
+  expect(inds(sumIndicators([indicators(all), indicators([run('done', true, 1), prompt('queued')]), []]))).toBe('working:1 needs_input:1 errored:1 prompt_error:1 blocked:1 done:3 idle:1 ended:1 queued:3 doc:4');
+});
+
+test('rail indicators: each row shows everything rolled up in it; groups and roots show the union beneath them', () => {
+  const data = railData(), doc = n => ({ kind: 'mdoc', href: 'http://127.0.0.1:4387/items/' + n, title: 'd' + n });
+  data.runs.find(r => r.id === 'r1').docs = [doc(1), doc(2)]; data.runs.find(r => r.id === 'r7').docs = [doc(7)];
+  data.panes.find(p => p.id === 'p2').state = 'working';
+  data.runs.push({ id: 'r11', task_id: 'a', pane_id: 'p2', pane_name: 'reader', state: 'working', unread: false, started: '2026-03-03T08:00:00Z', finished: null, prompt: 'busy now' });
+  const alpha = railTree(data).find(g => g.id === 'a'), [worker, reader] = alpha.rows;
+  expect(inds(worker.indicators)).toBe('needs_input:1 done:1 idle:1 doc:2');
+  expect(reader).toMatchObject({ working: true, dim: false, summary: 'busy now', unread: 0 });
+  expect(inds(reader.indicators)).toBe('working:1');
+  expect(inds(alpha.groups[0].indicators)).toBe('done:1 doc:1');
+  expect(inds(alpha.indicators)).toBe('working:1 needs_input:1 done:2 idle:1 doc:3');
+  // The Tasks list uses the same union: a task carries its descendants.
+  const by = taskIndicators(data);
+  expect(inds(by.get('a').indicators)).toBe(inds(alpha.indicators));
+  expect([by.get('a').waiting, by.get('a1').waiting, by.get('a2').waiting, by.get('b').waiting, by.get('none').waiting, by.has('c'), by.has('z')]).toEqual([4, 1, 1, 1, 1, false, false]);
+  expect(inds(by.get('a1').indicators)).toBe('done:1 doc:1');
+  // A pane is working only where its newest turn lives, not in every task it once ran for.
+  data.runs.push({ id: 'r12', task_id: 'c', pane_id: 'p2', pane_name: 'reader', state: 'done', unread: false, started: '2026-01-01T08:00:00Z', finished: '2026-01-01T08:05:00Z', prompt: 'long ago' });
+  expect(railTree(data).find(g => g.id === 'c').rows[0]).toMatchObject({ pane_id: 'p2', working: false, dim: true });
+});
+
+test('the Queue page is one flat list, oldest first, scoped to everything, a task, a session or a pane', () => {
+  const data = railData();
+  data.panes[0].session = 's1'; data.panes[3].session = 's2'; for (const r of data.runs) if (r.pane_id === 'p1') r.session = 's1';
+  const list = (scope, keep) => queueItems(data, scope, keep).map(i => i.id);
+  expect(list()).toEqual(['run:r9', 'prompt:q1', 'run:r7', 'run:r1', 'run:r2', 'run:r3']);
+  expect(list({ type: 'all' })).toEqual(list());
+  expect(list({ type: 'task', id: 'a' })).toEqual(['run:r7', 'run:r1', 'run:r2', 'run:r3']);
+  expect(list({ type: 'task', id: 'a1' })).toEqual(['run:r7']);
+  expect(list({ type: 'task', id: 'none' })).toEqual(['run:r9']);
+  expect(list({ type: 'task', id: 'z' })).toEqual([]);
+  expect(list({ type: 'session', id: 's1' })).toEqual(['prompt:q1', 'run:r1', 'run:r2', 'run:r3']);
+  expect(list({ type: 'session', id: 's2' })).toEqual(['run:r7']);
+  expect(list({ type: 'pane', id: 'p1' })).toEqual(['prompt:q1', 'run:r1', 'run:r2', 'run:r3']);
+  expect(list({ type: 'pane', id: 'nope' })).toEqual([]);
+  expect(queueItems(data, { type: 'task', id: 'a' })[0]).toMatchObject({ id: 'run:r7', kind: 'run', ind: 'done', summary: 'deep', task_id: 'a2', task: 'Alpha / Lexer / Edge', pane: 'edge', pane_id: 'p4', session: 's2' });
+  expect(queueItems(data)[1]).toMatchObject({ id: 'prompt:q1', ind: 'blocked', summary: 'cannot run', task: 'Beta', pane: 'worker', session: 's1' });
+  // It is the same set the review queue holds.
+  expect(list().sort()).toEqual(ids(reviewItems(reviewQueue(data))).sort());
+  // The open item stays while it is open, in its scope only; once it is let go it leaves.
+  data.runs.find(r => r.id === 'r1').unread = false;
+  expect(list({ type: 'pane', id: 'p1' })).toEqual(['prompt:q1', 'run:r2', 'run:r3']);
+  expect(list({ type: 'pane', id: 'p1' }, new Set(['run:r1']))).toEqual(['prompt:q1', 'run:r1', 'run:r2', 'run:r3']);
+  expect(list({ type: 'pane', id: 'p4' }, new Set(['run:r1']))).toEqual(['run:r7']);
 });
 
 test('a sent prompt does not report its own pane being busy; the moment of running stays strict', () => {
@@ -237,19 +320,20 @@ test('docsIn finds mdoc item URLs and Markdown links to .md paths, once each, in
   for (const none of ['', null, undefined, 'no links here', '[x](y.mdx)']) expect(docsIn(none)).toEqual([]);
 });
 
-test('rail docs are leaves of their run: they follow its read state, stay with a stacked run, and add no unread', () => {
+test('rail docs ride with their run inside the pane row: they follow its read state and add no unread', () => {
   const data = railData(), doc = (n, title) => ({ kind: 'mdoc', href: 'http://127.0.0.1:4387/items/' + n, title });
   const set = (id, docs) => { data.runs.find(r => r.id === id).docs = docs; };
   set('r1', [doc(1, 'one'), { kind: 'file', href: 'docs/a.md', title: 'a.md' }]); set('r2', [doc(2, 'two')]); set('r0', [doc(9, 'read and hidden')]); set('r5', [doc(5, 'five')]);
-  const alpha = railTree(data).find(g => g.id === 'a'), [head, read] = alpha.items;
-  expect(head.docs).toEqual([
-    { id: 'doc:r1:0', kind: 'mdoc', href: 'http://127.0.0.1:4387/items/1', title: 'one', run: 'run:r1', unread: true, pane_id: 'p1', pane_name: 'worker' },
-    { id: 'doc:r1:1', kind: 'file', href: 'docs/a.md', title: 'a.md', run: 'run:r1', unread: true, pane_id: 'p1', pane_name: 'worker' }]);
-  expect(head.newer.map(n => n.docs.map(d => d.title))).toEqual([['two'], []]);
-  expect(read.docs.map(d => [d.title, d.unread, d.pane_name])).toEqual([['five', false, 'reader']]);
-  expect(alpha.items.flatMap(i => [i, ...i.newer]).flatMap(i => i.docs).map(d => d.title)).not.toContain('read and hidden');
+  const alpha = railTree(data).find(g => g.id === 'a'), [worker, reader] = alpha.rows;
+  expect(worker.items[0].docs).toEqual([
+    { id: 'doc:r1:0', kind: 'mdoc', href: 'http://127.0.0.1:4387/items/1', title: 'one', run: 'run:r1', unread: true },
+    { id: 'doc:r1:1', kind: 'file', href: 'docs/a.md', title: 'a.md', run: 'run:r1', unread: true }]);
+  expect(worker.items.map(i => i.docs.map(d => d.title))).toEqual([['one', 'a.md'], ['two'], []]);
+  expect(reader.items[0].docs.map(d => [d.title, d.unread])).toEqual([['five', false]]);
+  expect(alpha.rows.flatMap(r => r.items).flatMap(i => i.docs).map(d => d.title)).not.toContain('read and hidden');
   expect(alpha.unread).toBe(railTree(railData()).find(g => g.id === 'a').unread);
-  expect(railTree(railData()).flatMap(g => g.items).every(i => Array.isArray(i.docs))).toBe(true);
+  expect(inds(worker.indicators)).toBe('needs_input:1 done:1 idle:1 doc:3');
+  expect(reader.indicators).toEqual([]);
 });
 
 test('an automatic queue that is not moving says why: held, waiting, or never started', () => {
@@ -281,6 +365,6 @@ test('a run is filed under its prompt\'s task, and under its own only when it ha
   expect(runTask({ task_id: undefined }, { p1: { task_id: 'x' } })).toBe(null);
   // The rail and the review queue use the same rule.
   const data = { tasks: [{ id: 'a', title: 'A', created: '1' }, { id: 'b', title: 'B', created: '2' }], prompts: [{ id: 'p', task_id: 'b', state: 'done', body: 'x', position: 1 }], runs: [{ id: 'r', prompt_id: 'p', task_id: 'a', unread: 1, state: 'done', started: '2026-01-01T00:00:00Z', prompt: 'x' }], panes: [] };
-  expect(railTree(data).find(g => g.items.length).id).toBe(runTask(data.runs[0], new Map(data.prompts.map(p => [p.id, p]))));
+  expect(railTree(data).find(g => g.rows.length).id).toBe(runTask(data.runs[0], new Map(data.prompts.map(p => [p.id, p]))));
   expect(reviewQueue(data).map(g => g.id)).toEqual(['b']);
 });

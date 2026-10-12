@@ -5,8 +5,8 @@ import { createQueues } from '/queues.js';
 import { createTuios } from '/tuios.js';
 import { createHistory } from '/history.js';
 import { setupLaunchHost } from '/launch-host.js';
-import { createOutline, outlineHash } from '/outline.js';
-import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, taskTree, editKey } from '/pages.js';
+import { createOutline, outlineHash, queueHash } from '/outline.js';
+import { pages, pageForRoute, metadataForRoute, recipients, store, api, apiCached, NOT_MODIFIED, esc, taskTree, editKey } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
 const previousValues = new WeakMap(), creations = new Map(), draftRevisions = new Map(), submissions = new WeakMap();
@@ -71,6 +71,9 @@ function parseRoute(hash) {
   // #outline/tasks is the task list; #outline/task/<id>, #outline/run/<turn id> and #outline/prompt/<id> open one line of the rail's tree.
   const opened = /^outline\/(task|run|prompt)\/([^/]+)$/.exec(path);
   if (opened) { try { const key = decodeURIComponent(opened[2]); return { kind: 'outline', view: 'open', sel: opened[1] === 'task' ? key === 'none' ? 'none' : `task:${key}` : opened[1] === 'run' ? `run:turn:${key}` : `prompt:${key}` }; } catch {} }
+  // #queue is everything that waits; #queue/task/<id>, #queue/session/<name> and #queue/pane/<id> are its scopes. One page, so it never remounts.
+  const waiting = /^queue(?:\/(task|session|pane)\/([^/]+))?$/.exec(path);
+  if (waiting) { try { return { kind: 'outline', view: 'queue', scope: waiting[1] ? { type: waiting[1], id: decodeURIComponent(waiting[2]) } : { type: 'all' } }; } catch {} }
   const outlineView = /^(?:outline(?:\/([\w-]+)(?:\/([^/]+))?)?)?$/.exec(path);
   if (outlineView && (!outlineView[2] || outlineView[1] === 'needs-me')) { try { return { kind: 'outline', view: outlineView[1] || 'everything', ...(outlineView[2] ? { task: decodeURIComponent(outlineView[2]) } : {}) }; } catch {} }
   if (path === 'tuios-overview') return { kind: 'tuios', view: 'overview' };
@@ -79,11 +82,11 @@ function parseRoute(hash) {
   if (Object.hasOwn(pages, path)) return { kind: 'index', page: path };
   const match = /^(task|agent|item|history)\/([^/]+)$/.exec(path);
   if (match) { try { return { kind: match[1], id: decodeURIComponent(match[2]) }; } catch {} }
-  const queue = /^queue\/([^/]+)(?:\/(.+))?$/.exec(path);
+  const queue = /^queues\/([^/]+)(?:\/(.+))?$/.exec(path);
   if (queue) { try { return { kind: 'queue', bucket: decodeURIComponent(queue[1]), item: queue[2] ? decodeURIComponent(queue[2]) : undefined }; } catch {} }
   return { kind: 'invalid' };
 }
-const routeHash = r => r.kind === 'outline' && r.view === 'open' ? outlineHash(r.sel) : r.kind === 'outline' ? `#outline${r.view && r.view !== 'everything' ? '/' + r.view : ''}${r.view === 'needs-me' && r.task ? '/' + encodeURIComponent(r.task) : ''}` : r.kind === 'tuios' ? r.view === 'overview' ? '#tuios-overview' : `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
+const routeHash = r => r.kind === 'outline' && r.view === 'open' ? outlineHash(r.sel) : r.kind === 'outline' && r.view === 'queue' ? queueHash(r.scope) : r.kind === 'outline' ? `#outline${r.view && r.view !== 'everything' ? '/' + r.view : ''}${r.view === 'needs-me' && r.task ? '/' + encodeURIComponent(r.task) : ''}` : r.kind === 'tuios' ? r.view === 'overview' ? '#tuios-overview' : `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queues/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
 function navigate(next) {
   const hash = routeHash(next);
   if (location.hash === hash) mount(next); else location.hash = hash;
@@ -156,9 +159,11 @@ function render() {
   list.setRows(page.rows());
   if (page.items) for (const el of root.querySelectorAll('.list-rows > .item[open]')) load(el.dataset.id).catch(error);
 }
-async function refresh() {
-  const version = ++refreshVersion, state = await api('/state');
+// `live` is a refresh nobody asked for (a change event): when the server still holds what the page has, nothing is parsed, rebuilt or drawn.
+async function refresh(live = false) {
+  const version = ++refreshVersion, state = await apiCached('/state');
   if (version !== refreshVersion) return;
+  if (state === NOT_MODIFIED) { if (!live) render(); return; }
   // A question is kept only while its turn still waits on it; the next one is read afresh.
   for (const agent of store.questions.keys()) if (!state.items.some(i => i.agent_id === agent && i.type === 'turn' && i.status === 'needs_input')) store.questions.delete(agent);
   store.state = state; render();
@@ -616,6 +621,9 @@ window.addEventListener('hashchange', () => {
 const stream = new EventSource('/api/events');
 stream.onopen = () => $('#connection').textContent = 'Connected locally';
 stream.onerror = () => $('#connection').textContent = 'Reconnecting…';
-stream.onmessage = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().then(() => Promise.all([tuios.update(), history.update(), outline.update()])).catch(error), 150); };
-await act(async () => { store.state = await api('/state'); });
-mount(parseRoute(location.hash));
+stream.onmessage = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => Promise.all([refresh(true).then(() => Promise.all([tuios.update(), history.update()])), outline.update()]).catch(error), 150); };
+// First paint: the rail draws from the outline as soon as it answers, and an outline page mounts without waiting for the state of the other pages.
+outline.update().catch(error);
+const first = parseRoute(location.hash);
+if (first.kind === 'outline') { mount(first); act(() => refresh()); }
+else { await act(() => refresh()); mount(parseRoute(location.hash)); }

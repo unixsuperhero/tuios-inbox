@@ -5,7 +5,7 @@ import { store, pages, esc, agentName, hostLabel, unfinished, api, taskTree } fr
 import { patchHTML } from '/workbench.js';
 import { buildBuckets, nextAfter, waitingFor, byOldest, ALL } from '/queue-model.js';
 
-const href = (bucket, item) => `#queue/${encodeURIComponent(bucket)}${item ? '/' + encodeURIComponent(item) : ''}`;
+const href = (bucket, item) => `#queues/${encodeURIComponent(bucket)}${item ? '/' + encodeURIComponent(item) : ''}`;
 const time = value => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 // Unread and not archived is the queue; a turn still running has nothing to review yet unless it is asking you something.
 const reviewable = row => !(unfinished(row) && row.status !== 'needs_input');

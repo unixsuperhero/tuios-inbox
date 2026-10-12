@@ -39,37 +39,71 @@
 .rail-heading { flex: none; display: flex; align-items: baseline; justify-content: space-between; padding: 7px 8px; border: 1px solid transparent; border-bottom: 2px solid var(--control-line); color: var(--ink); font-size: 15px; font-weight: 700; text-decoration: none; }
 .rail-heading:hover { background: #243442; }
 .rail-heading.active { color: #fff; background: #344656; }
-.rail-heading span, .rt-count { font: 700 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--accent); }
+.rail-heading span { font: 700 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--accent); }
 .rail-tree { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
 .rt-empty { margin: 0; padding: 12px 8px; font-size: 13px; color: var(--muted); }
+/* Queue is the first link: everything that waits, oldest first. */
+.rail-queue { margin-bottom: 4px; border: 1px solid var(--control-line); border-radius: 2px; }
+.rail-queue.is-waiting span { padding: 1px 7px; border-radius: 2px; background: var(--accent); color: #1a1306; }
+/* icons: one set, 14px, drawn with the text colour. Shape tells the kind; colour only repeats it. */
+.ic { flex: none; width: 14px; height: 14px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; vertical-align: -2px; }
+.ic-track { opacity: .28; }
+.ic-working { color: #8fd0ff; stroke-width: 2; animation: ic-spin 1.1s linear infinite; }
+.ic-needs_input, .ic-blocked { color: var(--accent); }
+.ic-done { color: var(--forest); }
+.ic-errored, .ic-prompt_error { color: var(--danger); }
+.ic-idle, .ic-ended { color: #c9d6df; }
+.ic-queued { color: var(--ol-warning); }
+.ic-doc { color: var(--ink); }
+/* read: thin and dim, whatever the kind */
+.ic.is-read { color: #7c8f9d; stroke-width: 1; }
+@keyframes ic-spin { to { transform: rotate(360deg); } }
+@keyframes ic-pulse { 50% { opacity: .3; } }
+.inds { flex: none; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; }
+.ind { display: inline-flex; align-items: center; gap: 2px; }
+.ind-n { font: 700 11px var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); }
 .rt-group { padding: 3px 0 7px; border-bottom: 1px solid var(--line); }
-.rt-task, .rt-subtask { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 4px 8px; border-radius: 2px; color: var(--ink); font-size: 14px; font-weight: 600; text-decoration: none; }
+.rt-head { display: flex; flex-wrap: wrap; align-items: center; column-gap: 2px; min-width: 0; }
+.rail .rt-twist { flex: none; display: grid; place-items: center; width: 20px; height: 28px; min-height: 0; padding: 0; border: 0; border-radius: 2px; background: transparent; color: var(--muted); cursor: pointer; }
+.rail button.rt-twist:hover { background: #243442; color: #fff; }
+.rt-twist .ic { width: 12px; height: 12px; transition: transform .16s cubic-bezier(.16, 1, .3, 1); }
+.rt-twist[aria-expanded=true] .ic { transform: rotate(90deg); }
+.rt-task, .rt-subtask { flex: 1 1 0; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 30px; padding: 4px 6px 4px 4px; border-radius: 2px; color: var(--ink); font-size: 14px; font-weight: 600; text-decoration: none; }
 .rt-task::before { content: ''; flex: none; width: 9px; height: 9px; border: 1.5px solid var(--ink); }
 .rt-group.is-none .rt-task::before { border: 1.5px dashed var(--muted); }
-.rt-subtask { min-height: 28px; margin-left: 17px; font-size: 13px; color: var(--muted); }
+.rt-subtask { min-height: 26px; margin-left: 20px; font-size: 13px; color: var(--muted); }
 :is(.rt-task, .rt-subtask).is-unread { color: #fff; }
 .rt-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rt-items { margin: 0; padding: 0 0 0 17px; list-style: none; }
-.rt-sub .rt-items { padding-left: 34px; }
-.rt-items li { margin-top: 2px; }
-/* An item: filled square and raised ground when unread, hollow and dim when read. Selection is an outline; it never replaces the read state. */
-.rt-item { display: grid; grid-template-columns: 7px minmax(0, 1fr); column-gap: 8px; align-items: baseline; padding: 5px 8px; border-radius: 2px; background: #1b2833; color: #93a5b2; font-size: 13px; line-height: 1.35; text-decoration: none; }
-.rt-item::before { content: ''; grid-row: 1 / span 2; align-self: start; width: 7px; height: 7px; margin-top: 5px; border: 1px solid #7c8f9d; box-sizing: border-box; }
-.rt-item.is-unread { background: var(--surface-raised); color: #fff; }
-.rt-item.is-unread::before { border-color: var(--accent); background: var(--accent); }
-.rt-item.is-unread .rt-sum { font-weight: 700; }
-.rt-sum { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rt-meta { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #93a5b2; }
-.rt-item.is-unread .rt-meta { color: var(--muted); }
-.rt-meta .ol-state { font-weight: 400; }
-:is(.rt-task, .rt-subtask, .rt-item):hover { background: #243442; }
-:is(.rt-task, .rt-subtask, .rt-item)[aria-current] { outline: 2px solid var(--accent); outline-offset: -2px; color: #fff; }
-.rail :is(.rt-task, .rt-subtask, .rt-item, .rail-heading, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-/* A document a run reported: the same record, marked as a page. */
-.rt-doc::before { height: 9px; border-style: solid solid double; }
-.rt-stack > summary { width: fit-content; margin-left: 15px; padding: 3px 8px; font-size: 12px; color: var(--accent); cursor: pointer; }
-.rt-stack > summary:hover { text-decoration: underline; text-underline-offset: 3px; }
-.rt-stack > .rt-items { padding-left: 15px; }
+/* The strip of a header takes its own line, so a collapsed task still says everything going on inside. */
+.rt-inds { flex: 0 0 100%; box-sizing: border-box; padding: 0 6px 5px 41px; }
+.rt-sub .rt-inds { padding-left: 24px; }
+.rt-q { flex: none; display: inline-flex; align-items: center; gap: 3px; min-height: 22px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 2px; color: var(--accent); font: 700 12px var(--mono); font-variant-numeric: tabular-nums; text-decoration: none; }
+.rt-q .ic { width: 12px; height: 12px; }
+.rt-q:hover { background: #243442; border-color: var(--control-line); }
+.rt-items { margin: 0; padding: 0 0 0 12px; list-style: none; }
+.rt-sub .rt-items { padding-left: 24px; }
+/* One row per pane: raised ground while something of it waits, dim when it only shows its last turn. Selection is an outline. */
+.rt-row { margin-top: 2px; border-radius: 2px; background: #1b2833; }
+.rt-row.is-unread { background: var(--surface-raised); }
+.rt-rowhead { display: flex; align-items: flex-start; min-width: 0; padding-right: 4px; }
+.rt-rowhead .rt-q { margin-top: 5px; }
+.rt-item { flex: 1 1 0; display: grid; gap: 1px; min-width: 0; padding: 5px 6px 5px 2px; border-radius: 2px; color: var(--muted); font-size: 13px; line-height: 1.35; text-decoration: none; }
+.rt-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rt-name { flex: 0 1 auto; min-width: 4ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--ink); }
+.rt-row.is-unread .rt-name { font-weight: 700; color: #fff; }
+.rt-row.is-dim .rt-name { font-weight: 400; color: #93a5b2; }
+.rt-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.rt-row.is-unread .rt-item > .rt-sum { color: var(--ink); }
+.rt-row.is-dim .rt-item > .rt-sum { color: #7c8f9d; }
+/* The rolled-up contents of a row stay inside it: a ruled list under its head. */
+.rt-detail { margin: 0 4px 0 9px; padding: 2px 0 5px 6px; list-style: none; border-left: 1px solid var(--control-line); }
+.rt-leaf { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 6px; border-radius: 2px; color: var(--ink); font-size: 12.5px; text-decoration: none; }
+.rt-leaf .rt-sum { flex: 1; }
+.rt-leaf.is-read { color: #93a5b2; }
+.rt-leaf-doc { padding-left: 24px; }
+:is(.rt-task, .rt-subtask, .rt-item, .rt-leaf):hover { background: #243442; }
+:is(.rt-task, .rt-subtask, .rt-item, .rt-leaf)[aria-current] { outline: 2px solid var(--accent); outline-offset: -2px; color: #fff; }
+.rail :is(.rt-task, .rt-subtask, .rt-item, .rt-leaf, .rt-q, .rt-twist, .rail-heading, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .rail .rail-views { flex: none; display: flex; flex-wrap: wrap; gap: 0 2px; margin: 8px 0 0; }
 .rail .rail-view { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 2px 7px; border: 1px solid transparent; border-radius: 2px; color: #a9b9c5; font-size: 12.5px; text-decoration: none; white-space: nowrap; }
 .rail .rail-view:hover { background: #243442; }
@@ -174,6 +208,33 @@
 .ol-line.is-sub .ol-text { font-weight: 600; }
 .ol-next { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
 #outline-root .ol-review-link { margin: 8px 0 2px; }
+
+/* queue page: one flat list of everything that waits, oldest first, with the open item beside it */
+#outline-root.is-queue { grid-template-columns: minmax(300px, 36%) minmax(0, 1fr); }
+.is-queue :is(.ol-capture, .ol-cols, .ol-back) { display: none; }
+#outline-root.is-queue .ol-filter { margin: 0 16px; padding: 0; border: 0; gap: 8px 14px; }
+.q-count { font-size: 13.5px; color: var(--muted); white-space: nowrap; }
+.q-count b { font: 700 15px var(--mono); color: #fff; }
+.q-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.q-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 28px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 2px; color: var(--ink); font-size: 12.5px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-chip span { font: 11.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }
+.q-chip:hover { background: var(--ol-row); }
+.q-chip[aria-current] { background: var(--ol-soft); border-color: var(--ol-soft-line); color: #fff; font-weight: 700; }
+.is-queue .ol-tree { margin-top: 12px; border-top: 2px solid var(--control-line); }
+.q-row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 1px 9px; align-items: center; padding: 7px 14px 7px 16px; border-bottom: 1px solid var(--line); background: var(--surface-raised); cursor: default; }
+.q-row:hover { background: var(--ol-row); }
+.q-row.is-read { background: transparent; }
+.q-row.is-selected { background: var(--ol-soft); outline: 1px solid var(--ol-soft-line); outline-offset: -1px; }
+.q-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14.5px; font-weight: 700; color: #fff; }
+.q-row.is-read .q-text { font-weight: 400; color: var(--muted); }
+.q-age { font-size: 12px; color: var(--muted); }
+.q-path { grid-column: 2 / -1; display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
+.q-empty .q-clear { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 600; color: var(--ink); }
+.q-clear .ic { width: 18px; height: 18px; }
+.ol-chunk { padding-block: 6px; }
+.ol-qlinks { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px !important; font-size: 13px; }
+.ol-qlink { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ol-next kbd { border-color: currentColor !important; color: inherit !important; opacity: .7; }
 
 /* detail */
 .ol-detail { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 22px 20px 48px; border-left: 1px solid var(--line); scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
@@ -308,7 +369,14 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
   .rail-tasks, .rail-tree { flex: none; overflow: visible; }
   .rt-task, .rt-subtask, .rail-heading { min-height: 44px; }
   .rt-item { padding-block: 8px; font-size: 14px; }
-  .rt-stack > summary, .rail-more > summary { padding-block: 12px; }
+  .rail .rt-twist { width: 36px; height: 44px; }
+  .rt-q { min-height: 36px; padding-inline: 9px; }
+  .rt-rowhead .rt-q { margin-top: 4px; }
+  .rt-leaf { min-height: 40px; font-size: 13.5px; }
+  .rt-inds { padding-left: 57px; }
+  .rt-subtask { margin-left: 36px; }
+  .rt-sub .rt-inds { padding-left: 40px; }
+  .rail-more > summary { padding-block: 12px; }
   .rail .rail-view { flex: none; min-height: 44px; padding: 9px 10px; }
   .rail .rail-secondary { max-height: none; }
   .rail .rail-secondary .nav { min-height: 44px; }
@@ -341,6 +409,14 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
   #outline-root .ol-filter { margin: 0; border-width: 1px 0 0; }
   .ol-filter a, .ol-rq-only, .ol-review-link a { display: inline-flex; align-items: center; min-height: 44px; }
   #outline-root.is-focus .ol-center { display: flex; }
+  /* Queue on a phone: the list on top, the open item below it. */
+  #outline-root.is-queue .ol-center { display: flex; flex: none; max-height: 42vh; }
+  #outline-root.is-queue .ol-detail { display: block; flex: 1; border-top: 2px solid var(--control-line); }
+  #outline-root.is-queue .ol-filter { margin: 0 16px; border: 0; }
+  .is-queue .ol-head { padding-bottom: 6px; }
+  .q-row { min-height: 52px; }
+  .q-chip { min-height: 36px; }
+  .ol-qlink { min-height: 44px; }
   #outline-root.is-focus .ol-detail { display: block; padding: 14px 16px 48px; }
   .is-focus .ol-head { padding-inline: 16px; }
   #outline-root.is-focus .ol-center { padding-bottom: 0; border-bottom: 0; }
@@ -350,4 +426,5 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
   .ol-trow-acts { margin-left: auto; }
   #outline-root .ol-trow-acts > :is(a, button) { display: inline-flex; align-items: center; min-height: 44px; }
 }
-@media (prefers-reduced-motion: reduce) { .ol-twist svg { transition: none; } }
+/* Reduced motion: the working mark breathes instead of turning; it is never still (style.css stops every other animation, hence !important). */
+@media (prefers-reduced-motion: reduce) { .ol-twist svg, .rt-twist .ic { transition: none; } .ic-working { animation: ic-pulse 2.4s ease-in-out infinite !important; } }

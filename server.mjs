@@ -755,7 +755,7 @@ async function outline() {
   const ctx = outlineContext();
   const tasks = await Promise.all(ctx.tasks.map(async t => { const resolved = resolveFields(t, ctx.byId); return { ...t, resolved, git: await gitFacts(resolved.repo.value, resolved.branch.value), notes: notesOf(t.id) }; }));
   const prompts = await Promise.all(all('SELECT * FROM prompts ORDER BY position,created').map(p => promptView(p, ctx)));
-  const runs = all(`SELECT 'turn:'||t.id AS id, t.prompt_id, t.task_id, t.pane_id, COALESCE(NULLIF(a.name,''),t.pane_name) AS pane_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, COALESCE(a.host,'') AS host, t.state, t.unread, t.archived,
+  const runs = all(`SELECT 'turn:'||t.id AS id, t.prompt_id, t.task_id, t.pane_id, COALESCE(NULLIF(a.name,''),t.pane_name) AS pane_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, COALESCE(a.host,'') AS host, COALESCE(NULLIF(a.session,''),t.session) AS session, t.state, t.unread, t.archived,
     t.started, t.finished, substr(t.prompt,1,400) AS prompt, t.response<>'' AS response_captured,
     CASE WHEN t.response LIKE '%127.0.0.1:4387/items/%' OR t.response LIKE '%.md%' THEN t.response ELSE '' END AS doc_text, t.source, t.head_before, t.head_after, t.commits FROM turns t LEFT JOIN agents a ON a.id=t.pane_id
     WHERE t.id IN (SELECT id FROM turns ORDER BY started DESC LIMIT ?) OR (t.archived=0 AND (t.unread=1 OR t.state='needs_input')) ORDER BY t.started DESC`, outlineRunLimit)
