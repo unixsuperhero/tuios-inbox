@@ -14,6 +14,12 @@ export function defaultDataDir() {
   return process.env.TUIOS_INBOX_DATA || join(homedir(), '.local/share/tuios-inbox');
 }
 
+// An SSH config handed to `ssh -F` must be an absolute path without NUL or line breaks.
+export function validateSshConfig(path) {
+  if (typeof path !== 'string' || !path.startsWith('/') || /[\0\r\n]/.test(path)) throw new Error(`Invalid SSH config path ${JSON.stringify(path)}: it must be an absolute path without NUL or newline`);
+  return path;
+}
+
 // Argv for one collector invocation. SSH gets a single quoted remote command, BatchMode and a connect timeout; host keys are never bypassed.
 export function buildCommand(source, args, { connectTimeout = 10 } = {}) {
   const bun = source.bun || 'bun';
@@ -21,7 +27,8 @@ export function buildCommand(source, args, { connectTimeout = 10 } = {}) {
   const tail = [...args, ...(source.data_dir ? ['--data', source.data_dir] : [])];
   if (!source.ssh) return [bun, collector, ...tail];
   if (String(source.ssh).startsWith('-')) throw new Error(`Invalid SSH target ${JSON.stringify(source.ssh)}`);
-  return ['ssh', '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${connectTimeout}`, '--', source.ssh, [bun, collector, ...tail].map(shellQuote).join(' ')];
+  const sshConfig = source.ssh_config ? ['-F', validateSshConfig(source.ssh_config)] : [];
+  return [source.ssh_config ? '/usr/bin/ssh' : 'ssh', '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${connectTimeout}`, ...sshConfig, '--', source.ssh, [bun, collector, ...tail].map(shellQuote).join(' ')];
 }
 
 export async function loadSources(dataDir = defaultDataDir()) {
@@ -36,7 +43,7 @@ export async function loadSources(dataDir = defaultDataDir()) {
   if (!Array.isArray(list)) throw new Error('collectors.json must be an array of sources');
   return list.map((s, i) => {
     if (!s || typeof s !== 'object' || typeof s.host !== 'string' || !s.host) throw new Error(`collectors.json[${i}] needs a host`);
-    return { host: s.host, ssh: s.ssh || null, collector_path: s.collector_path, data_dir: s.data_dir, bun: s.bun };
+    return { host: s.host, ssh: s.ssh || null, ...(s.ssh_config ? { ssh_config: s.ssh_config } : {}), collector_path: s.collector_path, data_dir: s.data_dir, bun: s.bun };
   });
 }
 

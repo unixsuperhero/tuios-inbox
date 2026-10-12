@@ -194,3 +194,8 @@ test('a failing source does not block others; no sources is explicit', async () 
   expect(none[0].ok).toBe(false);
   expect(h.health().some(s => s.host === '(no collectors)' && s.last_error)).toBe(true);
 });
+
+test('an unsafe registered ssh_config is rejected before any ssh is spawned', () => {
+  const base = { ssh: 'h', bun: 'bun', collector_path: '/c' };
+  for (const bad of ['rel.conf', '/a\nb', '/a\0b']) expect(() => buildCommand({ ...base, ssh_config: bad }, ['export'])).toThrow(/SSH config/);
+});

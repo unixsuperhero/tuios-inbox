@@ -5,6 +5,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile, realpath } from 'node:fs
 import { homedir } from 'node:os';
 import { dirname, join, resolve, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateSshConfig } from './pull-collectors.mjs';
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const repoDir = dirname(scriptsDir);
@@ -244,8 +245,9 @@ export async function localTarget({ home = homedir(), run = spawnCapture, bun, t
   return target;
 }
 
-export async function remoteTarget(ssh, { run = spawnCapture, env = process.env } = {}) {
-  const sshArgv = (cmd) => ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', ssh, '--', cmd];
+export async function remoteTarget(ssh, { run = spawnCapture, env = process.env, sshConfig = null } = {}) {
+  const configArgs = sshConfig ? ['-F', validateSshConfig(sshConfig)] : [];
+  const sshArgv = (cmd) => [sshConfig ? '/usr/bin/ssh' : 'ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', ...configArgs, ssh, '--', cmd];
   const exec = (cmd, opts = {}) => run(sshArgv(cmd), { timeout: 60000, ...opts, env });
   const probeScript = [
     'echo "OS=$(uname -s)"', 'echo "HOME=$HOME"', 'echo "UID=$(id -u)"',
@@ -260,7 +262,7 @@ export async function remoteTarget(ssh, { run = spawnCapture, env = process.env 
   if (!facts.HOME?.startsWith('/')) throw new Error(`Remote ${ssh} did not report an absolute home directory.`);
   const sh = (script, opts) => exec(`sh -c ${shellQuote(script)}`, opts);
   return {
-    kind: 'remote', label: ssh, ssh, os: facts.OS, home: facts.HOME, env: { PATH: facts.PATH || '', CLAUDE_CONFIG_DIR: facts.CLAUDE_CONFIG_DIR, PI_CODING_AGENT_DIR: facts.PI_CODING_AGENT_DIR, CODEX_HOME: facts.CODEX_HOME }, uid: Number(facts.UID),
+    kind: 'remote', label: ssh, ssh, sshConfig, os: facts.OS, home: facts.HOME, env: { PATH: facts.PATH || '', CLAUDE_CONFIG_DIR: facts.CLAUDE_CONFIG_DIR, PI_CODING_AGENT_DIR: facts.PI_CODING_AGENT_DIR, CODEX_HOME: facts.CODEX_HOME }, uid: Number(facts.UID),
     bun: facts.BUN?.startsWith('/') ? facts.BUN : null,
     tuios: facts.TUIOS?.startsWith('/') ? facts.TUIOS : null,
     run: (argv, opts = {}) => exec(argv.map(shellQuote).join(' '), opts),
@@ -674,7 +676,7 @@ export async function install(ctx) {
   await shellIntegration(target, report, paths, shell);
   if (broken()) return halt('source registration');
 
-  const entry = { host: remote ? ctx.alias : 'local', ssh: remote ? target.ssh : null, collector_path: paths.collectorScript, data_dir: paths.collectorData, bun: target.bun };
+  const entry = { host: remote ? ctx.alias : 'local', ssh: remote ? target.ssh : null, ...(remote && target.sshConfig ? { ssh_config: target.sshConfig } : {}), collector_path: paths.collectorScript, data_dir: paths.collectorData, bun: target.bun };
   await registerSource(central, report, layout(central, opts), entry, false);
   if (!remote) report.note(`central collectors.json: ${layout(central, opts).collectorsJson}`);
   if (target.os === 'Linux') report.note('Linux: for the collector to run while logged out, an administrator may need `loginctl enable-linger $USER`.');
@@ -761,7 +763,7 @@ export async function status(ctx) {
 
 // ---- CLI ----
 
-const FLAGS = { '--remote': 'remote', '--host': 'host', '--bun': 'bun', '--tuios-bin': 'tuiosBin', '--data': 'data', '--port': 'port', '--home': 'home' };
+const FLAGS = { '--remote': 'remote', '--host': 'host', '--bun': 'bun', '--tuios-bin': 'tuiosBin', '--data': 'data', '--port': 'port', '--home': 'home', '--ssh-config': 'sshConfig' };
 const SWITCHES = { '--collector-only': 'collectorOnly', '--dry-run': 'dryRun' };
 
 export function parseArgs(argv) {
@@ -773,12 +775,13 @@ export function parseArgs(argv) {
     else if (a.startsWith('--')) throw new Error(`unknown option ${a}`);
     else rest.push(a);
   }
-  if (rest.length !== 1 || !['install', 'status', 'start', 'stop', 'uninstall'].includes(rest[0])) throw new Error('usage: setup-cross-host.mjs install|status|start|stop|uninstall [--remote SSH_TARGET] [--host ALIAS] [--collector-only] [--dry-run] [--bun PATH] [--tuios-bin PATH] [--data DIR] [--port N]');
+  if (rest.length !== 1 || !['install', 'status', 'start', 'stop', 'uninstall'].includes(rest[0])) throw new Error('usage: setup-cross-host.mjs install|status|start|stop|uninstall [--remote SSH_TARGET] [--host ALIAS] [--collector-only] [--dry-run] [--ssh-config ABS_PATH] [--bun PATH] [--tuios-bin PATH] [--data DIR] [--port N]');
   if (opts.host && !/^[\w.@-]+$/.test(opts.host)) throw new Error('--host must be letters, digits, dot, dash, underscore');
   if (opts.remote && !/^[\w.@:-]+$/.test(opts.remote)) throw new Error('--remote must be an ssh target such as user@host or an ssh_config alias');
   if (opts.data && !opts.data.startsWith('/')) throw new Error('--data must be an absolute path');
   for (const k of ['bun', 'tuiosBin']) if (opts[k] && !opts[k].startsWith('/')) throw new Error(`--${k === 'bun' ? 'bun' : 'tuios-bin'} must be an absolute path`);
   if (opts.port && !(/^\d+$/.test(opts.port) && opts.port >= 1 && opts.port <= 65535)) throw new Error('--port must be 1-65535');
+  if (opts.sshConfig) { validateSshConfig(opts.sshConfig); if (!opts.remote) throw new Error('--ssh-config applies with --remote only'); }
   if (opts.remote && opts.port) throw new Error('--port applies to the local backend only');
   return { command: rest[0], opts };
 }
@@ -791,7 +794,7 @@ export async function main(argv, { run, out = console.log, scriptsDir: sourceDir
   const ctx = { central, report, opts, dry: !!opts.dryRun, scriptsDir: sourceDir };
   try {
     if (opts.remote) {
-      const target = await remoteTarget(opts.remote, { run: run || spawnCapture });
+      const target = await remoteTarget(opts.remote, { run: run || spawnCapture, sshConfig: opts.sshConfig });
       if (opts.bun) target.bun = opts.bun;
       if (opts.tuiosBin) target.tuios = opts.tuiosBin;
       ctx.target = target;

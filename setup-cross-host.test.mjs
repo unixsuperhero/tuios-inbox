@@ -159,6 +159,8 @@ describe('service specs', () => {
   test('argument validation', () => {
     expect(() => parseArgs(['install', '--remote', 'a;rm'])).toThrow(/ssh target/);
     expect(() => parseArgs(['bogus'])).toThrow(/usage/);
+    expect(() => parseArgs(['install', '--ssh-config', '/p/c'])).toThrow(/--remote/);
+    expect(() => parseArgs(['install', '--remote', 'h', '--ssh-config', 'rel'])).toThrow(/SSH config/);
     expect(parseArgs(['install', '--dry-run', '--collector-only']).opts).toEqual({ dryRun: true, collectorOnly: true });
   });
 });

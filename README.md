@@ -272,7 +272,7 @@ The collector does not read transcripts for other harnesses or for headless prot
 
 ### Install
 
-`scripts/setup-cross-host.mjs` takes `install`, `status`, `start`, `stop`, or `uninstall`. Add `--dry-run` to print the steps without changing anything. Other options: `--remote SSH_TARGET`, `--host ALIAS`, `--collector-only`, `--bun PATH`, `--tuios-bin PATH`, `--data DIR`, and `--port N` (local backend only).
+`scripts/setup-cross-host.mjs` takes `install`, `status`, `start`, `stop`, or `uninstall`. Add `--dry-run` to print the steps without changing anything. Other options: `--remote SSH_TARGET`, `--ssh-config ABS_PATH` (with `--remote`: runs every SSH call through `/usr/bin/ssh -F PATH`, and the path is saved as `ssh_config` on the source in `collectors.json` so later export and ack pulls use the same system OpenSSH and profile), `--host ALIAS`, `--collector-only`, `--bun PATH`, `--tuios-bin PATH`, `--data DIR`, and `--port N` (local backend only).
 
 ```sh
 # this machine: collector plus the backend as user services
