@@ -410,3 +410,11 @@ dialog form { display: grid; gap: 18px; }
 .history-links { margin: 14px 0; }
 .history .native-empty pre { margin: 8px 0; }
 .history .native-toolbar { margin-bottom: 14px; }
+.history-table th[scope=row] small { display: block; margin-top: 4px; max-width: 30ch; overflow-wrap: anywhere; color: var(--muted); font-weight: normal; text-transform: none; }
+.history-records { table-layout: fixed; min-width: 800px; }
+.history-records :is(th, td):nth-child(1) { width: 170px; }
+.history-records :is(th, td):nth-child(2) { width: 86px; }
+.history-records :is(th, td):nth-child(3) { width: 175px; }
+.history-records :is(th, td):nth-child(5) { width: 64px; }
+.history-table .badge { white-space: nowrap; }
+.history-text { overflow-wrap: anywhere; }

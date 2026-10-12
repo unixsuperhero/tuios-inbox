@@ -43,7 +43,7 @@ Task and agent rail selections can be archived independently. This hides those e
 
 The review queue contains unread, unarchived finished responses, oldest first by default. Shell command output is bucketed apart and hidden until **Show commands** is ticked. Opening a record marks it read; **Mark as unread** puts it back. **Next** moves to the following record. A successful reply also clears the record. The **Queues** page shows the same unread work as one queue per task, oldest at the top, with a reading pane beside it.
 
-Inbox, Queues, Prompts, Tasks, TUIOS, Agents, Archive, and Agent profiles are available in the left navigation. Work indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Task groups, Work, and Review buttons switch between work areas; Queues has its own reading pane.
+Inbox, Queues, Prompts, Tasks, TUIOS, Agents, Archive, History, Collectors, and Agent profiles are available in the left navigation. Work indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Task groups, Work, and Review buttons switch between work areas; Queues has its own reading pane.
 
 All is the default type selection and exclusive reset. Turns and Commands toggle independently; selecting both includes either type. The type union combines with search, filters, and sort. Selecting neither returns to All. Read and unread backgrounds describe state, never alternating stripes.
 
@@ -163,7 +163,7 @@ There are two input paths:
 - App-dispatched commands use `tuios run` with OSC 133 command boundaries and preserve output, exit status, and duration. Managed zsh panes load `scripts/shell.zsh` without changing personal shell startup files.
 - Agent prompts use `tuios ask-agent` and wait for state completion rather than a two-second silence. Returned text is **captured terminal turn output**, not a canonical final-answer object. It can include prompt echoes, tool activity, wrapping, and terminal decorations. The app labels this `captured`; timeout, idle fallback, or truncation is `partial`. Agent captures are capped at 10,000 lines.
 
-TUIOS does not provide a universal full-answer export across all harnesses. Hook captures are snapshots capped at 2,000 lines, and cannot reconstruct overwritten or missing output. Their provenance stays in Delivery details. A delayed hook's capture may reflect a pane that has already advanced.
+TUIOS does not provide a universal full-answer export across all harnesses. Agent-terminal snapshots are capped at 2,000 lines; collector command capture requests all available last-command output, and incremental transcript archival has no snapshot line cap. Native captures still cannot reconstruct overwritten or missing output. Provenance stays in record details. A delayed hook's capture may reflect a pane that has already advanced.
 
 The subscriber saves agent mail without marking it read in TUIOS, tracks pane state, and resumes from `(boot_id, seq)`. A replay gap becomes a visible inbox message and triggers state/mail reconciliation. Mail that TUIOS evicted before the app read it cannot be recovered. TUIOS's mailbox is bounded and disappears on daemon shutdown; the app's imported copy survives.
 
@@ -201,12 +201,12 @@ This binding requires a TUIOS build with generic configured popups and `jump-win
 
 The active config is given by `tuios config path`. On this machine, `~/.config/tuios/config.toml` links to `~/Library/Application Support/tuios/config.toml`; that file is hard-linked into `~/proj/phome/.config/tuios/config.toml`.
 
-Installed hooks:
+Configured hooks on this Mac (the running daemon retains its earlier paths until a safe restart):
 
 ```toml
 [hooks]
-after-command-finished = '/opt/homebrew/bin/bun /Users/unixsuperhero/proj/tuios-inbox/scripts/capture-hook.mjs'
-after-agent-state = '/opt/homebrew/bin/bun /Users/unixsuperhero/proj/tuios-inbox/scripts/capture-hook.mjs'
+after-command-finished = 'env TUIOS_BIN=/Users/unixsuperhero/bin/tuios TUIOS_INBOX_COLLECTOR_DATA=/Users/unixsuperhero/.local/share/tuios-inbox/collector /opt/homebrew/bin/bun /Users/unixsuperhero/.local/share/tuios-inbox/collector-runtime/scripts/capture-hook.mjs'
+after-agent-state = 'env TUIOS_BIN=/Users/unixsuperhero/bin/tuios TUIOS_INBOX_COLLECTOR_DATA=/Users/unixsuperhero/.local/share/tuios-inbox/collector /opt/homebrew/bin/bun /Users/unixsuperhero/.local/share/tuios-inbox/collector-runtime/scripts/capture-hook.mjs'
 ```
 
 Agent notifications are enabled for done, needs_input, and errored, including focused panes. Normal standalone startup remains unchanged. The web app explicitly requests daemon-backed sessions.
@@ -239,11 +239,89 @@ Restart agent sessions after changing global instructions. These are model instr
 
 The native installer preserves unrelated settings and writes `.tuios.bak` backups. This machine's current integrations are Claude Code, Codex, Gemini CLI, OpenCode, Antigravity, Cursor Agent, Grok, Hermes, Pi, and oh-my-pi. Antigravity, Grok, and Hermes report conversation identity; their state detection relies on screen rules. Unsupported or never-run harnesses are not fabricated as installed.
 
+## Cross-host history
+
+One central server holds the searchable **History**. Each execution user and native daemon runs an independent collector with its own durable SQLite queue, `collector.db` in WAL mode. Collection continues while the central server is down. Queued records remain until the central archive commits and acknowledges their exact IDs.
+
+```js
+{
+  collector: { source_id, host, data_dir, outbox: [{ id, record }], imported: [id], gaps: [{ id, time, detail }] },
+  record: { id, source_id, host, boot_id, seq, session, pane_id, conversation_id, harness,
+            kind, created, source, body, prompt, response, meta },
+  central: { unique: [source_id, record.id], sources: "collectors.json" }
+}
+```
+
+**Delivery.** The central server pulls every 15 seconds and at startup (`POST /api/collectors/pull` pulls on demand). For each source it runs `collector.mjs export`, writes the batch to its own SQLite in one transaction, and only then runs `collector.mjs ack` with the exact IDs it stored, duplicates included. A failure before the commit leaves the outbox intact, so the next pull retries. Retries and overlapping paths dedupe on `(source_id, record id)`, never on the meaning of a turn: two identical prompts are two records, and a hook and a native `command-finished` capture of the same command share one ID. A source that cannot be reached shows its error and does not block the others. SSH uses `BatchMode` and a 10 second connect timeout and never bypasses host keys.
+
+**Provenance.** Every record carries `source`: `transcript` (a harness's complete conversation JSONL), `pane` (hook-captured pane output), `native` (TUIOS events and mail), or `summary` (the hook's one-line message). Transcript rows keep the original entry in `meta`. Records are not rewritten into a single final answer.
+
+**What is collected.** The collector follows `tuios subscribe` from a saved `(boot_id, seq)` cursor and rescans transcripts every 5 seconds. Each file has a saved offset, so a scan reads only what was appended, and a replaced or truncated file records a `gap` and is read again from the start. Roots are read from these locations, and a missing root is reported, not hidden:
+
+| Harness | Root | Honors |
+| --- | --- | --- |
+| Claude Code (`claude-code`) | `~/.claude/projects`, including `*/*/subagents/*.jsonl` | `CLAUDE_CONFIG_DIR` |
+| oh-my-pi (`omp`) | `~/.omp/agent/sessions` | `PI_CODING_AGENT_DIR` |
+| Codex (`codex`) | `~/.codex/sessions`, recursive | `CODEX_HOME` |
+
+The collector does not read transcripts for other harnesses or for headless protocol panes. A live pane without a matching transcript raises a coverage gap instead of implying full history. Lost native events, a replay gap, and a failed mail import also become `gap` records. Gaps cannot be reconstructed.
+
+**In the app.** **History** (`#history`) searches full body text (every word must match; no search operators), with host, session, agent/pane, task, kind, and date filters. The UI pages 50 records at a time; the API accepts up to 200. Newer and Older navigate the entire archive, not just the latest 2,000 records. Rows show capture source and origin; details retain the complete body and original metadata. **Collectors** (`#collectors`) shows each source's last collection and transfer, pending records, known gaps with details, and last error.
+
+### Install
+
+`scripts/setup-cross-host.mjs` takes `install`, `status`, `start`, `stop`, or `uninstall`. Add `--dry-run` to print the steps without changing anything. Other options: `--remote SSH_TARGET`, `--host ALIAS`, `--collector-only`, `--bun PATH`, `--tuios-bin PATH`, `--data DIR`, and `--port N` (local backend only).
+
+```sh
+# this machine: collector plus the backend as user services
+bun scripts/setup-cross-host.mjs install --dry-run
+bun scripts/setup-cross-host.mjs install
+bun scripts/setup-cross-host.mjs status
+bun scripts/setup-cross-host.mjs stop     # or start
+
+# a VPS: collector only; the central server pulls over SSH
+bun scripts/setup-cross-host.mjs install --remote vps --dry-run
+bun scripts/setup-cross-host.mjs install --remote vps --host vps
+bun scripts/setup-cross-host.mjs status --remote vps
+bun scripts/setup-cross-host.mjs uninstall --remote vps
+```
+
+`--remote` needs non-interactive SSH, Bun on the remote, and (for native events) `tuios`. The source alias is the matching name from `tuios hosts`, else `--host`, else the SSH target. If port 4399 is already served (for example by `h tuios start`), the backend service is written but not started; stop that first.
+
+**Services.** macOS uses launchd (`com.tuios-inbox.collector`, `com.tuios-inbox.server`); Linux uses `systemd --user` (`tuios-inbox-collector.service`, `tuios-inbox-server.service`). Both restart after failure. On Linux, running while logged out needs an administrator to run `loginctl enable-linger $USER`; install checks that `systemctl --user` works and fails with that advice otherwise. On macOS, `stop` unloads the job until the next login or `start`.
+
+| What | Path (relative to the target's home) |
+| --- | --- |
+| Runtime copy of the scripts | `.local/share/tuios-inbox/collector-runtime/scripts` |
+| Collector queue (`collector.db`) | `.local/share/tuios-inbox/collector` (`--data` or `TUIOS_INBOX_COLLECTOR_DATA`) |
+| Central database and `collectors.json` | `.local/share/tuios-inbox` (`TUIOS_INBOX_DATA`; `TUIOS_INBOX_COLLECTORS` names another source list) |
+| Logs | `.local/state/tuios-inbox/collector.log`, `server.log` |
+| Service files | `Library/LaunchAgents/*.plist` or `.config/systemd/user/*.service` |
+
+The services run the copied runtime, not the checkout, so rerun `install` after changing a script (`status` reports stale files). `install` also edits `[hooks]` in the active TUIOS config, saving `config.toml.pre-cross-host.bak` first and leaving other lines alone. It adds an OSC 133 shell-marks block to `.zshrc` or `.bashrc` for zsh and bash 4.4+, installs a native harness integration only where it is missing or older, and registers the source in `collectors.json`. Each failed step halts the later ones, and `uninstall` stops at a failure. `uninstall` removes services, hook entries, the shell block, the runtime copy, and the source, and keeps the collector data and logs.
+
+### What the installer does not do
+
+- It does **not** provide credentials or log in to any harness. Agents on a remote host need their own sign-in there. A Claude login reused from another machine can expire and need a refresh or an independent login on that host.
+- It does **not** apply native grants. A person must run `tuios config apply` from a terminal outside TUIOS to activate host links and pending permissions.
+- Hooks load when the native daemon starts. `install` reports when the configured hooks differ from the running ones; it never stops a daemon or kills an active native session. Restart only at a safe point.
+- Native remote control still enforces its host permissions. Remote Tasks with a local project path use native repository mapping; the corresponding repository must exist on the remote host. A no-Task launch uses the remote session's current directory. Remote shell panes start the user's interactive shell so OSC 133 command boundaries remain available.
+
+### Reaching the central UI
+
+The central server binds only to `127.0.0.1` and rejects foreign Host headers. To use it from another computer, forward the loopback port over SSH, then open http://127.0.0.1:4399 locally:
+
+```sh
+ssh -N -L 4399:127.0.0.1:4399 central-host
+```
+
+Remote collectors need no inbound route to the central server: it connects out to them over SSH. Do not replace the tunnel with a public proxy.
+
 ## Architecture choice
 
 The standalone app leaves Portfolio unchanged. Its Wails app demonstrates a loopback Bun sidecar, but its PTY ownership closes processes with UI teardown. tuios inbox instead keeps TUIOS responsible for persistent execution and SQLite responsible for tasks and correspondence.
 
-A hook-only collector survives backend downtime but cannot provide live control or complete lifecycle reconciliation. A subscription-only collector provides replay and immediate state but loses unrecoverable events and output during outages. tuios inbox combines resumable subscription and an atomic hook spool. Neither path is presented as a complete harness transcript.
+A hook-only collector survives backend downtime but cannot provide live control or complete lifecycle reconciliation. A subscription-only collector provides replay and immediate state but loses unrecoverable events and output during outages. Inbox combines resumable native subscription and its legacy atomic hook spool with the independent durable collector queues and transcript archive described above. Native events and snapshots remain distinct from complete supported transcript entries.
 
 ```js
 {

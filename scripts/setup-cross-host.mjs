@@ -252,14 +252,15 @@ export async function remoteTarget(ssh, { run = spawnCapture, env = process.env 
     'P="$PATH:$HOME/.bun/bin:$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin"',
     'find() { PATH="$P" command -v "$1" || "${SHELL:-sh}" -lc "command -v $1" 2>/dev/null | tail -n1; }',
     'echo "BUN=$(find bun)"', 'echo "TUIOS=$(find tuios)"', 'echo "PATH=$P"',
+    ...['CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'CODEX_HOME'].map(key => 'echo "' + key + '=$' + key + '"'),
   ].join('; ');
   const probe = await exec(`sh -c ${shellQuote(probeScript)}`);
   if (probe.code !== 0) throw new Error(`Cannot reach ${ssh} over non-interactive ssh (BatchMode, no host-key bypass): ${(probe.err || probe.out).trim() || `exit ${probe.code}`}. Fix ssh access (keys, known_hosts) first.`);
-  const facts = Object.fromEntries(probe.out.split('\n').map((l) => l.match(/^([A-Z]+)=(.*)$/)).filter(Boolean).map((m) => [m[1], m[2].trim()]));
+  const facts = Object.fromEntries(probe.out.split('\n').map((l) => l.match(/^([A-Z_]+)=(.*)$/)).filter(Boolean).map((m) => [m[1], m[2].trim()]));
   if (!facts.HOME?.startsWith('/')) throw new Error(`Remote ${ssh} did not report an absolute home directory.`);
   const sh = (script, opts) => exec(`sh -c ${shellQuote(script)}`, opts);
   return {
-    kind: 'remote', label: ssh, ssh, os: facts.OS, home: facts.HOME, env: { PATH: facts.PATH || '' }, uid: Number(facts.UID),
+    kind: 'remote', label: ssh, ssh, os: facts.OS, home: facts.HOME, env: { PATH: facts.PATH || '', CLAUDE_CONFIG_DIR: facts.CLAUDE_CONFIG_DIR, PI_CODING_AGENT_DIR: facts.PI_CODING_AGENT_DIR, CODEX_HOME: facts.CODEX_HOME }, uid: Number(facts.UID),
     bun: facts.BUN?.startsWith('/') ? facts.BUN : null,
     tuios: facts.TUIOS?.startsWith('/') ? facts.TUIOS : null,
     run: (argv, opts = {}) => exec(argv.map(shellQuote).join(' '), opts),
@@ -308,7 +309,7 @@ export function layout(target, opts = {}) {
   };
 }
 
-const PASS_ENV = ['XDG_RUNTIME_DIR', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME'];
+const PASS_ENV = ['XDG_RUNTIME_DIR', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'CODEX_HOME'];
 
 export function serviceEnv(target, paths, extra = {}) {
   // The caller's real PATH is kept so agent executables (claude, codex, omp...) resolve under the service too.
@@ -667,7 +668,7 @@ export async function install(ctx) {
   const hooksChanged = await editConfigHooks(target, report, installHookItems(command), command);
   if (broken()) return halt('harness integrations and source registration');
   if (hooksChanged || (await hooksActive(target, command)) === false) {
-    report.restart.push(`${target.label}: hooks in config differ from the running daemon. Run 'tuios config apply' from a terminal OUTSIDE tuios, then rerun 'status'. Existing sessions need not restart. This tool never applies grants or stops native daemons.`);
+    report.restart.push(`${target.label}: configured hooks differ from the active hooks. They load at native daemon startup; keep existing sessions intact and restart only at a safe point. For pending host permissions, run 'tuios config apply' from a terminal OUTSIDE tuios. This installer never applies grants or stops native daemons.`);
   }
   await harnessIntegrations(target, report);
   await shellIntegration(target, report, paths, shell);

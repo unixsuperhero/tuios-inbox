@@ -275,7 +275,7 @@ async function remoteDirectory(session) {
   return w.cwd;
 }
 // new-window cannot address a remote-owned session; start-agent can, and a plain shell is any program it runs.
-const remoteShell = async (session, workspace, name) => cli(['start-agent', '-s', session, '--name', name, '--grants', 'read,write', '--ready-timeout', '1000', '--cwd', await remoteDirectory(session), ...(workspace != null ? ['--workspace', String(workspace)] : []), 'sh']);
+const remoteShell = async (session, workspace, name) => cli(['start-agent', '-s', session, '--name', name, '--grants', 'read,write', '--ready-timeout', '1000', '--cwd', await remoteDirectory(session), ...(workspace != null ? ['--workspace', String(workspace)] : []), 'sh', '--', '-c', 'exec "$SHELL" -i']);
 // For a remote session, `cwd` is a LOCAL directory the native CLI runs in so it maps that repository on the host;
 // without one the agent starts where the remote session already works. For a local session it is the agent's directory.
 function startProfile(t, name, profileId, cwd, opts = {}) {

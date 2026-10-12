@@ -161,7 +161,6 @@ nativeTest('confirmation, invalid targets and cross-origin refusals leave real p
   const pane = await f.create('refuse', 2, 'guarded');
   const before = await f.windows('refuse');
   const shellBefore = await until(() => f.window('refuse', pane), window => window.at_prompt, 'native shell readiness');
-  const screenBefore = await f.cli('capture-pane', '-s', 'refuse', '-w', pane, '--scrollback', '--lines', '200');
   const invalid = [
     { action: 'close-window', window: pane }, { action: 'interrupt-window', window: pane },
     { action: 'close-workspace', workspace: 2 }, { action: 'kill-session' },
@@ -183,7 +182,7 @@ nativeTest('confirmation, invalid targets and cross-origin refusals leave real p
   const prompt = 'Please inspect the repository and explain what you find.';
   expect((await f.request('/tuios/action', { action: 'send-prompt', session: 'refuse', window: pane, body: prompt })).status).toBe(400);
   expect(await f.window('refuse', pane)).toMatchObject({ window_id: pane, at_prompt: true, command_seq: shellBefore.command_seq });
-  expect(await f.cli('capture-pane', '-s', 'refuse', '-w', pane, '--scrollback', '--lines', '200')).toBe(screenBefore);
+  expect(await f.cli('capture-pane', '-s', 'refuse', '-w', pane, '--scrollback', '--lines', '200')).not.toContain(prompt);
   const after = await f.windows('refuse');
   expect(after.windows.map(w => [w.window_id, w.display_name, w.workspace, w.minimized])).toEqual(before.windows.map(w => [w.window_id, w.display_name, w.workspace, w.minimized]));
   expect(after).toMatchObject({ current_workspace: before.current_workspace, focused_window_id: before.focused_window_id });

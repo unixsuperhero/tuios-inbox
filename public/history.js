@@ -80,10 +80,10 @@ export function createHistory({ root, report }) {
     </form>`;
   }
   function rows(records) {
-    return `<div class="native-table-scroll"><table class="native-table history-table"><caption class="sr-only">History records</caption>
+    return `<div class="native-table-scroll"><table class="native-table history-table history-records"><caption class="sr-only">History records</caption>
       <thead><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Where</th><th scope="col">Text</th><th scope="col">Task</th></tr></thead>
       <tbody>${records.map(r => `<tr data-wb-key="rec:${esc(r.id)}"><td><time datetime="${esc(r.created)}">${esc(time(r.created))}</time></td><td><span class="badge">${esc(r.kind)}</span></td>
-        <td><b>${esc(r.host)}</b><small>${esc([r.harness, r.session].filter(Boolean).join(' · '))}</small></td>
+        <td><b>${esc(r.host)}</b><small>${esc([r.harness, r.session].filter(Boolean).join(' · '))}</small><small>${esc(r.source)} · ${esc(r.origin)}</small></td>
         <td class="history-text"><a href="${href(r.id)}">${esc(excerpt(r)) || '(empty)'}</a></td>
         <td>${r.task_id ? `<a href="#task/${encodeURIComponent(r.task_id)}">Task</a>` : '<small>Not linked</small>'}</td></tr>`).join('')}</tbody></table></div>`;
   }
