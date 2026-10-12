@@ -250,7 +250,7 @@ export function createOutline({ report }) {
       else control = `<input id="${fid}" class="${f === 'repo' ? '' : 'ol-mono'}" data-draft="${key}" data-save="${key}" value="${esc(val(key, mine ? own[f] : ''))}" placeholder="${esc(inherited || 'not set')}" autocomplete="off" spellcheck="false">${type === 'dir' ? button('browse', key, 'Browse…') : ''}`;
       const note = mine ? button('clear-field', key, 'Clear', 'subtle', ` aria-label="Clear ${label}, inherit instead"`) : `<span class="ol-src">${esc(sourceNote(r)) || 'not set'}</span>`;
       const problem = fieldErrors.get(key);
-      return `<div class="ol-field${mine ? '' : ' is-inherited'}" data-wb-key="f:${f}"><label for="${fid}">${label}</label><div class="ol-field-edit">${control}</div>${note}${problem ? `<p class="ol-error-text ol-field-error" role="alert">${esc(problem)}</p>` : ''}</div>`;
+      return `<div class="ol-field${mine ? '' : ' is-inherited'}${type === 'dir' ? ' is-wide' : ''}" data-wb-key="f:${f}"><label for="${fid}">${label}</label><div class="ol-field-edit">${control}</div>${note}${problem ? `<p class="ol-error-text ol-field-error" role="alert">${esc(problem)}</p>` : ''}</div>`;
     }).join('');
     const queue = (data.prompts || []).filter(p => p.task_id === id && ['queued', 'blocked', 'running'].includes(p.state)).sort((a, b) => a.position - b.position);
     const mode = res.queue_mode?.value || 'manual', modeNote = sourceNote(res.queue_mode);
@@ -330,9 +330,9 @@ export function createOutline({ report }) {
     if (!rows.length) return '<div class="ol-empty"><p>No tasks yet. Type one in the line above and press Enter.</p></div>';
     const open = rows.filter(t => model.tasks.get(t.id).status !== 'done').length;
     return `<p class="ol-dim ol-tasks-note">${open} open, ${rows.length - open} done. Archived tasks are in the Archive view.</p><ul class="ol-tasks">${rows.map(({ id, depth }) => {
-      const t = model.tasks.get(id), n = node(`task:${id}`), st = n?.stats || {}, done = t.status === 'done', kids = (n?.children || []).filter(c => c.kind === 'task').length, href = outlineHash(`task:${id}`);
+      const t = model.tasks.get(id), n = node(`task:${id}`), st = n?.stats || {}, done = t.status === 'done', kids = (n?.children || []).filter(c => c.kind === 'task').length, notes = t.notes?.length || 0, href = outlineHash(`task:${id}`);
       const facts = [st.unread ? `<b class="ol-unread">${st.unread} Unread</b>` : '', st.needs ? state('needs input', 'needs_input') : '', st.running ? state(`${st.running} running`, 'running') : '', st.queued ? `${st.queued} queued` : '', st.blocked ? state(`${st.blocked} blocked`, 'blocked') : '', done ? state('done') : ''].filter(Boolean).join(' ');
-      const confirm = confirming === `deltask:${id}` ? `<div class="ol-trow-confirm" role="alert"><p>Delete <b>${esc(t.title)}</b>? ${kids ? `Its ${plural(kids, 'subtask')} move up a level. ` : ''}Its prompts and runs are kept under No task.</p><span class="ol-trow-acts">${button('delete-task', id, 'Confirm delete', 'danger')}${button('keep', id, 'Keep')}</span></div>` : '';
+      const confirm = confirming === `deltask:${id}` ? `<div class="ol-trow-confirm" role="alert"><p>Delete <b>${esc(t.title)}</b>? ${notes ? `Its ${plural(notes, 'note')} ${notes === 1 ? 'is' : 'are'} deleted. ` : ''}${kids ? `Its ${plural(kids, 'subtask')} ${kids === 1 ? 'moves' : 'move'} up a level. ` : ''}Its prompts and runs are kept under No task.</p><span class="ol-trow-acts">${button('delete-task', id, 'Confirm delete', 'danger')}${button('keep', id, 'Keep')}</span></div>` : '';
       return `<li class="ol-trow${done ? ' is-done' : ''}" data-wb-key="tr:${esc(id)}" data-depth="${Math.min(depth, 8)}"><a class="ol-trow-title" href="${href}">${esc(t.title)}</a><span class="ol-trow-facts">${facts}</span><span class="ol-trow-acts"><a class="ol-trow-edit" href="${href}">Edit</a>${button('ask-delete-task', id, 'Delete', 'subtle')}${button('task-done', id, done ? 'Reopen' : 'Done', 'subtle', ` data-arg="${done ? 'open' : 'done'}"`)}</span>${confirm}</li>`;
     }).join('')}</ul>`;
   }

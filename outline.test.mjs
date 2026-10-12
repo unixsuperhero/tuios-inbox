@@ -241,3 +241,26 @@ test('deleting a task moves its subtasks up a level and its prompts and runs to 
   expect(o.panes.find(p => p.id === name).task_id).toBe(null);
   expect((await call('/tasks/' + mid.id, {}, 'DELETE')).status).toBeGreaterThanOrEqual(400);
 });
+
+test('a prompt that was sent does not report its own busy pane as a block', async () => {
+  const task = await json('/tasks', { title: 'Replies', repo });
+  const a = await pane('pane-reply', task.id);
+  const made = await json('/prompts', { body: 'reply one', target: a, run: true });
+  expect(made).toMatchObject({ ran: true, prompt: { state: 'running', pane_id: a, preflight: { blocks: [] } }, preflight: { blocks: [] } });
+  expect((await outline()).panes.find(p => p.id === a).ready).toBe(false);
+  expect((await promptOf(made.prompt.id)).preflight.blocks).toEqual([]);
+  const again = await call(`/prompts/${made.prompt.id}/run`, {});
+  expect(again.status).toBe(409);
+  expect((await again.json()).preflight.blocks).toEqual([]);
+  // The pane is still busy for every other prompt.
+  const next = await json('/prompts', { body: 'reply two', target: a });
+  expect(next.preflight.blocks.map(b => b.code)).toEqual(['pane_blocked']);
+  // Done, the prompt stays clean while its pane works on something else, but running it again is checked in full.
+  await turnDone('reply-1', a, 'reply one');
+  const other = await json('/prompts', { body: 'reply three', target: a, run: true });
+  expect(other).toMatchObject({ ran: true, preflight: { blocks: [] } });
+  expect(await promptOf(made.prompt.id)).toMatchObject({ state: 'done', preflight: { blocks: [] } });
+  const rerun = await call(`/prompts/${made.prompt.id}/run`, {});
+  expect(rerun.status).toBe(409);
+  expect((await rerun.json()).preflight.blocks.map(b => b.code)).toEqual(['pane_blocked']);
+});

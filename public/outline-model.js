@@ -41,10 +41,12 @@ export function pickPane(prompt, panes = []) {
  * @param {{prompt: object, resolved: object, panes?: object[], git?: object, profiles?: object[]}} input
  * @returns {{blocks: {code: string, message: string, fix: string}[], warns: {code: string, message: string}[]}}
  */
-export function preflight({ prompt, resolved, panes = [], git = null, profiles = [] }) {
-  const blocks = [], warns = [];
+// A prompt already sent has its place: the pane is busy with that very prompt, which is no block. `strict` is the moment of running, when every block counts.
+export function preflight({ prompt, resolved, panes = [], git = null, profiles = [], strict = false }) {
+  const blocks = [], warns = [], sent = !strict && ['running', 'done'].includes(prompt.state);
   if (!String(prompt.body || '').trim()) blocks.push({ code: 'no_text', message: 'No text to send', fix: 'body' });
-  if (prompt.target) {
+  if (sent) ;
+  else if (prompt.target) {
     const pane = panes.find(p => p.id === prompt.target);
     if (!pane || pane.state === 'closed') blocks.push({ code: 'pane_gone', message: 'Target pane is gone', fix: 'target' });
     else if (pane.state === 'needs_input') blocks.push({ code: 'pane_blocked', message: 'Target pane is waiting on its own question', fix: 'target' });

@@ -700,7 +700,7 @@ async function sendPrompt(key, paneId) {
 // Running is the only strict moment: every block is named, the prompt is kept as blocked, and nothing is typed.
 async function runPrompt(key, prefer = null) {
   const p = promptFor(key), ctx = outlineContext(), resolved = resolveFields(p, ctx.byId), repo = resolved.repo.value;
-  const pf = preflight({ prompt: p, resolved, panes: ctx.panes, git: await gitFacts(repo, resolved.branch.value), profiles: ctx.profiles });
+  const pf = preflight({ prompt: p, resolved, panes: ctx.panes, git: await gitFacts(repo, resolved.branch.value), profiles: ctx.profiles, strict: true });
   if (pf.blocks.length) { run("UPDATE prompts SET state='blocked',error=?,updated=? WHERE id=?", pf.blocks.map(b => b.message).join('; '), now(), p.id); changed(); return { ran: false, preflight: pf }; }
   const pane = p.target ? ctx.panes.find(x => x.id === p.target) : ctx.panes.find(x => x.id === prefer && x.ready && x.kind === 'agent') || pickPane(p, ctx.panes);
   run("UPDATE prompts SET state='running',error='',pane_id=?,head_before=?,ran=?,updated=? WHERE id=?", pane?.id || '', await gitHead(repo), now(), now(), p.id);

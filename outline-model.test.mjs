@@ -209,3 +209,14 @@ test('the open item stays in the rail once read, at the head of its pane stack',
   const closed = railTree(data, new Set(['run:r6'])).find(g => g.id === 'a').items.map(i => i.id);
   expect(closed).toEqual(['run:r2', 'run:r5', 'run:r6']);
 });
+
+test('a sent prompt does not report its own pane being busy; the moment of running stays strict', () => {
+  const busy = [{ id: 'p1', task_id: 'child', kind: 'agent', state: 'working', ready: false }];
+  for (const state of ['running', 'done']) {
+    expect(pf({ body: 'x', task_id: 'child', target: 'p1', pane_id: 'p1', state }, busy).blocks).toEqual([]);
+    expect(pf({ body: 'x', task_id: 'loose', pane_id: 'p1', state }, busy).blocks).toEqual([]);
+  }
+  for (const state of ['queued', 'blocked', 'errored']) expect(pf({ body: 'x', task_id: 'child', target: 'p1', state }, busy).blocks.map(b => b.code)).toEqual(['pane_blocked']);
+  expect(preflight({ prompt: { body: 'x', task_id: 'child', target: 'p1', state: 'done' }, resolved: resolve({ task_id: 'child' }, tasks), panes: busy, profiles, strict: true }).blocks.map(b => b.code)).toEqual(['pane_blocked']);
+  expect(pf({ body: ' ', task_id: 'child', target: 'p1', state: 'running' }, busy).blocks.map(b => b.code)).toEqual(['no_text']);
+});

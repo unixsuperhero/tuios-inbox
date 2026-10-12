@@ -5,6 +5,10 @@
   display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 28vw, 408px); min-width: 0; min-height: 0; height: 100%; background: var(--paper); font-size: 14px; }
 #outline-root :is(h1, h2, h3, p, ul, ol, dl, dd, pre) { margin: 0; }
 #outline-root :is(ul, ol) { padding: 0; list-style: none; }
+/* Rendered Markdown keeps its lists: the reset above outranks markdown.css. */
+#outline-root .md :is(ul, ol) { margin: 0 0 12px; padding-left: 22px; list-style: revert; }
+#outline-root .md li > :is(ul, ol) { margin: 2px 0; }
+#outline-root .md li.task { list-style: none; }
 #outline-root kbd { font: 11.5px/1.5 var(--mono); padding: 0 4px; margin-left: 8px; border: 1px solid var(--line); border-radius: 2px; color: var(--muted); }
 #outline-root kbd + kbd { margin-left: 2px; }
 #outline-root button { min-height: 34px; padding: 6px 12px; }
@@ -184,6 +188,10 @@
 .ol-field-edit { display: flex; gap: 6px; min-width: 0; }
 .ol-field-edit :is(input, select) { flex: 1; min-width: 0; }
 .ol-field-edit button { flex: none; white-space: nowrap; }
+/* A path needs the whole row: the label and its source sit above, the input and Browse below. */
+.ol-field.is-wide > label { grid-area: 1 / 1; }
+.ol-field.is-wide > .ol-field-edit { grid-area: 2 / 1 / auto / -1; }
+.ol-field.is-wide > :is(.ol-src, button) { grid-area: 1 / 2 / auto / -1; justify-self: end; max-width: none; }
 .ol-field.is-inherited :is(input, select) { color: var(--ol-dim); border-color: var(--line); }
 .ol-field.is-inherited :is(input, select):focus { color: var(--ink); }
 .ol-src { font-size: 12.5px; color: #93a5b2; max-width: 130px; overflow-wrap: anywhere; }
