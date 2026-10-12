@@ -81,9 +81,9 @@ export function openCollector(options = {}) {
 
   // A failed lookup keeps the last known panes for that session and is reported, never swallowed.
   async function refreshAgents() {
-    const errors = [], names = new Set(sessions), map = new Map();
-    try { for (const s of await tuiosJson(tuiosBin, ['list-sessions'])) names.add(s.name); }
-    catch (error) { errors.push(`list-sessions: ${error.message}`); }
+    const errors = [], names = new Set(), map = new Map();
+    try { for (const s of await tuiosJson(tuiosBin, ['list-sessions'])) names.add(s.name); sessions = names; }
+    catch (error) { errors.push(`list-sessions: ${error.message}`); for (const session of sessions) names.add(session); }
     for (const session of names) {
       try { for (const a of (await tuiosJson(tuiosBin, ['list-agents', '-s', session])).agents || []) map.set(a.window_id, { ...a, session }); }
       catch (error) {

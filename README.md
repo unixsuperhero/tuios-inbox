@@ -258,6 +258,8 @@ One central server holds the searchable **History**. Each execution user and nat
 
 **What is collected.** The collector follows `tuios subscribe` from a saved `(boot_id, seq)` cursor and rescans transcripts every 5 seconds. Each file has a saved offset, so a scan reads only what was appended, and a replaced or truncated file records a `gap` and is read again from the start. Roots are read from these locations, and a missing root is reported, not hidden:
 
+Live pane association uses the current native session inventory. Replayed events for closed sessions remain archived without retaining those sessions as failing health-check targets; genuine native lookup failures still appear in collector health.
+
 | Harness | Root | Honors |
 | --- | --- | --- |
 | Claude Code (`claude-code`) | `~/.claude/projects`, including `*/*/subagents/*.jsonl` | `CLAUDE_CONFIG_DIR` |
