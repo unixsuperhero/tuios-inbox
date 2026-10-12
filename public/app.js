@@ -66,8 +66,9 @@ let route, page, list, terminalPane = null, refreshTimer, refreshVersion = 0;
 const routeKey = r => r?.kind === 'tuios' ? r.view === 'overview' ? 'tuios-overview' : `tuios/${r.session || ''}/${r.workspace || ''}/${r.window || ''}` : r?.kind === 'outline' ? 'outline' : r?.kind === 'index' ? r.page : r?.kind === 'queue' ? `queue/${r.bucket}/${r.item || ''}` : `${r?.kind}/${r?.id}`;
 function parseRoute(hash) {
   const path = hash.replace(/^#\/?/, '');
-  const outlineView = /^(?:outline(?:\/([\w-]+))?)?$/.exec(path);
-  if (outlineView) return { kind: 'outline', view: outlineView[1] || 'everything' };
+  // #outline/needs-me/<task id> is the review queue of one task; the page is the same one, so it never remounts.
+  const outlineView = /^(?:outline(?:\/([\w-]+)(?:\/([^/]+))?)?)?$/.exec(path);
+  if (outlineView && (!outlineView[2] || outlineView[1] === 'needs-me')) { try { return { kind: 'outline', view: outlineView[1] || 'everything', ...(outlineView[2] ? { task: decodeURIComponent(outlineView[2]) } : {}) }; } catch {} }
   if (path === 'tuios-overview') return { kind: 'tuios', view: 'overview' };
   const native = /^tuios(?:\/([^/]+)(?:\/(\d+)(?:\/([^/]+))?)?)?$/.exec(path);
   if (native) { try { return { kind: 'tuios', session: native[1] ? decodeURIComponent(native[1]) : undefined, workspace: native[2] ? Number(native[2]) : undefined, window: native[3] ? decodeURIComponent(native[3]) : undefined }; } catch {} }
@@ -78,7 +79,7 @@ function parseRoute(hash) {
   if (queue) { try { return { kind: 'queue', bucket: decodeURIComponent(queue[1]), item: queue[2] ? decodeURIComponent(queue[2]) : undefined }; } catch {} }
   return { kind: 'invalid' };
 }
-const routeHash = r => r.kind === 'outline' ? `#outline${r.view && r.view !== 'everything' ? '/' + r.view : ''}` : r.kind === 'tuios' ? r.view === 'overview' ? '#tuios-overview' : `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
+const routeHash = r => r.kind === 'outline' ? `#outline${r.view && r.view !== 'everything' ? '/' + r.view : ''}${r.view === 'needs-me' && r.task ? '/' + encodeURIComponent(r.task) : ''}` : r.kind === 'tuios' ? r.view === 'overview' ? '#tuios-overview' : `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
 function navigate(next) {
   const hash = routeHash(next);
   if (location.hash === hash) mount(next); else location.hash = hash;

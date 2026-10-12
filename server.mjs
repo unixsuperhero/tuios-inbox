@@ -656,12 +656,15 @@ async function promptView(p, ctx = outlineContext()) {
   const resolved = resolveFields(p, ctx.byId), git = await gitFacts(resolved.repo.value, resolved.branch.value);
   return { ...p, resolved, preflight: preflight({ prompt: p, resolved, panes: ctx.panes, git, profiles: ctx.profiles }) };
 }
+// The newest runs, plus every unarchived run still waiting to be read or answered however old it is: the review queue must not miss one.
+const outlineRunLimit = Number(process.env.TUIOS_INBOX_OUTLINE_RUNS) || 1000;
 async function outline() {
   const ctx = outlineContext();
   const tasks = await Promise.all(ctx.tasks.map(async t => { const resolved = resolveFields(t, ctx.byId); return { ...t, resolved, git: await gitFacts(resolved.repo.value, resolved.branch.value), notes: notesOf(t.id) }; }));
   const prompts = await Promise.all(all('SELECT * FROM prompts ORDER BY position,created').map(p => promptView(p, ctx)));
   const runs = all(`SELECT 'turn:'||t.id AS id, t.prompt_id, t.task_id, t.pane_id, COALESCE(NULLIF(a.name,''),t.pane_name) AS pane_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, COALESCE(a.host,'') AS host, t.state, t.unread, t.archived,
-    t.started, t.finished, substr(t.prompt,1,400) AS prompt, t.response<>'' AS response_captured, t.source, t.head_before, t.head_after, t.commits FROM turns t LEFT JOIN agents a ON a.id=t.pane_id ORDER BY t.started DESC LIMIT 1000`)
+    t.started, t.finished, substr(t.prompt,1,400) AS prompt, t.response<>'' AS response_captured, t.source, t.head_before, t.head_after, t.commits FROM turns t LEFT JOIN agents a ON a.id=t.pane_id
+    WHERE t.id IN (SELECT id FROM turns ORDER BY started DESC LIMIT ?) OR (t.archived=0 AND (t.unread=1 OR t.state='needs_input')) ORDER BY t.started DESC`, outlineRunLimit)
     .map(r => ({ ...r, unread: Boolean(r.unread), archived: Boolean(r.archived), response_captured: Boolean(r.response_captured), commits: JSON.parse(r.commits) }));
   return { defaults: DEFAULTS, tasks, prompts, runs, panes: ctx.panes, profiles: ctx.profiles };
 }

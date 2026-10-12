@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos } from './public/outline-model.js';
+import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, reviewItems } from './public/outline-model.js';
 
 const tasks = {
   root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2 },
@@ -81,4 +81,73 @@ test('omp todo calls replay into a final list', () => {
     call({ op: 'append', phase: 'B', items: ['four', 'gone'] }), call({ op: 'done', task: 'one' }), call({ op: 'done', phase: 'B' }),
     call({ op: 'rm', task: 'gone' }), call({ op: 'view' }), { type: 'title' },
   ])).toEqual([{ title: 'one', done: true }, { title: 'two', done: false }, { title: 'three', done: true }, { title: 'four', done: true }]);
+});
+
+const reviewData = () => ({
+  tasks: [
+    { id: 'p', title: 'Parser', parent_id: null }, { id: 'tok', title: 'Tokenizer', parent_id: 'p' }, { id: 'edge', title: 'Edge cases', parent_id: 'tok' },
+    { id: 'ui', title: 'UI', parent_id: null }, { id: 'old', title: 'Old', parent_id: null, archived: true },
+  ],
+  prompts: [
+    { id: 'pb', task_id: 'ui', state: 'blocked', body: 'blocked one', created: '2026-01-01T00:00:00Z', updated: '2026-01-09T00:00:00Z' },
+    { id: 'pq', task_id: 'ui', state: 'queued', body: 'queued', created: '2026-01-01T00:00:00Z' },
+    { id: 'pe', task_id: null, state: 'errored', body: 'errored', target: 'pane-a', created: '2026-01-02T00:00:00Z' },
+    { id: 'pdone', task_id: 'tok', state: 'done', body: 'done', created: '2026-01-01T00:00:00Z' },
+  ],
+  runs: [
+    { id: 'r-root', task_id: 'p', unread: true, state: 'done', started: '2026-01-05T00:00:00Z', finished: '2026-01-05T01:00:00Z' },
+    { id: 'r-edge', task_id: 'edge', unread: true, state: 'done', started: '2026-01-03T00:00:00Z', finished: '2026-01-03T01:00:00Z' },
+    { id: 'r-edge2', task_id: 'edge', unread: false, state: 'needs_input', started: '2026-01-04T00:00:00Z', finished: null },
+    { id: 'r-tok', task_id: 'ui', prompt_id: 'pdone', unread: true, state: 'done', started: '2026-01-08T00:00:00Z', finished: '2026-01-08T01:00:00Z' },
+    { id: 'r-read', task_id: 'p', unread: false, state: 'done', started: '2026-01-01T00:00:00Z', finished: '2026-01-01T01:00:00Z' },
+    { id: 'r-arch', task_id: 'p', unread: true, archived: true, state: 'done', started: '2026-01-01T00:00:00Z', finished: '2026-01-01T01:00:00Z' },
+    { id: 'r-oldtask', task_id: 'old', unread: true, state: 'done', started: '2026-01-01T00:00:00Z', finished: '2026-01-01T01:00:00Z' },
+    { id: 'r-b2', task_id: null, pane_id: 'pane-b-123456789', pane_name: '', unread: true, state: 'done', started: '2026-01-07T00:00:00Z', finished: '2026-01-07T01:00:00Z' },
+    { id: 'r-a', task_id: null, pane_id: 'pane-a', pane_name: 'stale name', unread: true, state: 'errored', started: '2026-01-06T00:00:00Z', finished: '2026-01-06T01:00:00Z' },
+    { id: 'r-b1', task_id: 'gone', pane_id: 'pane-b-123456789', pane_name: '', unread: true, state: 'done', started: '2026-01-01T12:00:00Z', finished: '2026-01-01T13:00:00Z' },
+  ],
+  panes: [{ id: 'pane-a', name: 'alpha' }],
+});
+const ids = rows => rows.map(r => r.id);
+const sorted = rows => rows.every((r, i) => !i || (rows[i - 1].oldest ?? rows[i - 1].at) <= (r.oldest ?? r.at));
+
+test('the review queue is at most three levels, each ordered oldest first', () => {
+  const q = reviewQueue(reviewData());
+  // No task holds the oldest item, so it leads; it is not pinned last.
+  expect(ids(q)).toEqual(['none', 'p', 'ui']);
+  expect(sorted(q)).toBe(true);
+  for (const g of q) {
+    expect(sorted(g.items) && sorted(g.groups)).toBe(true);
+    expect(g.count).toBe(reviewItems([g]).length);
+    expect(g.oldest).toBe(Math.min(...reviewItems([g]).map(i => i.at)));
+    for (const s of g.groups) { expect(s.groups).toBeUndefined(); expect(sorted(s.items)).toBe(true); expect(s.items.every(i => !i.items && !i.groups)).toBe(true); }
+  }
+  // Membership: unread or needs_input unarchived runs, blocked or errored prompts; nothing read, archived, queued or under an archived task.
+  expect(ids(reviewItems(q)).sort()).toEqual(['prompt:pb', 'prompt:pe', 'run:r-a', 'run:r-b1', 'run:r-b2', 'run:r-edge', 'run:r-edge2', 'run:r-root', 'run:r-tok'].sort());
+});
+
+test('deep descendants flatten to one level labelled with their path; root items sit beside the subgroups', () => {
+  const parser = reviewQueue(reviewData()).find(g => g.id === 'p');
+  expect(ids(parser.items)).toEqual(['run:r-root']);
+  // A run under a prompt follows its prompt's task, as the outline tree does: r-tok lands under Tokenizer, not UI.
+  expect(parser.groups.map(s => [s.id, s.title, ids(s.items)])).toEqual([['edge', 'Tokenizer / Edge cases', ['run:r-edge', 'run:r-edge2']], ['tok', 'Tokenizer', ['run:r-tok']]]);
+  expect([parser.count, parser.oldest]).toEqual([4, Date.parse('2026-01-03T01:00:00Z')]);
+});
+
+test('No task groups by pane, named by the live pane, else the run, else a short id', () => {
+  const none = reviewQueue(reviewData())[0];
+  expect(none.items).toEqual([]);
+  expect(none.groups.map(s => [s.title, ids(s.items)])).toEqual([['pane pane-b-1', ['run:r-b1', 'run:r-b2']], ['alpha', ['prompt:pe', 'run:r-a']]]);
+});
+
+test('a task filter keeps that task and all its descendants as the single top group', () => {
+  const q = reviewQueue(reviewData(), 'tok');
+  expect(q.map(g => [g.id, g.title, g.count, ids(g.items)])).toEqual([['tok', 'Tokenizer', 3, ['run:r-tok']]]);
+  expect(q[0].groups.map(s => [s.title, ids(s.items)])).toEqual([['Edge cases', ['run:r-edge', 'run:r-edge2']]]);
+  expect(ids(reviewItems(reviewQueue(reviewData(), 'p')))).toEqual(['run:r-root', 'run:r-edge', 'run:r-edge2', 'run:r-tok']);
+  expect(reviewQueue(reviewData(), 'missing')).toEqual([]);
+});
+
+test('a kept item stays in the queue after it is read', () => {
+  expect(ids(reviewItems(reviewQueue(reviewData(), 'p', new Set(['run:r-read']))))).toEqual(['run:r-read', 'run:r-root', 'run:r-edge', 'run:r-edge2', 'run:r-tok']);
 });

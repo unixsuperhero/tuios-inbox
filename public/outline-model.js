@@ -92,3 +92,52 @@ export function ompTodos(entries) {
   }
   return list.map(({ title, done }) => ({ title, done }));
 }
+
+const ms = value => Date.parse(value) || 0;
+const oldestFirst = (a, b) => (a.oldest ?? a.at) - (b.oldest ?? b.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+/**
+ * The Needs me review queue, never deeper than three levels: root task (or No task) -> subtask path (or pane) -> item.
+ * Items are unarchived runs that are unread or on a question, and prompts that are blocked or errored. Every level is
+ * ordered by its oldest waiting item. Descendants of any depth flatten to one level, titled with their path below the root.
+ * @param {{tasks?: object[], runs?: object[], prompts?: object[], panes?: object[]}} data the GET /api/outline payload
+ * @param {string|null} rootTaskId only this task and its descendants; it becomes the single level-1 group
+ * @param {Set<string>} keep item ids ('run:<id>', 'prompt:<id>') that stay listed even once read
+ * @returns {{id: string, title: string, count: number, oldest: number|null, items: object[], groups: {id: string, title: string, count: number, oldest: number|null, items: object[]}[]}[]}
+ */
+export function reviewQueue({ tasks = [], runs = [], prompts = [], panes = [] } = {}, rootTaskId = null, keep = new Set()) {
+  const byId = new Map(tasks.map(t => [t.id, t])), promptById = new Map(prompts.map(p => [p.id, p])), paneById = new Map(panes.map(p => [p.id, p]));
+  const chain = id => { const out = [], seen = new Set(); for (let t = byId.get(id); t && !seen.has(t.id); t = byId.get(t.parent_id)) { seen.add(t.id); out.unshift(t); } return out; };
+  const items = [];
+  for (const r of runs) {
+    const id = `run:${r.id}`, prompt = promptById.get(r.prompt_id);
+    if (keep.has(id) || !r.archived && (r.unread || r.state === 'needs_input')) items.push({ id, kind: 'run', rec: r, at: ms(r.finished) || ms(r.started), task_id: prompt ? prompt.task_id : r.task_id, pane_id: r.pane_id || '', pane_name: r.pane_name || '' });
+  }
+  for (const p of prompts) {
+    const id = `prompt:${p.id}`;
+    if (keep.has(id) || ['blocked', 'errored'].includes(p.state)) items.push({ id, kind: 'prompt', rec: p, at: ms(p.updated) || ms(p.created), task_id: p.task_id, pane_id: p.target || p.pane_id || '', pane_name: '' });
+  }
+  const tops = new Map();
+  const group = (map, id, title, extra) => { if (!map.has(id)) map.set(id, { id, title, count: 0, oldest: null, items: [], ...extra }); return map.get(id); };
+  for (const item of items) {
+    const path = chain(item.task_id);
+    if (path.some(t => t.archived) && !keep.has(item.id)) continue;
+    const start = rootTaskId == null ? 0 : path.findIndex(t => t.id === rootTaskId);
+    if (start < 0 || rootTaskId != null && !path.length) continue;
+    const top = path.length ? group(tops, path[start].id, path[start].title, { groups: new Map() }) : group(tops, 'none', 'No task', { groups: new Map() });
+    const below = path.slice(start + 1);
+    if (!path.length) group(top.groups, `pane:${item.pane_id}`, paneById.get(item.pane_id)?.name || item.pane_name || (item.pane_id ? `pane ${item.pane_id.slice(0, 8)}` : 'No pane'), { pane_id: item.pane_id }).items.push(item);
+    else if (below.length) group(top.groups, below.at(-1).id, below.map(t => t.title).join(' / ')).items.push(item);
+    else top.items.push(item);
+  }
+  const finish = g => {
+    g.items.sort(oldestFirst);
+    if (g.groups) g.groups = [...g.groups.values()].map(finish).sort(oldestFirst);
+    const all = [...g.items.map(i => i.at), ...(g.groups || []).map(s => s.oldest)];
+    g.count = g.items.length + (g.groups || []).reduce((n, s) => n + s.count, 0);
+    g.oldest = all.length ? Math.min(...all) : null;
+    return g;
+  };
+  return [...tops.values()].map(finish).sort(oldestFirst);
+}
+/** Every item of a review queue in reading order: each group's own items, then its subgroups' items. */
+export const reviewItems = groups => groups.flatMap(g => [...g.items, ...g.groups.flatMap(s => s.items)]);

@@ -205,3 +205,26 @@ test('with no pane at rest a run launches an agent in the repo and sends there',
   expect(await promptOf(prompt.id)).toMatchObject({ state: 'running', pane_id: 'launched-1' });
   expect((await outline()).panes.find(p => p.id === 'launched-1')).toMatchObject({ task_id: task.id, ready: false });
 });
+
+test('the outline lists every unread or waiting run, however old, beside the newest ones, each once', async () => {
+  // Its own server with a window of two runs, so four turns are enough to fall outside it.
+  const main = { home, base }, data = await mkdtemp(join(tmpdir(), 'outline-old-'));
+  const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
+  const port = socket.address().port; await new Promise(r => socket.close(r));
+  const second = Bun.spawn([process.execPath, 'server.mjs'], { cwd: import.meta.dir, stdout: 'pipe', stderr: 'inherit',
+    env: { ...process.env, PORT: String(port), TUIOS_INBOX_OUTLINE_RUNS: '2', TUIOS_INBOX_DATA: data, TUIOS_INBOX_SPOOL: join(data, 'events'), TUIOS_BIN: join(main.home, 'tuios'), TUIOS_INBOX_GH: join(main.home, 'gh'), TUIOS_INBOX_COLLECTORS: join(data, 'none.json'), PI_CODING_AGENT_DIR: join(data, 'omp') } });
+  try {
+    const reader = second.stdout.getReader(); expect(new TextDecoder().decode((await reader.read()).value)).toContain('listening on'); reader.releaseLock();
+    home = data; base = `http://127.0.0.1:${port}`;
+    for (const name of ['old-unread', 'old-read', 'new-a', 'new-b']) { await turnDone('t-' + name, 'pane-' + name, 'ask ' + name); await Bun.sleep(15); }
+    const byPrompt = async () => new Map((await outline()).runs.map(r => [r.prompt, r]));
+    const before = await byPrompt();
+    expect([...before.keys()].sort()).toEqual(['ask new-a', 'ask new-b', 'ask old-read', 'ask old-unread']);
+    expect((await call('/turns/' + encodeURIComponent(before.get('ask old-read').id.replace(/^turn:/, '')), { unread: false }, 'PATCH')).status).toBe(200);
+    const o = await outline(), prompts = o.runs.map(r => r.prompt);
+    expect(prompts).toEqual(['ask new-b', 'ask new-a', 'ask old-unread']);
+    expect(new Set(o.runs.map(r => r.id)).size).toBe(o.runs.length);
+    expect(o.runs.find(r => r.prompt === 'ask old-unread')).toMatchObject({ unread: true, archived: false });
+    expect(Object.keys(o).sort()).toEqual(['defaults', 'panes', 'profiles', 'prompts', 'runs', 'tasks']);
+  } finally { ({ home, base } = main); second.kill(); await second.exited; await rm(data, { recursive: true, force: true }); }
+});

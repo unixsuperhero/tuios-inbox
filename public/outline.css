@@ -106,6 +106,16 @@
   .ol-keys, .ol-capture-hint { display: none; }
 }
 
+/* review queue: the Needs me view. Root task or No task, then subtask path or pane, then the item; never deeper. */
+#outline-root.is-review { --ol-cols: 150px 88px 82px 72px; }
+#outline-root .ol-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 10px 16px 0; padding: 5px 12px; border: 1px solid var(--line); border-radius: 2px; font-size: 13.5px; }
+#outline-root .ol-filter[hidden] { display: none; }
+.ol-rq-only { flex: none; font-size: 12.5px; white-space: nowrap; }
+.ol-line.is-sub { color: var(--ink); }
+.ol-line.is-sub .ol-text { font-weight: 600; }
+.ol-next { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+#outline-root .ol-review-link { margin: 8px 0 2px; }
+
 /* detail */
 .ol-detail { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 22px 20px 48px; border-left: 1px solid var(--line); scrollbar-width: thin; scrollbar-color: var(--control-line) transparent; }
 .ol-detail-empty { display: grid; gap: 8px; padding-top: 60px; color: var(--muted); max-width: 44ch; }
@@ -196,5 +206,7 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
   #outline-root .ol-rowlink { min-height: 44px; align-items: center; }
   .ol-field { grid-template-columns: minmax(0, 1fr) auto; }
   .ol-field > label { grid-column: 1 / -1; }
+  #outline-root .ol-filter { margin: 0; border-width: 1px 0 0; }
+  .ol-filter a, .ol-rq-only, .ol-review-link a { display: inline-flex; align-items: center; min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .ol-twist svg { transition: none; } }

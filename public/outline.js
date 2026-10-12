@@ -4,10 +4,13 @@
 import { api, esc, agentName } from '/pages.js';
 import { patchHTML } from '/workbench.js';
 import { markdown } from '/markdown.js';
+import { reviewQueue, reviewItems } from '/outline-model.js';
+import { nextAfter, waitingFor } from '/queue-model.js';
 
 const VIEWS = { everything: 'Everything', 'needs-me': 'Needs me', running: 'Running', queued: 'Queued', 'no-task': 'No task', archive: 'Archive' };
 const TASK_FIELDS = [['repo', 'Repo', 'dir'], ['branch', 'Branch', 'text'], ['session', 'Home session', 'text'], ['workspace', 'Home workspace', 'text'], ['harness', 'Harness', 'harness'], ['model', 'Model', 'text'], ['queue_mode', 'Queue mode', 'mode']];
 const RUN_CAP = 3, DONE_CAP = 3;
+const COLS = '<span></span><span>Queue</span><span>State</span><span>Unread</span><span>Branch</span><span>Pull request</span>', REVIEW_COLS = '<span></span><span>Pane</span><span>State</span><span>Unread</span><span>Waiting</span>';
 const when = value => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const oneLine = text => String(text ?? '').trim().split('\n')[0];
@@ -22,19 +25,23 @@ export function createOutline({ report }) {
 <header class="ol-head"><h1 id="ol-title">Everything</h1><p class="ol-keys"><kbd>n</kbd> new line <kbd>j</kbd><kbd>k</kbd> move <kbd>Tab</kbd> indent task <kbd>Enter</kbd> open</p></header>
 <form class="ol-capture" id="ol-capture" autocomplete="off"><span class="ol-chip" id="ol-chip"></span><input id="ol-capture-input" aria-label="New task, or a prompt when it starts with &gt;" aria-describedby="ol-capture-hint" placeholder="A task, or > a prompt" maxlength="16000" enterkeyhint="done"><span class="ol-capture-hint" id="ol-capture-hint">Enter saves · Cmd+Enter runs a prompt</span></form>
 <div id="ol-notice" class="ol-notice" hidden></div>
-<div class="ol-cols" aria-hidden="true"><span></span><span>Queue</span><span>State</span><span>Unread</span><span>Branch</span><span>Pull request</span></div>
+<p id="ol-filter" class="ol-filter" hidden></p>
+<div class="ol-cols" id="ol-cols" aria-hidden="true">${COLS}</div>
 <div id="ol-tree" class="ol-tree" role="tree" tabindex="0" aria-label="Tasks, prompts and runs"></div>
 </div>
 <aside id="ol-detail" class="ol-detail" aria-label="Selected line"></aside>`;
   shell.append(root);
   const $ = s => root.querySelector(s);
-  const tree = $('#ol-tree'), detail = $('#ol-detail'), capture = $('#ol-capture-input'), noticeEl = $('#ol-notice'), chip = $('#ol-chip');
+  const tree = $('#ol-tree'), detail = $('#ol-detail'), capture = $('#ol-capture-input'), noticeEl = $('#ol-notice'), chip = $('#ol-chip'), filterEl = $('#ol-filter'), colsEl = $('#ol-cols');
 
   let active = false, view = 'everything', data = null, loadError = '', stale = true, version = 0;
   let selected = null, destCleared = false, detailOpen = false, confirming = null, notice = null, noticeTimer;
   const collapsed = new Set(), expanded = new Set(), showAll = new Set(), drafts = new Map(), busy = new Set(), bodies = new Map(), fieldErrors = new Map();
   let model = { roots: [], index: new Map(), lines: [], tasks: new Map(), order: [] };
   let writes = Promise.resolve();
+  // Needs me is a review queue, not the tree: at most three levels, oldest first. `held` is the item being read, which
+  // stays listed after it is marked read until the selection moves on.
+  let filterTask = null, held = null, review = { lines: [], index: new Map(), items: [], total: 0 };
 
   const supports = r => r?.kind === 'outline';
 
@@ -87,6 +94,7 @@ export function createOutline({ report }) {
     return null;
   }
   function isOpen(n) {
+    if (n.kind === 'rgroup') return !collapsed.has(n.key);
     if (!n.children.length) return false;
     if (expanded.has(n.key)) return true;
     if (collapsed.has(n.key)) return false;
@@ -117,6 +125,22 @@ export function createOutline({ report }) {
     return out;
   }
   const node = key => model.index.get(key);
+  function buildReview(full) {
+    const groups = reviewQueue(data || {}, filterTask, new Set(held ? [held] : [])), index = new Map(), lines = [];
+    const put = (n, parent) => { n.parent = parent; index.set(n.key, n); return n; };
+    const leaf = (item, depth, parent) => put({ ...full.index.get(item.id), depth, children: [], item }, parent);
+    const walk = n => { lines.push(n); if (isOpen(n)) n.children.forEach(walk); };
+    for (const g of groups) {
+      const top = put({ key: `rq:${g.id}`, kind: 'rgroup', depth: 0, group: g, ref: g.id === 'none' ? 'none' : `task:${g.id}` }, null);
+      top.children = [...g.items.map(i => leaf(i, 1, top)), ...g.groups.map(s => {
+        const sub = put({ key: `rq:${g.id}/${s.id}`, kind: 'rgroup', depth: 1, group: s, ref: 'pane_id' in s ? null : `task:${s.id}` }, top);
+        sub.children = s.items.map(i => leaf(i, 2, sub)); return sub;
+      })];
+      walk(top);
+    }
+    return { lines, index, items: reviewItems(groups), total: filterTask || held ? reviewItems(reviewQueue(data || {})).length : reviewItems(groups).length };
+  }
+  const lineNode = key => review.index.get(key) || node(key);
   const taskOf = key => { const n = node(key); return !n ? null : n.kind === 'task' ? n.rec.id : n.kind === 'none' ? null : model.tasks.has(n.rec.task_id) ? n.rec.task_id : null; };
   const destination = () => destCleared ? null : taskOf(selected);
   const sourceNote = (r, tasks = model.tasks) => !r || r.from === 'none' ? 'not set' : r.from === 'self' ? '' : r.from === 'default' ? '(default)' : `(from ${tasks.get(r.from)?.title || 'parent'})`;
@@ -154,8 +178,28 @@ export function createOutline({ report }) {
     const sel = n.key === selected;
     return `<div class="ol-line is-${n.kind}${sel ? ' is-selected' : ''}${unread ? ' is-unread' : ''}${n.kind === 'task' && r.status === 'done' ? ' is-done' : ''}" id="ol-${esc(n.key)}" data-key="${esc(n.key)}" role="treeitem" aria-level="${n.depth + 1}" aria-selected="${sel}"${has ? ` aria-expanded="${open}"` : ''} data-depth="${Math.min(n.depth, 8)}"><div class="ol-main">${twist}${mark}<span class="ol-text">${text}</span>${tags}</div>${facts}</div>`;
   }
+  function reviewLineHTML(n) {
+    const sel = n.key === selected, age = at => at ? waitingFor({ updated: new Date(at).toISOString() }) : '';
+    const row = (cls, main, facts, extra = '') => `<div class="ol-line ${cls}${sel ? ' is-selected' : ''}" id="ol-${esc(n.key)}" data-key="${esc(n.key)}" role="treeitem" aria-level="${n.depth + 1}" aria-selected="${sel}"${extra} data-depth="${n.depth}"><div class="ol-main">${main}</div>${facts}</div>`;
+    if (n.kind === 'rgroup') {
+      const g = n.group, open = isOpen(n), top = n.depth === 0, pane = 'pane_id' in g, items = top ? reviewItems([g]) : g.items;
+      const unread = items.filter(i => i.kind === 'run' && i.rec.unread && !i.rec.archived).length, needs = items.some(i => i.rec.state === 'needs_input');
+      const title = pane ? agentName(g.title, g.pane_id) : g.title;
+      const twist = `<button type="button" class="ol-twist" tabindex="-1" data-act="twist" data-id="${esc(n.key)}" aria-label="${open ? 'Collapse' : 'Expand'}"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>`;
+      const mark = pane ? '<span class="ol-mark ol-mark-run">pane</span>' : `<span class="ol-mark ol-mark-${g.id === 'none' ? 'none' : 'task'}"></span>`;
+      const only = top && g.id !== 'none' && !filterTask ? `<a class="ol-rq-only" href="#outline/needs-me/${encodeURIComponent(g.id)}">Only this task</a>` : '';
+      return row(`is-rgroup ${top ? g.id === 'none' ? 'is-none' : 'is-task' : 'is-sub'}`, `${twist}${mark}<span class="ol-text" title="${esc(title)}">${esc(title)}</span><span class="ol-tag">${plural(g.count, 'item')}</span>${only}`,
+        fact('Pane', '') + fact('State', needs ? state('needs input', 'needs_input') : '') + fact('Unread', unread ? `<b class="ol-unread">${unread} Unread</b>` : '') + fact('Waiting', `oldest ${esc(age(g.oldest))}`), ` aria-expanded="${open}"`);
+    }
+    const r = n.rec, run = n.kind === 'run', unread = run && r.unread && !r.archived, paneId = n.item.pane_id, pane = (data.panes || []).find(p => p.id === paneId);
+    const text = run ? esc(oneLine(r.prompt)) || 'typed in pane' : esc(oneLine(r.body)) || '<i>empty prompt</i>';
+    const where = run ? `<span class="ol-mono">${esc(r.harness)}</span>${'pane_id' in n.parent.group ? '' : ` ${esc(agentName(r.pane_name, r.pane_id || ''))}`}` : paneId && !('pane_id' in n.parent.group) ? esc(agentName(pane?.name, paneId)) : '';
+    return row(`is-${n.kind}${unread ? ' is-unread' : ''}`, `<span class="ol-twist-gap"></span>${run ? '<span class="ol-mark ol-mark-run">run</span>' : '<span class="ol-mark" aria-label="Prompt">&gt;</span>'}<span class="ol-text">${text}</span>`,
+      fact('Pane', where) + fact('State', state(r.state)) + fact('Unread', unread ? '<b class="ol-unread">Unread</b>' : '') + fact('Waiting', esc(age(n.item.at))));
+  }
   function treeHTML() {
     if (!data) return loadError ? `<div class="ol-empty"><p>The outline could not be loaded: ${esc(loadError)}</p><button type="button" data-act="retry">Try again</button></div>` : '<p class="ol-empty" role="status">Loading the outline…</p>';
+    if (view === 'needs-me') return model.lines.map(reviewLineHTML).join('') || '<p class="ol-empty" role="status">Nothing is waiting for you.</p>';
     const empty = !data.tasks.length && !data.prompts.length && !data.runs.length;
     if (empty) return `<div class="ol-empty"><p>Nothing here yet. Type a line above and press Enter. It is saved as it is; nothing else is asked.</p>
 <div class="ol-line is-task is-example" data-depth="0"><div class="ol-main"><span class="ol-twist-gap"></span><span class="ol-text">Fix the parser</span><span class="ol-tag">example · plain text makes a task</span></div></div>
@@ -181,6 +225,12 @@ export function createOutline({ report }) {
   const runRow = r => `<li data-wb-key="rr:${esc(r.id)}"><button type="button" class="ol-rowlink${r.unread ? ' is-unread' : ''}" data-act="select" data-id="run:${esc(r.id)}"><span class="ol-mono">${esc(r.harness)}</span> ${state(r.state)} <span>${r.commits?.length ? plural(r.commits.length, 'commit') : ''}</span> ${r.unread ? '<b class="ol-unread">Unread</b>' : ''} <span class="ol-mono ol-dim">${esc(when(r.finished || r.started))}</span></button></li>`;
   const queueRows = (prompts, taskId) => prompts.length ? `<ol class="ol-list">${prompts.map((p, i) => `<li data-wb-key="q:${esc(p.id)}"><button type="button" class="ol-rowlink" data-act="select" data-id="prompt:${esc(p.id)}"><span class="ol-mark">&gt;</span> <span class="ol-clip">${esc(oneLine(p.body)) || 'empty prompt'}</span> ${state(p.state)}</button>${i ? button('earlier', p.id, 'Earlier', 'subtle', ` data-before="${esc(prompts[i - 1].id)}" data-task="${esc(taskId || '')}"`) : ''}</li>`).join('')}</ol>` : '<p class="ol-dim">No prompts waiting.</p>';
   const head = (kind, extra = '') => `<div class="ol-detail-head"><button type="button" class="ol-back" data-act="back">Back to outline</button><p class="ol-kind">${kind}${extra}</p></div>`;
+  // In the review queue the open item names its place and offers the next oldest one.
+  const nextBar = key => {
+    const i = view === 'needs-me' ? review.items.findIndex(x => x.id === key) : -1; if (i < 0) return '';
+    return `<div class="ol-next" data-wb-key="next"><span class="ol-dim">${i + 1} of ${review.items.length} waiting, oldest first</span>${button('next', key, 'Next', '', nextAfter(review.items, key) ? '' : ' disabled')}</div>`;
+  };
+  const waitingCount = taskId => reviewItems(reviewQueue(data || {}, taskId)).length;
 
   function taskDetail(n) {
     const t = n.rec, id = t.id, own = t.own || {}, res = t.resolved || {}, parent = model.tasks.get(t.parent_id);
@@ -202,7 +252,7 @@ export function createOutline({ report }) {
     const gitFacts = g.state === 'none' ? '<p class="ol-dim">No repo is set for this task.</p>' : g.state === 'not_a_repo' ? `<p class="ol-dim">${esc(res.repo?.value || 'The directory')} is not a git repository.</p>` : `<dl class="ol-dl"><dt>HEAD</dt><dd class="ol-mono">${esc(g.head || 'unknown')}${g.sha ? ` <span class="ol-dim">${esc(String(g.sha).slice(0, 7))}</span>` : ''}</dd><dt>Working tree</dt><dd>${g.dirty ? 'uncommitted changes' : 'clean'}</dd><dt>Pull request</dt><dd>${g.pr ? `<a href="${esc(g.pr.url)}" target="_blank" rel="noreferrer">PR ${esc(g.pr.number)}</a> ${state(g.pr.state, 'plain')} ${state(g.pr.checks === 'none' ? 'no checks' : `checks ${g.pr.checks}`, g.pr.checks)}` : g.pr_loading ? 'Checking…' : g.pr_state === 'unavailable' ? 'Not available: gh could not be reached' : 'None for this branch'}</dd></dl>${g.commits?.length ? `<ul class="ol-list ol-commits">${g.commits.map(c => `<li><span class="ol-mono">${esc(String(c.sha).slice(0, 7))}</span> <span class="ol-clip">${esc(c.subject)}</span> <span class="ol-mono ol-dim">${esc(when(c.at))}</span></li>`).join('')}</ul>` : ''}`;
     const notes = (t.notes || []).map(note => `<li>${esc(typeof note === 'string' ? note : note.body ?? note.text ?? JSON.stringify(note))}${note?.created ? ` <span class="ol-mono ol-dim">${esc(when(note.created))}</span>` : ''}</li>`).join('');
     return head('Task', (t.source === 'omp-todo' ? ' · from omp todo' : '') + (t.archived ? ' · archived' : '')) +
-      `<div class="ol-title-row" data-wb-key="title"><label class="ol-visually-hidden" for="olf-title">Title</label><input id="olf-title" class="ol-title-input" data-draft="task:${esc(id)}:title" data-save="task:${esc(id)}:title" value="${esc(val(`task:${id}:title`, t.title))}" maxlength="200"></div>
+      `<div class="ol-title-row" data-wb-key="title"><label class="ol-visually-hidden" for="olf-title">Title</label><input id="olf-title" class="ol-title-input" data-draft="task:${esc(id)}:title" data-save="task:${esc(id)}:title" value="${esc(val(`task:${id}:title`, t.title))}" maxlength="200"></div>${waitingCount(id) ? `<p class="ol-review-link" data-wb-key="review"><a href="#outline/needs-me/${encodeURIComponent(id)}">Review unread (${waitingCount(id)})</a></p>` : ''}
 <div class="ol-inline" data-wb-key="meta"><label>Status<select data-save="task:${esc(id)}:status">${options(['open', 'active', 'done'].map(s => [s, s]), t.status)}</select></label><label>Move under<select data-save="task:${esc(id)}:parent_id">${options([['', 'Top level'], ...taskOptions(subtreeIds(n))], t.parent_id || '')}</select></label></div>` +
       section('facts', 'Facts', `<p class="ol-dim ol-sec-note">${parent ? `Empty fields are inherited from ${esc(parent.title)}.` : 'Empty fields fall back to the app defaults.'}</p>${rows}`) +
       section('queue', `Queue <span class="ol-count">${queue.length}</span>`, `${queueRows(queue, id)}<p class="ol-dim ol-sec-note">${mode === 'auto' ? 'Auto: each next prompt runs when the pane comes to rest; start the first with Run next. A blocked prompt holds the queue.' : 'Manual: nothing runs until you press Run.'}${modeNote ? ` ${esc(modeNote)}` : ''}</p>`, `${modeSwitch}${button('run-next', id, 'Run next', 'primary', queue.some(p => p.state === 'queued') ? '' : ' disabled')}`) +
@@ -229,7 +279,7 @@ export function createOutline({ report }) {
     const blocks = pf.blocks.length ? `<ul class="ol-checks">${pf.blocks.map(b => `<li data-wb-key="b:${esc(b.code)}"><p><b class="ol-state s-blocked">Block</b> ${esc(b.message)}</p><div class="ol-fix">${fix(b)}</div></li>`).join('')}</ul>` : '<p class="ol-dim">Nothing blocks this prompt.</p>';
     const warns = pf.warns.length ? `<ul class="ol-checks">${pf.warns.map(w => `<li><p><b class="ol-state s-pending">Warning</b> ${esc(w.message)}</p></li>`).join('')}</ul>` : '<p class="ol-dim">No warnings.</p>';
     const runs = n.children.map(c => c.rec), del = confirming === `delete:${id}`;
-    return head('Prompt', ` · ${state(p.state)}`) +
+    return head('Prompt', ` · ${state(p.state)}`) + nextBar(`prompt:${id}`) +
       `<div data-wb-key="body"><label for="olf-body">Prompt text</label><textarea id="olf-body" rows="6" data-draft="prompt:${esc(id)}:body" data-save="prompt:${esc(id)}:body" maxlength="16000" placeholder="What should the agent do?">${esc(val(`prompt:${id}:body`, p.body))}</textarea>${p.error ? `<p class="ol-error-text">Last attempt: ${esc(p.error)}</p>` : ''}</div>
 <div class="ol-inline" data-wb-key="where"><label>Task<select data-save="prompt:${esc(id)}:task_id">${options([['', 'No task'], ...taskOptions()], taskId)}</select></label><label>Target pane<select data-save="prompt:${esc(id)}:target">${options(paneOptions(p.target), p.target)}</select></label></div>
 <div class="ol-inline" data-wb-key="how"><label>Harness${harnessSelect(`prompt:${id}:harness`, p.harness, res.harness, 'olf-harness')}</label><label>Model<input class="ol-mono" data-draft="prompt:${esc(id)}:model" data-save="prompt:${esc(id)}:model" value="${esc(val(`prompt:${id}:model`, p.model))}" placeholder="${esc(res.model?.value ? `${res.model.value} ${sourceNote(res.model)}` : 'harness default')}" autocomplete="off" spellcheck="false"></label></div>
@@ -242,7 +292,7 @@ export function createOutline({ report }) {
     const r = n.rec, id = r.id, body = bodies.get(id), pane = (data.panes || []).find(p => p.id === r.pane_id), taskId = model.tasks.has(r.task_id) ? r.task_id : '';
     const waiting = r.state === 'needs_input' || pane?.state === 'needs_input', prompt = model.prompts.get(r.prompt_id), turn = body?.data;
     const provenance = [r.source ? `Source: ${r.source}` : 'Source not recorded', r.response_captured === false ? 'response not captured' : '', prompt ? '' : 'typed straight into the pane'].filter(Boolean).join(' · ');
-    return head('Run', ` · ${state(r.state)}${r.unread ? ' · <b class="ol-unread">Unread</b>' : ''}`) +
+    return head('Run', ` · ${state(r.state)}${r.unread ? ' · <b class="ol-unread">Unread</b>' : ''}`) + nextBar(`run:${id}`) +
       `<dl class="ol-dl" data-wb-key="facts"><dt>Harness</dt><dd class="ol-mono">${esc(r.harness)}</dd><dt>Pane</dt><dd>${pane ? `<a href="#agent/${encodeURIComponent(pane.id)}">${esc(agentName(r.pane_name, r.pane_id || ''))}</a>` : `${esc(agentName(r.pane_name, r.pane_id || ''))} <span class="ol-dim">(closed)</span>`} <span class="ol-mono ol-dim">${esc(r.host || '')}</span></dd><dt>Started</dt><dd class="ol-mono">${esc(when(r.started))}</dd><dt>Finished</dt><dd class="ol-mono">${esc(when(r.finished)) || 'not yet'}</dd><dt>Capture</dt><dd>${esc(provenance)}</dd></dl>
 ${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a question and will not be typed at. <a href="#item/${encodeURIComponent(id)}">Read and answer the question</a></p>` : ''}
 <div class="ol-inline" data-wb-key="tools"><label>Task<select data-save="run:${esc(id)}:task_id">${options([['', 'No task'], ...taskOptions()], taskId)}</select></label><div class="ol-actions">${button('unread', id, r.unread ? 'Mark read' : 'Mark unread', '', ` data-arg="${r.unread ? '' : '1'}"`)}${button('archive-run', id, r.archived ? 'Unarchive' : 'Archive', '', ` data-arg="${r.archived ? '' : '1'}"`)}</div></div>` +
@@ -252,7 +302,7 @@ ${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a 
       `<form class="ol-reply" data-wb-key="reply" data-reply-run="${esc(id)}"><label for="olf-reply">Reply <small>a new prompt for the same pane${taskId ? `, under ${esc(model.tasks.get(taskId).title)}` : ''}</small></label><textarea id="olf-reply" rows="3" data-draft="reply:${esc(id)}" maxlength="16000" placeholder="Follow up…">${esc(val(`reply:${id}`, ''))}</textarea><div class="ol-actions"><button class="primary" type="submit"${dis(`reply:${id}`)}${waiting ? ' disabled' : ''}>Send reply</button><span class="ol-dim">Cmd+Enter sends</span></div></form>`;
   }
   function detailHTML() {
-    const n = selected && node(selected);
+    const n = selected && (node(selected) || node(review.index.get(selected)?.ref));
     if (!data || !n) return `<div class="ol-detail-empty"><p>Select a line to see its facts, queue and output.</p><p class="ol-dim">A task is never required. Lines without one stay under No task.</p></div>`;
     return n.kind === 'task' ? taskDetail(n) : n.kind === 'none' ? noneDetail(n) : n.kind === 'prompt' ? promptDetail(n) : runDetail(n);
   }
@@ -262,8 +312,15 @@ ${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a 
     if (!active) return;
     const full = build();
     model = { ...full, lines: [] };
-    if (selected && !full.index.has(selected)) { selected = null; detailOpen = false; }
-    model.lines = flatten(full.roots.map(n => prune(n)).filter(Boolean));
+    const rq = view === 'needs-me';
+    if (!rq || held !== selected) held = null;
+    review = rq || !data ? buildReview(full) : { lines: [], index: new Map(), items: [], total: reviewItems(reviewQueue(data)).length };
+    if (selected && !full.index.has(selected) && !review.index.has(selected)) { selected = null; detailOpen = false; }
+    model.lines = rq ? review.lines : flatten(full.roots.map(n => prune(n)).filter(Boolean));
+    root.classList.toggle('is-review', rq);
+    patchHTML(colsEl, rq ? REVIEW_COLS : COLS);
+    filterEl.hidden = !(rq && filterTask);
+    if (rq && filterTask) patchHTML(filterEl, `<span>Only <b>${esc(data ? full.tasks.get(filterTask)?.title || 'a task that no longer exists' : 'one task')}</b> and its subtasks</span><a href="#outline/needs-me">Show everything waiting</a>`);
     $('#ol-title').textContent = VIEWS[view];
     document.title = `tuios inbox · ${VIEWS[view]}`;
     patchHTML(tree, treeHTML());
@@ -276,6 +333,7 @@ ${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a 
     if (notice) patchHTML(noticeEl, `<p class="${notice.error ? 'is-error' : ''}" role="${notice.error ? 'alert' : 'status'}">${esc(notice.text)}</p><button type="button" class="subtle" data-act="dismiss">Dismiss</button>`);
     const counts = { 'needs-me': 0, running: 0, queued: 0, 'no-task': full.none.children.length };
     for (const n of full.index.values()) for (const v of ['needs-me', 'running', 'queued']) if (!((n.kind === 'run' || n.kind === 'task') && n.rec.archived) && matchers[v](n)) counts[v]++;
+    counts['needs-me'] = review.total;
     for (const link of document.querySelectorAll('[data-outline-view]')) {
       const on = link.dataset.outlineView === view; link.classList.toggle('active', on);
       if (on) link.setAttribute('aria-current', 'true'); else link.removeAttribute('aria-current');
@@ -310,17 +368,18 @@ ${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a 
       finally { busy.delete(key); render(); }
     });
   }
-  function reveal(key) { for (let n = node(key)?.parent; n; n = n.parent) { collapsed.delete(n.key); if (!isOpen(n)) expanded.add(n.key); } }
+  function reveal(key) { for (let p = review.index.get(key)?.parent; p; p = p.parent) collapsed.delete(p.key); for (let n = node(key)?.parent; n; n = n.parent) { collapsed.delete(n.key); if (!isOpen(n)) expanded.add(n.key); } }
   function select(key, { open = false, scroll = false } = {}) {
     if (key !== selected) { selected = key; destCleared = false; confirming = null; }
     if (open) detailOpen = true;
+    held = view === 'needs-me' && review.index.get(key)?.item ? key : null;
     const n = node(key);
     if (n?.kind === 'run' && n.rec.unread && open) write(`read:${n.rec.id}`, () => api(`/turns/${turnId(n.rec.id)}`, { unread: false }, 'PATCH'));
     render();
     if (scroll) document.getElementById(`ol-${key}`)?.scrollIntoView({ block: 'nearest' });
   }
   function toggle(key, open) {
-    const n = node(key); if (!n?.children.length) return;
+    const n = lineNode(key); if (!n?.children.length) return;
     const next = open ?? !isOpen(n); collapsed.delete(key); expanded.delete(key);
     if (next !== isOpen(n)) (next ? expanded : collapsed).add(key);
     render();
@@ -368,6 +427,7 @@ ${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a 
   const acts = {
     select: id => { reveal(id); select(id, { open: true, scroll: true }); },
     twist: id => toggle(id),
+    next: id => { const next = nextAfter(review.items, id); if (next) acts.select(next); },
     'show-more': id => { showAll.add(id); render(); },
     retry: () => fetchOutline(),
     dismiss: () => { notice = null; render(); },
@@ -405,7 +465,7 @@ ${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a 
     const b = e.target.closest('[data-act]');
     if (b && root.contains(b)) { if (!b.disabled) acts[b.dataset.act]?.(b.dataset.id, b); return; }
     const line = e.target.closest('.ol-line[data-key]');
-    if (line) { select(line.dataset.key, { open: true }); if (matchMedia('(min-width: 761px)').matches) tree.focus({ preventScroll: true }); }
+    if (line) { if (e.target.closest('a')) return; select(line.dataset.key, { open: !line.classList.contains('is-rgroup') }); if (matchMedia('(min-width: 761px)').matches) tree.focus({ preventScroll: true }); }
   });
   root.addEventListener('input', e => {
     const key = e.target.dataset?.draft; if (key) drafts.set(key, e.target.value);
@@ -443,13 +503,19 @@ ${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a 
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'n' || e.key === '/') { e.preventDefault(); detailOpen = false; render(); capture.focus(); return; }
     const inTree = t === tree || t === document.body, lines = model.lines.filter(n => n.kind !== 'more'), i = lines.findIndex(n => n.key === selected);
-    const move = d => { const next = lines[Math.max(0, Math.min(lines.length - 1, i < 0 ? 0 : i + d))]; if (next) { e.preventDefault(); select(next.key, { scroll: true }); } };
+    const rq = view === 'needs-me';
+    // In the review queue j and k step over items only and open each one, which is what reads it.
+    const move = d => {
+      let next = lines[Math.max(0, Math.min(lines.length - 1, i < 0 ? 0 : i + d))];
+      if (rq) { next = null; for (let k = i < 0 ? 0 : i + d; k >= 0 && k < lines.length; k += i < 0 ? 1 : d) if (lines[k].kind !== 'rgroup') { next = lines[k]; break; } }
+      if (next) { e.preventDefault(); select(next.key, { scroll: true, open: rq }); }
+    };
     if (e.key === 'j') return move(1);
     if (e.key === 'k') return move(-1);
     if (!inTree) return;
     if (e.key === 'ArrowDown') return move(1);
     if (e.key === 'ArrowUp') return move(-1);
-    const n = node(selected); if (!n) return;
+    const n = rq ? review.index.get(selected) : node(selected); if (!n) return;
     if (e.key === 'ArrowLeft') { e.preventDefault(); if (isOpen(n)) toggle(n.key, false); else if (n.parent) select(n.parent.key, { scroll: true }); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); toggle(n.key, true); }
     else if (e.key === 'Enter') { e.preventDefault(); select(n.key, { open: true }); (detail.querySelector('input, textarea, select') || detail).focus(); }
@@ -461,7 +527,8 @@ ${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a 
     const was = active; active = supports(next);
     root.hidden = !active;
     if (!active) return;
-    if (next.view !== view) { view = next.view in VIEWS ? next.view : 'everything'; detailOpen = false; }
+    const task = next.view === 'needs-me' && next.task || null;
+    if (next.view !== view || task !== filterTask) { view = next.view in VIEWS ? next.view : 'everything'; filterTask = task; detailOpen = false; }
     render();
     if (!was || stale) fetchOutline().catch(report);
   }
