@@ -90,10 +90,10 @@ let lastError = '', boot = '', eventProcess;
 const listeners = new Set();
 const cliProcesses = new Set();
 function changed() { for (const listener of listeners) { try { listener.enqueue('data: changed\n\n'); } catch { listeners.delete(listener); } } }
-async function cli(args, timeout = 15000, json = true) {
+async function cli(args, timeout = 15000, json = true, cwd = undefined) {
   const argv = [...args];
   if (json && !argv.includes('--json')) argv.splice(argv.includes('--') ? argv.indexOf('--') : argv.length, 0, '--json');
-  const child = Bun.spawn([tuios, ...argv], { stdout: 'pipe', stderr: 'pipe', env: process.env });
+  const child = Bun.spawn([tuios, ...argv], { cwd, stdout: 'pipe', stderr: 'pipe', env: process.env });
   cliProcesses.add(child);
   const timer = setTimeout(() => child.kill(), timeout);
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -267,6 +267,17 @@ async function ensureSession(t) {
   if (t.session !== `inbox-${t.id?.slice(0, 8)}` || t.workspace != null) throw new Error('Task home is no longer available; select a live native home');
   await cli(['new', sessionName(t.session), '--detach'], 15000, false);
 }
+// Where the native daemon says a remote session already works: its focused window's directory, else any window's.
+async function remoteDirectory(session) {
+  const windows = rows(await cli(['list-windows', '-s', session]), 'windows');
+  const w = windows.find(x => x.focused && x.cwd) || windows.find(x => x.cwd);
+  if (!w) throw new Error(`Host session ${session} reports no working directory; open a window there first`);
+  return w.cwd;
+}
+// new-window cannot address a remote-owned session; start-agent can, and a plain shell is any program it runs.
+const remoteShell = async (session, workspace, name) => cli(['start-agent', '-s', session, '--name', name, '--grants', 'read,write', '--ready-timeout', '1000', '--cwd', await remoteDirectory(session), ...(workspace != null ? ['--workspace', String(workspace)] : []), 'sh']);
+// For a remote session, `cwd` is a LOCAL directory the native CLI runs in so it maps that repository on the host;
+// without one the agent starts where the remote session already works. For a local session it is the agent's directory.
 function startProfile(t, name, profileId, cwd, opts = {}) {
   const profile = one('SELECT * FROM profiles WHERE id=?', profileId); if (!profile) throw new Error('Profile not found');
   const tid = thread(t.id, null, `Starting ${name}`, 'system');
@@ -276,12 +287,13 @@ function startProfile(t, name, profileId, cwd, opts = {}) {
     try {
       if (t.session.includes(':') && Object.keys(JSON.parse(profile.env)).length) throw new Error('Profile environment does not cross machines; use a profile without env for another host');
       const args = ['start-agent', '-s', t.session, '--name', name, '--grants', 'read,write,fan', '--ready-timeout', '120000'];
-      if (cwd) args.push('--cwd', cwd);
+      const remote = t.session.includes(':');
+      if (remote ? !cwd || cwd === homedir() : cwd) args.push('--cwd', remote ? await remoteDirectory(t.session) : cwd);
       if (t.workspace != null) args.push('--workspace', String(t.workspace));
       if (profile.protocol) args.push('--protocol', profile.protocol);
       for (const [k,v] of Object.entries(JSON.parse(profile.env))) args.push('--env', `${k}=${v}`);
       args.push(profile.executable, '--', ...JSON.parse(profile.args), ...(opts.args || []));
-      const r = await cli(args, 130000);
+      const r = await cli(args, 130000, true, remote && cwd && cwd !== homedir() ? cwd : undefined);
       const paneId = r.window_id || r.id || r.window;
       if (!paneId) throw new Error(JSON.stringify(r));
       if (t.id) run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'agent', profile.id, r.outcome === 'window_closed' ? 'closed' : r.ready === false ? 'needs_input' : 'idle', r.agent_session_id || '');
@@ -299,6 +311,15 @@ function startProfile(t, name, profileId, cwd, opts = {}) {
 async function newShell(t, name, windowHost = null) {
   await ensureSession(t);
   const remote = t.session.includes(':') || Boolean(windowHost);
+  if (t.session.includes(':') && !windowHost) {
+    const r = await remoteShell(t.session, t.workspace, name);
+    const paneId = r.window_id;
+    if (!paneId) throw new Error(`Missing window id: ${JSON.stringify(r)}`);
+    run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'shell', null, 'idle', '');
+    seeAgent(paneId, { session: t.session, name, kind: 'shell', state: 'idle', task: t.id, host: r.host || t.session.split(':')[0] });
+    run('UPDATE agents SET session=? WHERE id=?', t.session, paneId);
+    changed(); return paneFor(paneId);
+  }
   const args = ['new-window', '-s', t.session, '--no-focus'];
   if (windowHost) args.push('--host', windowHost);
   if (!remote) args.push('--cwd', workingDirectory(t));
@@ -694,7 +715,7 @@ async function runPrompt(key, prefer = null) {
   background((async () => {
     try {
       await ensureSession(home);
-      startProfile({ id: t.id, session: home.session, workspace: home.workspace }, `${profile.id}-${p.id.slice(0, 6)}`, profile.id, home.session.includes(':') ? null : repo, { args: model ? ['--model', model] : [], after: async (paneId, r, failure) => {
+      startProfile({ id: t.id, session: home.session, workspace: home.workspace }, `${profile.id}-${p.id.slice(0, 6)}`, profile.id, repo, { args: model ? ['--model', model] : [], after: async (paneId, r, failure) => {
         if (!paneId) return failPrompt(p.id, failure || 'Agent did not start');
         if (r.ready !== true) { run("UPDATE prompts SET state='blocked',error=?,pane_id=?,updated=? WHERE id=?", 'The launched pane is not ready for input', paneId, now(), p.id); changed(); return; }
         try { await sendPrompt(p.id, paneId); } catch (e) { failPrompt(p.id, e.message); }
@@ -884,6 +905,10 @@ async function api(req, url) {
     if (action === 'kill-session') { args = ['kill-session', '--', target]; json = false; }
     if (action === 'name-workspace') { args = ['set-workspace-name', '-s', target, String(workspace), '--', label(body.name)]; json = false; }
     if (action === 'select-workspace' || action === 'close-workspace') args = [action, String(workspace), '-s', target];
+    if (action === 'create-window' && session.host !== 'local' && !(body.host && body.host !== 'local')) {
+      if (body.cwd) throw new Error('Directory picker paths are local; remote windows use their native default directory');
+      const r = await remoteShell(target, workspace, required(body.name, 'Window name', 120)); changed(); return response(r, 201);
+    }
     if (action === 'create-window') {
       args = ['new-window', '-s', target, '--workspace', String(workspace), '--no-focus'];
       if (body.cwd && (session.host !== 'local' || (body.host && body.host !== 'local'))) throw new Error('Directory picker paths are local; remote windows use their native default directory');
@@ -929,7 +954,7 @@ async function api(req, url) {
     if (action === 'create-agent') {
       const task = body.taskId ? taskFor(body.taskId) : null;
       if (body.cwd && session.host !== 'local') throw new Error('Directory picker paths are local; remote agents use their native default directory');
-      const cwd = session.host !== 'local' ? null : body.cwd ? await directory(body.cwd) : task ? workingDirectory(task) : homedir();
+      const cwd = session.host !== 'local' ? (task ? workingDirectory(task) : null) : body.cwd ? await directory(body.cwd) : task ? workingDirectory(task) : homedir();
       return response({ threadId: startProfile({ id: task?.id || null, session: target, workspace }, required(body.name, 'Agent name', 120), body.profileId, cwd) }, 202);
     }
     const result = await cli(args, 15000, json);
@@ -1008,6 +1033,16 @@ async function api(req, url) {
       }
       if (parts.length === 5 && method === 'DELETE') { run('DELETE FROM task_notes WHERE id=?', noteFor(t.id, parts[4]).id); changed(); return response({ ok: true }); }
     }
+    // Deleting a task loses nothing under it: subtasks move up a level; its prompts, runs and panes fall back to No task.
+    if (parts.length === 3 && method === 'DELETE') {
+      db.transaction(() => {
+        run('UPDATE tasks SET parent_id=? WHERE parent_id=?', t.parent_id ?? null, t.id);
+        for (const table of ['turns', 'agents', 'threads', 'prompts']) run(`UPDATE ${table} SET task_id=NULL WHERE task_id=?`, t.id);
+        run('DELETE FROM panes WHERE task_id=?', t.id);
+        run('DELETE FROM tasks WHERE id=?', t.id);
+      })();
+      changed(); return response({ ok: true });
+    }
     if (parts.length === 3 && method === 'PATCH') {
       if (body.notes !== undefined) throw new Error('Edit notes through /tasks/:id/notes');
       if (!['open', 'active', 'done'].includes(body.status || t.status)) throw new Error('Unknown task status');
@@ -1022,7 +1057,7 @@ async function api(req, url) {
       const plan = await launchPlan(t, body.host, body.kind === 'agent' ? 'agent' : 'shell');
       if (body.kind !== 'agent') return response(await newShell(plan.t, name, plan.windowHost), 201);
       if (plan.t === t) await ensureSession(t);
-      return response({ threadId: startProfile(plan.t, name, body.profileId, plan.t.session.includes(':') ? null : workingDirectory(t)) }, 202);
+      return response({ threadId: startProfile(plan.t, name, body.profileId, workingDirectory(t)) }, 202);
     }
     if (parts[3] === 'compose' && method === 'POST') {
       const p = agentFor(body.paneId); if (p.task_id !== t.id) throw new Error('Agent belongs to another task');

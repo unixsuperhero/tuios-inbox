@@ -228,3 +228,16 @@ test('the outline lists every unread or waiting run, however old, beside the new
     expect(Object.keys(o).sort()).toEqual(['defaults', 'panes', 'profiles', 'prompts', 'runs', 'tasks']);
   } finally { ({ home, base } = main); second.kill(); await second.exited; await rm(data, { recursive: true, force: true }); }
 });
+
+test('deleting a task moves its subtasks up a level and its prompts and runs to No task', async () => {
+  const top = await json('/tasks', { title: 'delete-top' }), mid = await json('/tasks', { title: 'delete-mid', parent_id: top.id }), leaf = await json('/tasks', { title: 'delete-leaf', parent_id: mid.id });
+  const { prompt } = await json('/prompts', { body: 'kept after delete', task_id: mid.id });
+  const name = await pane('delete-pane', mid.id);
+  expect((await call('/tasks/' + mid.id, {}, 'DELETE')).status).toBe(200);
+  const o = await outline();
+  expect(o.tasks.some(t => t.id === mid.id)).toBe(false);
+  expect(o.tasks.find(t => t.id === leaf.id).parent_id).toBe(top.id);
+  expect(o.prompts.find(p => p.id === prompt.id).task_id).toBe(null);
+  expect(o.panes.find(p => p.id === name).task_id).toBe(null);
+  expect((await call('/tasks/' + mid.id, {}, 'DELETE')).status).toBeGreaterThanOrEqual(400);
+});

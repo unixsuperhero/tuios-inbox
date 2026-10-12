@@ -5,7 +5,7 @@ import { createQueues } from '/queues.js';
 import { createTuios } from '/tuios.js';
 import { createHistory } from '/history.js';
 import { setupLaunchHost } from '/launch-host.js';
-import { createOutline } from '/outline.js';
+import { createOutline, outlineHash } from '/outline.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, esc, taskTree, editKey } from '/pages.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
@@ -67,6 +67,10 @@ const routeKey = r => r?.kind === 'tuios' ? r.view === 'overview' ? 'tuios-overv
 function parseRoute(hash) {
   const path = hash.replace(/^#\/?/, '');
   // #outline/needs-me/<task id> is the review queue of one task; the page is the same one, so it never remounts.
+  if (!path) return { kind: 'outline', view: 'tasks' };
+  // #outline/tasks is the task list; #outline/task/<id>, #outline/run/<turn id> and #outline/prompt/<id> open one line of the rail's tree.
+  const opened = /^outline\/(task|run|prompt)\/([^/]+)$/.exec(path);
+  if (opened) { try { const key = decodeURIComponent(opened[2]); return { kind: 'outline', view: 'open', sel: opened[1] === 'task' ? key === 'none' ? 'none' : `task:${key}` : opened[1] === 'run' ? `run:turn:${key}` : `prompt:${key}` }; } catch {} }
   const outlineView = /^(?:outline(?:\/([\w-]+)(?:\/([^/]+))?)?)?$/.exec(path);
   if (outlineView && (!outlineView[2] || outlineView[1] === 'needs-me')) { try { return { kind: 'outline', view: outlineView[1] || 'everything', ...(outlineView[2] ? { task: decodeURIComponent(outlineView[2]) } : {}) }; } catch {} }
   if (path === 'tuios-overview') return { kind: 'tuios', view: 'overview' };
@@ -79,7 +83,7 @@ function parseRoute(hash) {
   if (queue) { try { return { kind: 'queue', bucket: decodeURIComponent(queue[1]), item: queue[2] ? decodeURIComponent(queue[2]) : undefined }; } catch {} }
   return { kind: 'invalid' };
 }
-const routeHash = r => r.kind === 'outline' ? `#outline${r.view && r.view !== 'everything' ? '/' + r.view : ''}${r.view === 'needs-me' && r.task ? '/' + encodeURIComponent(r.task) : ''}` : r.kind === 'tuios' ? r.view === 'overview' ? '#tuios-overview' : `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
+const routeHash = r => r.kind === 'outline' && r.view === 'open' ? outlineHash(r.sel) : r.kind === 'outline' ? `#outline${r.view && r.view !== 'everything' ? '/' + r.view : ''}${r.view === 'needs-me' && r.task ? '/' + encodeURIComponent(r.task) : ''}` : r.kind === 'tuios' ? r.view === 'overview' ? '#tuios-overview' : `#tuios${r.session ? '/' + encodeURIComponent(r.session) : ''}${r.workspace ? '/' + r.workspace : ''}${r.window ? '/' + encodeURIComponent(r.window) : ''}` : r.kind === 'index' ? `#${r.page}` : r.kind === 'queue' ? `#queue/${encodeURIComponent(r.bucket)}${r.item ? '/' + encodeURIComponent(r.item) : ''}` : `#${r.kind}/${encodeURIComponent(r.id)}`;
 function navigate(next) {
   const hash = routeHash(next);
   if (location.hash === hash) mount(next); else location.hash = hash;
@@ -215,6 +219,9 @@ function mount(next) {
     const active = link.dataset.page === index; link.classList.toggle('active', active);
     if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   });
+  // Navigation, never a live refresh, opens More for a page that lives in it and closes the phone's tree sheet.
+  if (oldKey !== nextKey && $('#rail-more').querySelector(`[data-page="${index}"]`)) $('#rail-more').open = true;
+  document.body.classList.remove('rail-open'); $('#rail-toggle').setAttribute('aria-expanded', 'false');
   $('#section-name').textContent = (index || 'Unavailable').toUpperCase();
   $('#add-profile').hidden = index !== 'profiles';
   $('#inbox-composer').hidden = !(['task', 'agent'].includes(next.kind) || next.kind === 'index' && next.page === 'inbox');
@@ -599,6 +606,9 @@ document.addEventListener('submit', e => {
     updateMenus();
   });
 });
+$('#rail-toggle').addEventListener('click', () => $('#rail-toggle').setAttribute('aria-expanded', String(document.body.classList.toggle('rail-open'))));
+// A link to the page that is already open changes no hash; the phone's tree sheet still has to close.
+$('#rail-body').addEventListener('click', e => { if (e.target.closest('a')) { document.body.classList.remove('rail-open'); $('#rail-toggle').setAttribute('aria-expanded', 'false'); } });
 window.addEventListener('hashchange', () => {
   mount(parseRoute(location.hash));
   for (const context of [...creations.values()]) if (!ownerActive(context)) finishCreation(context, null);

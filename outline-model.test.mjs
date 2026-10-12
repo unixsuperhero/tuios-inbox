@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, reviewItems } from './public/outline-model.js';
+import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems } from './public/outline-model.js';
 
 const tasks = {
   root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2 },
@@ -150,4 +150,62 @@ test('a task filter keeps that task and all its descendants as the single top gr
 
 test('a kept item stays in the queue after it is read', () => {
   expect(ids(reviewItems(reviewQueue(reviewData(), 'p', new Set(['run:r-read']))))).toEqual(['run:r-read', 'run:r-root', 'run:r-edge', 'run:r-edge2', 'run:r-tok']);
+});
+
+const railData = () => ({
+  tasks: [
+    { id: 'a', title: 'Alpha', parent_id: null, status: 'open', archived: false, created: '2026-01-01' },
+    { id: 'a1', title: 'Lexer', parent_id: 'a', status: 'open', archived: false, created: '2026-01-02' },
+    { id: 'a2', title: 'Edge', parent_id: 'a1', status: 'open', archived: false, created: '2026-01-03' },
+    { id: 'b', title: 'Beta', parent_id: null, status: 'open', archived: false, created: '2026-01-04' },
+    { id: 'c', title: 'Quiet', parent_id: null, status: 'open', archived: false, created: '2026-01-05' },
+    { id: 'd', title: 'Finished', parent_id: null, status: 'done', archived: false, created: '2026-01-06' },
+    { id: 'z', title: 'Gone', parent_id: null, status: 'open', archived: true, created: '2026-01-07' },
+  ],
+  panes: [{ id: 'p1', name: 'worker', state: 'idle' }, { id: 'p2', name: 'reader', state: 'done' }, { id: 'p3', name: 'old', state: 'closed' }, { id: 'p4', name: 'edge', state: 'idle' }],
+  prompts: [{ id: 'q1', body: 'cannot run', task_id: 'b', target: 'p1', state: 'blocked', created: '2026-02-01T00:00:00Z', updated: '2026-02-01T00:00:00Z' }, { id: 'q2', body: 'waiting', task_id: 'b', state: 'queued', created: '2026-02-01T00:00:00Z' }],
+  runs: [
+    { id: 'r1', task_id: 'a', pane_id: 'p1', pane_name: 'worker', state: 'done', unread: true, started: '2026-03-01T10:00:00Z', finished: '2026-03-01T10:05:00Z', prompt: '\n  first thing  \nmore' },
+    { id: 'r2', task_id: 'a', pane_id: 'p1', pane_name: 'worker', state: 'idle', unread: true, started: '2026-03-01T11:00:00Z', finished: '2026-03-01T11:05:00Z', prompt: 'second' },
+    { id: 'r3', task_id: 'a', pane_id: 'p1', pane_name: 'worker', state: 'needs_input', unread: false, started: '2026-03-01T12:00:00Z', finished: null, prompt: 'third' },
+    { id: 'r0', task_id: 'a', pane_id: 'p1', pane_name: 'worker', state: 'done', unread: false, started: '2026-03-01T09:00:00Z', finished: '2026-03-01T09:05:00Z', prompt: 'zeroth' },
+    { id: 'r4', task_id: 'a', pane_id: 'p2', pane_name: 'reader', state: 'done', unread: false, started: '2026-03-01T08:00:00Z', finished: '2026-03-01T08:05:00Z', prompt: 'read early' },
+    { id: 'r5', task_id: 'a', pane_id: 'p2', pane_name: 'reader', state: 'done', unread: false, started: '2026-03-02T08:00:00Z', finished: '2026-03-02T08:05:00Z', prompt: 'read late' },
+    { id: 'r6', task_id: 'a', pane_id: 'p3', pane_name: 'old', state: 'done', unread: false, started: '2026-03-01T07:00:00Z', finished: '2026-03-01T07:05:00Z', prompt: 'closed pane' },
+    { id: 'r7', task_id: 'a2', pane_id: 'p4', pane_name: 'edge', state: 'done', unread: true, started: '2026-02-20T07:00:00Z', finished: '2026-02-20T07:05:00Z', prompt: 'deep' },
+    { id: 'r8', task_id: 'z', pane_id: 'p4', pane_name: 'edge', state: 'done', unread: true, started: '2026-02-01T07:00:00Z', finished: '2026-02-01T07:05:00Z', prompt: 'archived task' },
+    { id: 'r9', task_id: null, pane_id: 'p9', pane_name: 'stray', state: 'unknown', unread: true, started: '2026-01-10T07:00:00Z', finished: '2026-01-10T07:05:00Z', prompt: 'orphan' },
+    { id: 'r10', task_id: 'a', pane_id: 'p1', pane_name: 'worker', state: 'done', unread: true, archived: true, started: '2026-03-01T06:00:00Z', finished: '2026-03-01T06:05:00Z', prompt: 'archived run' },
+  ],
+});
+const shape = g => ({ id: g.id, unread: g.unread, items: g.items.map(i => [i.id, i.unread, i.word, i.newer.map(n => n.id)]) });
+
+test('the rail shows one entry per pane: the oldest waiting run, with the newer ones stacked behind it', () => {
+  const tree = railTree(railData()), alpha = tree.find(g => g.id === 'a');
+  expect(shape(alpha).items).toEqual([['run:r1', true, 'done', ['run:r2', 'run:r3']], ['run:r5', false, 'done', []]]);
+  expect(alpha.items[0]).toMatchObject({ summary: 'first thing', pane_name: 'worker', kind: 'run' });
+  expect(alpha.items[0].newer.map(n => n.word)).toEqual(['idle', 'needs input']);
+});
+
+test('the rail is three levels: descendants flatten under their root with a path title, and counts roll up', () => {
+  const alpha = railTree(railData()).find(g => g.id === 'a');
+  expect(alpha.groups.map(g => [g.id, g.title, g.unread])).toEqual([['a2', 'Lexer / Edge', 1]]);
+  expect(alpha.unread).toBe(4);
+  expect(alpha.oldest).toBe(Date.parse('2026-02-20T07:05:00Z'));
+});
+
+test('rail roots: unread first by oldest waiting, then open tasks by creation, done and archived left out, No task last', () => {
+  const tree = railTree(railData());
+  expect(tree.map(g => g.id)).toEqual(['b', 'a', 'c', 'none']);
+  expect(shape(tree[0]).items).toEqual([['prompt:q1', true, 'blocked', []]]);
+  expect(shape(tree.at(-1))).toEqual({ id: 'none', unread: 1, items: [['run:r9', true, 'ended', []]] });
+  expect(railTree({ tasks: railData().tasks })).toHaveLength(3);
+});
+
+test('the open item stays in the rail once read, at the head of its pane stack', () => {
+  const data = railData(); data.runs.find(r => r.id === 'r1').unread = false;
+  expect(shape(railTree(data).find(g => g.id === 'a')).items[0]).toEqual(['run:r2', true, 'idle', ['run:r3']]);
+  expect(shape(railTree(data, new Set(['run:r1'])).find(g => g.id === 'a')).items[0]).toEqual(['run:r1', false, 'done', ['run:r2', 'run:r3']]);
+  const closed = railTree(data, new Set(['run:r6'])).find(g => g.id === 'a').items.map(i => i.id);
+  expect(closed).toEqual(['run:r2', 'run:r5', 'run:r6']);
 });

@@ -141,3 +141,66 @@ export function reviewQueue({ tasks = [], runs = [], prompts = [], panes = [] } 
 }
 /** Every item of a review queue in reading order: each group's own items, then its subgroups' items. */
 export const reviewItems = groups => groups.flatMap(g => [...g.items, ...g.groups.flatMap(s => s.items)]);
+
+const stateWord = r => r.state === 'needs_input' ? 'needs input' : !r.state || r.state === 'none' || r.state === 'unknown' ? 'ended' : r.state;
+/**
+ * The left rail: open root tasks, their subtasks flattened to one level, and one entry per pane; never deeper than three levels.
+ * A pane with waiting runs (unread, or on a question) is one entry for the OLDEST of them; the newer waiting runs ride along
+ * in `newer`, oldest first. A pane with nothing waiting shows its latest run as a read entry while the pane is still open.
+ * Blocked and errored prompts are entries of their own. Archived runs and runs under an archived task are left out.
+ * Roots with something unread come first, oldest waiting first, then the rest by creation; No task comes last, only when it has entries.
+ * @param {{tasks?: object[], runs?: object[], prompts?: object[], panes?: object[]}} data the GET /api/outline payload
+ * @param {Set<string>} keep item ids ('run:<id>', 'prompt:<id>') that stay listed even once read: the item that is open
+ * @returns {{id: string, title: string, unread: number, oldest: number|null, items: object[], groups: {id: string, title: string, unread: number, oldest: number|null, items: object[]}[]}[]}
+ *   an item is {id, kind: 'run'|'prompt', rec, at, unread, word, summary, pane_id, pane_name, newer: item[]}
+ */
+export function railTree({ tasks = [], runs = [], prompts = [], panes = [] } = {}, keep = new Set()) {
+  const byId = new Map(tasks.map(t => [t.id, t])), promptById = new Map(prompts.map(p => [p.id, p])), paneById = new Map(panes.map(p => [p.id, p]));
+  const chain = id => { const out = [], seen = new Set(); for (let t = byId.get(id); t && !seen.has(t.id); t = byId.get(t.parent_id)) { seen.add(t.id); out.unshift(t); } return out; };
+  const summary = text => String(text ?? '').split('\n').map(l => l.trim()).find(Boolean) || '';
+  const owners = new Map(), owner = id => { if (!owners.has(id)) owners.set(id, { panes: new Map(), items: [] }); return owners.get(id); };
+  const place = (taskId, id) => { const path = chain(taskId); return path.some(t => t.archived) && !keep.has(id) ? null : owner(path.length ? path.at(-1).id : 'none'); };
+  const runItem = r => ({ id: `run:${r.id}`, kind: 'run', rec: r, at: ms(r.finished) || ms(r.started), unread: Boolean(r.unread) || r.state === 'needs_input', word: stateWord(r), summary: summary(r.prompt),
+    pane_id: r.pane_id || '', pane_name: paneById.get(r.pane_id)?.name || r.pane_name || '', newer: [] });
+  for (const r of runs) {
+    const id = `run:${r.id}`, prompt = promptById.get(r.prompt_id);
+    if (r.archived && !keep.has(id)) continue;
+    const o = place(prompt ? prompt.task_id : r.task_id, id); if (!o) continue;
+    const key = r.pane_id || id; if (!o.panes.has(key)) o.panes.set(key, []);
+    o.panes.get(key).push(runItem(r));
+  }
+  for (const o of owners.values()) for (const [key, list] of o.panes) {
+    const stack = list.filter(i => i.unread || keep.has(i.id)).sort(oldestFirst), pane = paneById.get(key);
+    if (stack.length) o.items.push({ ...stack[0], newer: stack.slice(1) });
+    else if (pane && pane.state !== 'closed') o.items.push(list.reduce((a, b) => String(b.rec.started) > String(a.rec.started) ? b : a));
+  }
+  for (const p of prompts) {
+    const id = `prompt:${p.id}`, waiting = ['blocked', 'errored'].includes(p.state);
+    if (!waiting && !keep.has(id)) continue;
+    place(p.task_id, id)?.items.push({ id, kind: 'prompt', rec: p, at: ms(p.updated) || ms(p.created), unread: waiting, word: p.state, summary: summary(p.body), pane_id: p.target || p.pane_id || '', pane_name: paneById.get(p.target || p.pane_id)?.name || '', newer: [] });
+  }
+  // Waiting entries first, oldest first; then what has been read, newest first.
+  const waits = i => i.unread || i.newer.some(n => n.unread);
+  const order = (a, b) => waits(b) - waits(a) || (waits(a) ? oldestFirst(a, b) : b.at - a.at || (a.id < b.id ? -1 : 1));
+  const node = (id, title) => {
+    const items = (owners.get(id)?.items || []).sort(order), waiting = items.flatMap(i => [i, ...i.newer]).filter(i => i.unread);
+    return { id, title, unread: waiting.length, oldest: waiting.length ? Math.min(...waiting.map(i => i.at)) : null, items };
+  };
+  const firstWaiting = (a, b) => (a.oldest == null) - (b.oldest == null) || (a.oldest ?? 0) - (b.oldest ?? 0);
+  const out = [], created = (a, b) => String(a.created) < String(b.created) ? -1 : String(a.created) > String(b.created) ? 1 : 0;
+  for (const root of tasks.filter(t => !byId.has(t.parent_id) && !t.archived).sort(created)) {
+    const top = { ...node(root.id, root.title), groups: [] };
+    for (const t of [...tasks].sort(created)) {
+      const path = chain(t.id); if (path.length < 2 || path[0].id !== root.id || !owners.get(t.id)?.items.length) continue;
+      top.groups.push(node(t.id, path.slice(1).map(x => x.title).join(' / ')));
+    }
+    top.groups.sort(firstWaiting);
+    const all = [top, ...top.groups].filter(g => g.oldest != null);
+    top.unread += top.groups.reduce((n, g) => n + g.unread, 0); top.oldest = all.length ? Math.min(...all.map(g => g.oldest)) : null;
+    if (root.status !== 'done' || top.items.length || top.groups.length) out.push(top);
+  }
+  out.sort(firstWaiting);
+  const none = { ...node('none', 'No task'), groups: [] };
+  if (none.items.length) out.push(none);
+  return out;
+}
