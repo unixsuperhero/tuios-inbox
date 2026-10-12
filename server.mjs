@@ -13,8 +13,25 @@ const dataDir = process.env.TUIOS_INBOX_DATA || join(homedir(), '.local/share/tu
 const spool = process.env.TUIOS_INBOX_SPOOL || join(dataDir, 'events');
 await mkdir(spool, { recursive: true, mode: 0o700 });
 const db = new Database(join(dataDir, 'inbox.sqlite'), { create: true });
+// SQLite runs on the event loop, so one slow statement freezes every request. Name the ones that do, and any other stall.
+const slowMs = Number(process.env.TUIOS_INBOX_SLOW_MS) || 250, wrapped = new WeakSet(), prepare = db.query.bind(db);
+db.query = sql => {
+  const q = prepare(sql);
+  if (!wrapped.has(q)) {
+    wrapped.add(q);
+    for (const m of ['all', 'get', 'run']) {
+      const call = q[m].bind(q);
+      q[m] = (...args) => { const t = performance.now(); try { return call(...args); } finally { const ms = performance.now() - t; if (ms > slowMs) console.log(`${new Date().toISOString()} slow sql ${Math.round(ms)}ms ${m}: ${sql.replace(/\s+/g, ' ').slice(0, 400)}`); } };
+    }
+  }
+  return q;
+};
+let loopTick = performance.now();
+setInterval(() => { const now = performance.now(), late = now - loopTick - 500; loopTick = now; if (late > 1000) console.log(`${new Date().toISOString()} event loop blocked ${Math.round(late)}ms`); }, 500).unref?.();
 await chmod(join(dataDir, 'inbox.sqlite'), 0o600);
-db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+// The history table makes this file gigabytes large; the default 8 MB page cache then re-reads it from disk on every statement.
+db.exec('PRAGMA cache_size=-262144; PRAGMA mmap_size=2147483648; PRAGMA temp_store=MEMORY;');
+db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, path TEXT NOT NULL, worktree TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open', session TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS task_notes (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, body TEXT NOT NULL, context INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL, updated TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS task_notes_task ON task_notes(task_id);
@@ -90,7 +107,24 @@ const active = new Map();
 let lastError = '', boot = '', eventProcess;
 const listeners = new Set();
 const cliProcesses = new Set();
-function changed() { for (const listener of listeners) { try { listener.enqueue('data: changed\n\n'); } catch { listeners.delete(listener); } } }
+// Every broadcast makes each open page refetch. A burst of writes is one change: count them all, tell the pages once.
+let version = 0, announce = null;
+function changed() {
+  version++;
+  announce ||= setTimeout(() => { announce = null; for (const listener of listeners) { try { listener.enqueue('data: changed\n\n'); } catch { listeners.delete(listener); } } }, 150);
+}
+// The two whole-page payloads are built once per change and answered with 304 while the page already has them.
+const payloads = new Map();
+async function cached(key, req, build) {
+  let hit = payloads.get(key);
+  if (!hit || hit.version !== version || Date.now() - hit.at > 3000) {
+    const at = Date.now(), seen = version, body = JSON.stringify(await build());
+    hit = { version: seen, at, body, etag: `"${Bun.hash(body).toString(36)}"` }; payloads.set(key, hit);
+  }
+  const headers = { 'Cache-Control': 'no-cache', ETag: hit.etag };
+  if (req.headers.get('if-none-match') === hit.etag) return new Response(null, { status: 304, headers });
+  return new Response(hit.body, { headers: { ...headers, 'Content-Type': 'application/json;charset=utf-8' } });
+}
 async function cli(args, timeout = 15000, json = true, cwd = undefined) {
   const argv = [...args];
   if (json && !argv.includes('--json')) argv.splice(argv.includes('--') ? argv.indexOf('--') : argv.length, 0, '--json');
@@ -839,7 +873,7 @@ const respondHint = process.env.TUIOS_PANE_ID
 async function api(req, url) {
   const parts = url.pathname.split('/').filter(Boolean), method = req.method;
   const body = method === 'POST' || method === 'PATCH' ? await req.json().catch(() => ({})) || {} : {};
-  if (url.pathname === '/api/outline' && method === 'GET') return response(await outline());
+  if (url.pathname === '/api/outline' && method === 'GET') return cached('outline', req, outline);
   if (url.pathname === '/api/git/refresh' && method === 'POST') {
     const ctx = outlineContext(), t = ctx.byId.get(body.task_id); if (!t) throw new Error('Task not found');
     const r = resolveFields(t, ctx.byId), git = await gitFacts(r.repo.value, r.branch.value, true);
@@ -1006,10 +1040,10 @@ async function api(req, url) {
     }
     changed(); return response(typeof result === 'string' ? { ok: true, output: result } : result);
   }
-  if (url.pathname === '/api/state') return response({ tasks: all('SELECT * FROM tasks ORDER BY created DESC').map(t => ({ ...t, notes: notesOf(t.id) })), panes: all("SELECT p.*,a.session,COALESCE(a.host,'') AS host FROM panes p LEFT JOIN agents a ON a.id=p.id"), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), agents: all('SELECT * FROM agents ORDER BY seen DESC'), items: all(`
+  if (url.pathname === '/api/state') return cached('state', req, () => ({ tasks: all('SELECT * FROM tasks ORDER BY created DESC').map(t => ({ ...t, notes: notesOf(t.id) })), panes: all("SELECT p.*,a.session,COALESCE(a.host,'') AS host FROM panes p LEFT JOIN agents a ON a.id=p.id"), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), agents: all('SELECT * FROM agents ORDER BY seen DESC'), items: all(`
     SELECT 'turn:'||t.id AS id, 'turn' AS type, substr(t.prompt,1,400) AS title, t.pane_id AS agent_id, COALESCE(a.name,t.pane_name) AS agent_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, t.task_id, t.state AS status, t.unread, t.archived, t.started AS created, COALESCE(t.finished,t.started) AS updated, t.response <> '' AS response_captured FROM turns t LEFT JOIN agents a ON a.id=t.pane_id
     UNION ALL SELECT 'thread:'||t.id, CASE WHEN t.kind IN ('agent','shell') THEN 'dispatch' WHEN t.kind='hook' THEN 'snapshot' ELSE t.kind END, t.subject, t.pane_id, COALESCE(a.name,''), COALESCE(a.harness,''), t.task_id, COALESCE((SELECT status FROM messages WHERE thread_id=t.id ORDER BY rowid DESC LIMIT 1),''), t.unread, t.archived, t.created, t.updated, 0 FROM threads t LEFT JOIN agents a ON a.id=t.pane_id
-    ORDER BY updated DESC LIMIT 2000`), lastError, boot, dataDir });
+    ORDER BY updated DESC LIMIT 2000`), lastError, boot, dataDir }));
   if (url.pathname === '/api/items/update' && method === 'POST') return response({ ok: true, updated: updateItems(idList(body.ids), body.set) });
   if (url.pathname === '/api/tasks/update' && method === 'POST') {
     const ids = idList(body.ids), set = body.set || {}, fields = [], args = [];
