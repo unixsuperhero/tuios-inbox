@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { mkdir, readdir, unlink, stat, chmod } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, resolve, isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { captureTurn } from './scripts/turn.mjs';
 import { createHistory } from './scripts/history.mjs';
@@ -625,7 +626,7 @@ async function pullHistory() {
   return collectorPull;
 }
 // ---- Task-first outline: prompts, queues, runs and git facts ----
-const ghBin = process.env.TUIOS_INBOX_GH || 'gh';
+const ghBin = process.env.TUIOS_INBOX_GH || 'gh', openBin = process.env.TUIOS_INBOX_OPEN || '/usr/bin/open';
 const tilde = value => typeof value === 'string' ? value.replace(/^~(?=\/|$)/, homedir()) : value;
 function text(value, name, max, trim = true) {
   if (value === undefined || value === null) return '';
@@ -1035,6 +1036,27 @@ async function api(req, url) {
       if (!code) path = text.trim() || null;
     } catch {}
     return response({ path });
+  }
+  // Opens a document a run reported with the OS default app. Only an existing regular .md file ever reaches the opener, as one argv entry.
+  if (url.pathname === '/api/open-file' && method === 'POST') {
+    let path = tilde(required(body.path, 'Path', 4000));
+    if (/^file:\/\//i.test(path)) path = fileURLToPath(path);
+    if (!isAbsolute(path)) {
+      // A relative path is read against the repo of the run's task: its prompt's task when it ran from a prompt.
+      const turn = one('SELECT task_id,prompt_id FROM turns WHERE id=?', String(body.turn ?? '').replace(/^turn:/, '')), prompt = turn?.prompt_id && one('SELECT task_id FROM prompts WHERE id=?', turn.prompt_id);
+      const ctx = outlineContext(), task = ctx.byId.get(prompt ? prompt.task_id : turn?.task_id), repo = task && resolveFields(task, ctx.byId).repo.value;
+      if (!repo) throw new Error(`${path} is a relative path and this run's task has no repo to read it against`);
+      path = join(repo, path);
+    }
+    path = resolve(path);
+    if (!/\.md$/i.test(path)) throw new Error('Only .md files can be opened');
+    const info = await stat(path).catch(() => null);
+    if (!info) throw new Error(`File not found: ${path}`);
+    if (!info.isFile()) throw new Error(`Not a regular file: ${path}`);
+    const child = Bun.spawn([openBin, path], { stdout: 'ignore', stderr: 'pipe' });
+    const [err, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    if (code) throw new Error(err.trim() || `The file could not be opened (exit ${code})`);
+    return response({ ok: true, path });
   }
   if (url.pathname === '/api/profiles' && method === 'POST') {
     const key = body.id || id(); const name = required(body.name, 'Name', 120), executable = required(body.executable, 'Executable', 500);

@@ -33,12 +33,14 @@ beforeAll(async () => {
   const fake = join(home, 'tuios'), gh = join(home, 'gh');
   await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" "$(printf '\\001')" >> '${log}'\ncase "$1" in start-agent) echo '{"window_id":"launched-1","ready":true}';; *) echo '{}';; esac\n`);
   await Bun.write(gh, `#!/bin/sh\ncase "$3" in main) echo '{"number":42,"state":"OPEN","url":"https://example.test/pr/42","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE"}]}';; nopr) echo 'no pull requests found for branch "nopr"' >&2; exit 1;; *) echo 'could not connect' >&2; exit 1;; esac\n`);
-  await chmod(fake, 0o755); await chmod(gh, 0o755);
+  // The opener only records what it was handed; no test ever starts the real `open`.
+  await Bun.write(join(home, 'open'), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${join(home, 'open.log')}'\n`);
+  await chmod(fake, 0o755); await chmod(gh, 0o755); await chmod(join(home, 'open'), 0o755);
   const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
   base = `http://127.0.0.1:${port}`;
   child = Bun.spawn([process.execPath, 'server.mjs'], { cwd: import.meta.dir, stdout: 'pipe', stderr: 'inherit',
-    env: { ...process.env, PORT: String(port), TUIOS_INBOX_DATA: home, TUIOS_INBOX_SPOOL: join(home, 'events'), TUIOS_BIN: fake, TUIOS_INBOX_GH: gh, TUIOS_INBOX_COLLECTORS: join(home, 'none.json'), PI_CODING_AGENT_DIR: join(home, 'omp') } });
+    env: { ...process.env, PORT: String(port), TUIOS_INBOX_DATA: home, TUIOS_INBOX_SPOOL: join(home, 'events'), TUIOS_BIN: fake, TUIOS_INBOX_GH: gh, TUIOS_INBOX_OPEN: join(home, 'open'), TUIOS_INBOX_COLLECTORS: join(home, 'none.json'), PI_CODING_AGENT_DIR: join(home, 'omp') } });
   const reader = child.stdout.getReader();
   expect(new TextDecoder().decode((await reader.read()).value)).toContain('listening on');
   reader.releaseLock();
@@ -299,5 +301,96 @@ test('a turn left open is settled from its pane: closed when the pane is gone or
     const again = await outline();
     expect(again.runs.filter(r => r.state === 'working').map(r => r.prompt)).toEqual(['ask live']);
     expect(again.runs.find(r => r.prompt === 'ask gone').finished).toBe(runs.get('ask gone').finished);
+  } finally { ({ home, base } = main); second.kill(); await second.exited; await rm(data, { recursive: true, force: true }); }
+});
+
+test('a reported document is opened only when it is an existing regular .md file, from a same-origin JSON request', async () => {
+  const opened = async () => (await Bun.file(join(home, 'open.log')).text().catch(() => '')).split('\n').filter(Boolean);
+  const refused = async (body, word) => { const res = await call('/open-file', body); expect(res.status).toBe(400); expect((await res.json()).error).toContain(word); };
+  await Bun.write(join(repo, 'notes.md'), '# notes'); await Bun.write(join(repo, 'notes.txt'), 'x'); await mkdir(join(repo, 'dir.md'));
+  await refused({ path: join(repo, 'notes.txt') }, 'Only .md files');
+  await refused({ path: join(repo, 'missing.md') }, 'File not found');
+  await refused({ path: join(repo, 'dir.md') }, 'Not a regular file');
+  await refused({}, 'Path is required');
+  await refused({ path: 'notes.md' }, 'relative path');
+  for (const headers of [{ 'Content-Type': 'application/json' }, { 'X-Inbox-Request': '1' }]) expect((await fetch(base + '/api/open-file', { method: 'POST', headers, body: JSON.stringify({ path: join(repo, 'notes.md') }) })).status).toBe(403);
+  expect(await opened()).toEqual([]);
+  // An absolute path and a file:// URL open as they are; a relative one is read against the repo of the run's task.
+  const real = (await sh(repo, 'pwd', '-P')) + '/notes.md';
+  expect(await json('/open-file', { path: join(repo, 'notes.md') })).toMatchObject({ ok: true });
+  expect(await json('/open-file', { path: 'file://' + join(repo, 'notes.md') })).toMatchObject({ ok: true });
+  const task = await json('/tasks', { title: 'Docs', repo }), a = await pane('pane-docs', task.id);
+  const run = (await outline()).runs.find(r => r.pane_id === a);
+  expect(await json('/open-file', { path: './notes.md', turn: run.id })).toMatchObject({ ok: true });
+  await refused({ path: '../repo/notes.txt', turn: run.id }, 'Only .md files');
+  await refused({ path: 'notes.md', turn: 'turn:no-such-turn' }, 'relative path');
+  const log = await opened();
+  expect(log).toHaveLength(3);
+  for (const line of log) expect([real, join(repo, 'notes.md')]).toContain(line);
+});
+
+test('a closed pane ends its open turn at once, fails the prompt it was running, and a missed ending is read from the pane', async () => {
+  // Its own server and a TUIOS whose event stream is a file the test appends to. Every pane but `missed` is listed as working,
+  // so only an event can end its turn; `missed` is at rest on a turn whose closing event never came.
+  const main = { home, base }, data = await mkdtemp(join(tmpdir(), 'outline-events-')), fake = join(data, 'tuios'), stream = join(data, 'stream.jsonl');
+  const working = ['ev-exit', 'ev-closed', 'ev-run'].map(w => ({ window_id: w, agent_state: { state: 'working' } }));
+  await Bun.write(stream, '');
+  await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" "$(printf '\\001')" >> '${join(data, 'calls.log')}'\ncase "$1" in subscribe) exec tail -n +1 -f '${stream}';;
+list-windows) echo '${JSON.stringify({ windows: [...working, { window_id: 'missed', agent_state: { state: 'done' } }] })}';;
+list-agents) echo '${JSON.stringify({ agents: [{ window_id: 'missed', name: 'missed', state: 'done', harness_id: 'omp', agent_session_id: 'sess-missed', meta: { prompt: 'ask missed' } }] })}';;
+*) echo '{}';; esac\n`);
+  await chmod(fake, 0o755);
+  const say = (role, content) => JSON.stringify({ type: 'message', message: { role, content } });
+  await Bun.write(join(data, 'omp/sessions/proj/1_sess-missed.jsonl'), [say('user', 'ask missed'), say('assistant', [{ type: 'text', text: 'the recovered answer' }])].join('\n') + '\n');
+  const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
+  const port = socket.address().port; await new Promise(r => socket.close(r));
+  const second = Bun.spawn([process.execPath, 'server.mjs'], { cwd: import.meta.dir, stdout: 'pipe', stderr: 'inherit',
+    env: { ...process.env, PORT: String(port), TUIOS_INBOX_DATA: data, TUIOS_INBOX_SPOOL: join(data, 'events'), TUIOS_BIN: fake, TUIOS_INBOX_GH: join(main.home, 'gh'), TUIOS_INBOX_COLLECTORS: join(data, 'none.json'), PI_CODING_AGENT_DIR: join(data, 'omp') } });
+  try {
+    const reader = second.stdout.getReader(); expect(new TextDecoder().decode((await reader.read()).value)).toContain('listening on'); reader.releaseLock();
+    home = data; base = `http://127.0.0.1:${port}`;
+    const open = (name, prompt) => hook('open-' + name + prompt.length, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'working', TUIOS_WINDOW_ID: name, TUIOS_SESSION_ID: 's' },
+      { turn: { session: 's', pane: name, name, harness: 'omp', state: 'working', at: stamp(), prompt, response: '', source: 'pane' } });
+    const runOf = async prompt => (await outline()).runs.find(r => r.prompt === prompt);
+    const emit = async e => { const file = Bun.file(stream); await Bun.write(stream, await file.text() + JSON.stringify(e) + '\n'); };
+    // Polls the outline only: /reconcile would settle turns by another path.
+    const until = async (prompt, state) => { let run; for (let i = 0; i < 60 && (run = await runOf(prompt))?.state !== state; i++) await Bun.sleep(100); return run; };
+
+    // window-exit and window-closed each close that pane's open turn, at the time of the event, and no other pane's.
+    await open('ev-exit', 'ask exit'); await open('ev-closed', 'ask closed');
+    expect(await runOf('ask exit')).toMatchObject({ state: 'working', finished: null });
+    expect(await runOf('ask closed')).toMatchObject({ state: 'working', finished: null });
+    const at = Date.now() + 5000;
+    await emit({ type: 'window-exit', session: 's', window: 'ev-exit', time: at * 1e6 });
+    expect(await until('ask exit', 'ended')).toMatchObject({ state: 'ended', unread: false, finished: new Date(at).toISOString() });
+    expect(await runOf('ask closed')).toMatchObject({ state: 'working', finished: null });
+    await emit({ type: 'window-closed', session: 's', window: 'ev-closed' });
+    const closed = await until('ask closed', 'ended');
+    expect(closed.state).toBe('ended');
+    expect(Date.parse(closed.finished)).toBeGreaterThanOrEqual(Date.parse(closed.started));
+    expect((await outline()).panes.filter(p => p.state === 'closed').map(p => p.id).sort()).toEqual(['ev-closed', 'ev-exit']);
+
+    // A prompt is running on a pane that closes mid-run: the run ends, the prompt is errored and says why, and its auto queue is held by it.
+    const task = await json('/tasks', { title: 'Closes mid-run', queue_mode: 'auto' });
+    const a = await pane('ev-run', task.id);
+    const made = await json('/prompts', { body: 'long job', target: a, run: true });
+    expect(made).toMatchObject({ ran: true, prompt: { state: 'running', pane_id: a } });
+    const waiting = (await json('/prompts', { body: 'after it', task_id: task.id })).prompt;
+    await Bun.sleep(5); await open(a, 'long job');
+    expect(await runOf('long job')).toMatchObject({ state: 'working', prompt_id: made.prompt.id });
+    expect(await promptOf(made.prompt.id)).toMatchObject({ state: 'running' });
+    await emit({ type: 'window-closed', session: 's', window: a });
+    expect((await until('long job', 'ended')).state).toBe('ended');
+    let failed; for (let i = 0; i < 60 && (failed = await promptOf(made.prompt.id)).state === 'running'; i++) await Bun.sleep(100);
+    expect(failed).toMatchObject({ state: 'errored', error: 'The pane closed before the run finished' });
+    expect(await promptOf(waiting.id)).toMatchObject({ state: 'queued' });
+    expect((await Bun.file(join(data, 'calls.log')).text()).split('\x01').filter(c => c.includes('queue\0')).length).toBe(1);
+
+    // The pane is at rest on done, but the event that said so never arrived: settling reads the response from the transcript.
+    await open('missed', 'ask missed');
+    const recovered = await runOf('ask missed');
+    expect(recovered).toMatchObject({ state: 'done', unread: true, response_captured: true, source: 'transcript' });
+    expect(Date.parse(recovered.finished)).toBeGreaterThan(0);
+    expect(await (await call('/turns/' + recovered.id.slice(5))).json()).toMatchObject({ prompt: 'ask missed', response: 'the recovered answer', state: 'done' });
   } finally { ({ home, base } = main); second.kill(); await second.exited; await rm(data, { recursive: true, force: true }); }
 });

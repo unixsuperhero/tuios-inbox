@@ -222,6 +222,10 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
 .ol-notes li { display: block; overflow-wrap: anywhere; }
 .ol-docs li { flex-wrap: wrap; }
 .ol-docs li > * { min-width: 0; overflow-wrap: anywhere; }
+.ol-doc-path { flex: 1 1 30ch; }
+.ol-doc-acts { display: inline-flex; gap: 6px; margin-left: auto; }
+#outline-root .ol-doc-acts button { min-height: 28px; padding: 2px 8px; }
+.ol-doc-error { flex-basis: 100%; margin: 0 !important; }
 .ol-dl { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 0; }
 .ol-dl :is(dt, dd) { padding: 6px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .ol-dl dt { font-size: 13px; color: var(--muted); }

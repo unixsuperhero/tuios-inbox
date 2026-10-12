@@ -38,7 +38,7 @@ export function createOutline({ report }) {
 
   let active = false, view = 'tasks', data = null, loadError = '', stale = true, version = 0;
   let selected = null, destCleared = false, detailOpen = false, confirming = null, notice = null, noticeTimer;
-  const collapsed = new Set(), expanded = new Set(), showAll = new Set(), drafts = new Map(), busy = new Set(), bodies = new Map(), fieldErrors = new Map();
+  const collapsed = new Set(), expanded = new Set(), showAll = new Set(), drafts = new Map(), busy = new Set(), bodies = new Map(), fieldErrors = new Map(), docNotes = new Map();
   let model = { roots: [], index: new Map(), lines: [], tasks: new Map(), order: [] };
   let writes = Promise.resolve();
   // Needs me is a review queue, not the tree: at most three levels, oldest first. `held` is the item being read, which
@@ -313,6 +313,15 @@ export function createOutline({ report }) {
       : `<h4>Prompt</h4><pre class="ol-pre">${esc(turn.prompt ?? x.prompt ?? '')}</pre><h4>Response</h4>${turn.response ? `<div class="md">${markdown(turn.response)}</div>` : '<p class="ol-dim">No response was captured.</p>'}`;
     return `<details class="ol-hist${x.unread ? ' is-unread' : ''}" data-wb-key="h:${esc(x.id)}" data-hist="${esc(x.id)}"><summary><span class="ol-clip">${esc(oneLine(x.prompt)) || 'typed in pane'}</span>${state(x.state)}<span class="ol-mono ol-dim">${esc(when(x.finished || x.started))}</span></summary><div class="ol-hist-body">${inner}<p><a href="${outlineHash(`run:${x.id}`)}">Open this run</a></p></div></details>`;
   }
+  // A local .md cannot be a link (the browser may not open file paths), so it offers its path and the OS default app.
+  const docPath = (d, taskId) => { const p = /^file:\/\//i.test(d.href) ? decodeURIComponent(new URL(d.href).pathname) : d.href, repo = model.tasks.get(taskId)?.resolved?.repo?.value; return /^[\/~]/.test(p) || !repo ? p : `${repo.replace(/\/$/, '')}/${p.replace(/^\.\//, '')}`; };
+  function docRow(r, d, i, taskId) {
+    if (d.kind === 'mdoc') return `<li data-wb-key="doc:${i}"><a href="${esc(d.href)}" target="_blank" rel="noopener">${esc(d.title)}</a> <span class="ol-mono ol-dim">${esc(d.href)}</span></li>`;
+    const key = `${r.id}|${i}`, note = docNotes.get(key), path = docPath(d, taskId);
+    return `<li data-wb-key="doc:${i}"><span class="ol-doc-title">${esc(d.title)}</span> <span class="ol-mono ol-dim ol-doc-path">${esc(path)}</span><span class="ol-doc-acts">${button('copy-doc', key, note?.copied ? 'Copied' : 'Copy path', 'subtle', ` data-path="${esc(path)}"`)}${button('open-doc', key, busy.has(`open-doc:${key}`) ? 'Opening…' : note?.opened ? 'Opened' : 'Open', 'subtle', ` data-path="${esc(d.href)}" data-turn="${esc(r.id)}"`)}</span>${note?.error ? `<p class="ol-error-text ol-doc-error" role="alert">${esc(note.error)}</p>` : ''}</li>`;
+  }
+  // The word on the button is the receipt; it goes back by itself.
+  function docNote(key, note) { docNotes.set(key, note); render(); if (!note.error) setTimeout(() => { if (docNotes.get(key) === note) { docNotes.delete(key); render(); } }, 2000); }
   function runDetail(n) {
     const r = n.rec, id = r.id, body = bodies.get(id), pane = (data.panes || []).find(p => p.id === r.pane_id), taskId = ownTask(n) || '';
     const waiting = r.state === 'needs_input' || pane?.state === 'needs_input', prompt = model.prompts.get(r.prompt_id), turn = body?.data;
@@ -324,7 +333,7 @@ export function createOutline({ report }) {
       `<h2 class="ol-title ol-item-title" data-wb-key="title">${esc(oneLine(turn?.prompt ?? r.prompt)) || 'Typed in pane'}</h2>
 <p class="ol-where" data-wb-key="where">${pane ? `<a href="#agent/${encodeURIComponent(pane.id)}">${esc(paneName)}</a>` : `${esc(paneName)} <span class="ol-dim">(closed)</span>`} <span class="ol-sep">·</span> ${ownerId ? `<a href="${outlineHash(`task:${ownerId}`)}">${esc(model.tasks.get(ownerId).title)}</a>` : 'No task'} <span class="ol-sep">·</span> <span class="ol-mono ol-dim">${esc(when(r.finished || r.started))}</span></p>` +
       section('prompt', 'Prompt', `<pre class="ol-pre">${esc(turn?.prompt ?? r.prompt ?? '')}</pre>`, prompt ? button('select', `prompt:${prompt.id}`, 'Open the prompt', 'subtle') : '') +
-      (r.docs?.length ? section('docs', `Documents <span class="ol-count">${r.docs.length}</span>`, `<ul class="ol-list ol-docs">${r.docs.map(d => `<li>${d.kind === 'mdoc' ? `<a href="${esc(d.href)}" target="_blank" rel="noopener">${esc(d.title)}</a>` : `<span>${esc(d.title)}</span>`} <span class="ol-mono ol-dim">${esc(d.href)}</span></li>`).join('')}</ul>`) : '') +
+      (r.docs?.length ? section('docs', `Documents <span class="ol-count">${r.docs.length}</span>`, `<ul class="ol-list ol-docs">${r.docs.map((d, i) => docRow(r, d, i, taskId)).join('')}</ul>`) : '') +
       section('response', 'Response', body?.error ? `<p class="ol-error-text">The response could not be read: ${esc(body.error)}</p>${button('reload-run', id, 'Try again')}` : !turn ? '<p class="ol-dim" role="status">Loading the response…</p>' : turn.response ? `<div class="md">${markdown(turn.response)}</div>` : `<p class="ol-dim">${r.state === 'working' ? 'Still working. The response appears here when the turn ends.' : 'No response was captured for this run.'}</p>`) +
       `${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a question and will not be typed at. <a href="#item/${encodeURIComponent(id)}">Read and answer the question</a></p>` : ''}
 <form class="ol-reply" data-wb-key="reply" data-reply-run="${esc(id)}"><label for="olf-reply">Reply <small>a new prompt for the same pane${taskId ? `, under ${esc(model.tasks.get(taskId).title)}` : ''}</small></label><textarea id="olf-reply" rows="3" data-draft="reply:${esc(id)}" maxlength="16000" placeholder="Follow up…">${esc(val(`reply:${id}`, ''))}</textarea><div class="ol-actions"><button class="primary" type="submit"${dis(`reply:${id}`)}${waiting ? ' disabled' : ''}>Reply</button><span class="ol-dim">Cmd+Enter sends</span></div></form>` +
@@ -538,6 +547,12 @@ export function createOutline({ report }) {
     'archive-task': (id, b) => write(`archive-task:${id}`, () => api('/tasks/update', { ids: [id], set: { archived: Boolean(b.dataset.arg) } })),
     'archive-run': (id, b) => write(`archive-run:${id}`, () => api(`/turns/${turnId(id)}`, { archived: Boolean(b.dataset.arg) }, 'PATCH')),
     unread: (id, b) => write(`unread:${id}`, () => api(`/turns/${turnId(id)}`, { unread: Boolean(b.dataset.arg) }, 'PATCH')),
+    'copy-doc': async (id, b) => { try { await navigator.clipboard.writeText(b.dataset.path); docNote(id, { copied: true }); } catch (e) { docNote(id, { error: `The path could not be copied: ${e.message}` }); } },
+    'open-doc': async (id, b) => {
+      const key = `open-doc:${id}`; if (busy.has(key)) return; busy.add(key); docNotes.delete(id); render();
+      try { await api('/open-file', { path: b.dataset.path, turn: b.dataset.turn }); busy.delete(key); docNote(id, { opened: true }); }
+      catch (e) { busy.delete(key); docNote(id, { error: e.message }); }
+    },
     'reload-run': id => { const n = node(`run:${id}`); if (n) ensureRun(n.rec, true); },
     run: id => write(`run:${id}`, () => api(`/prompts/${encodeURIComponent(id)}/run`, {}), () => say('Prompt sent to run.')),
     'save-queue': id => write(`save-queue:${id}`, () => api(`/prompts/${encodeURIComponent(id)}`, { body: val(`prompt:${id}:body`, node(`prompt:${id}`)?.rec.body), state: 'queued' }, 'PATCH'), () => { drafts.delete(`prompt:${id}:body`); say('Saved to the queue.'); }),

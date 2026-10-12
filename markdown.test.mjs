@@ -174,6 +174,10 @@ test('blockquotes and horizontal rules', () => {
   expect(md('> quoted **text**\n> second line\n\nafter')).toBe('<blockquote>\n<p>quoted <strong>text</strong><br>\nsecond line</p>\n</blockquote>\n<p>after</p>');
   expect(md('> a\n> > nested')).toBe('<blockquote>\n<p>a</p>\n<blockquote>\n<p>nested</p>\n</blockquote>\n</blockquote>');
   expect(md('> - item')).toBe('<blockquote>\n<ul>\n<li>item</li>\n</ul>\n</blockquote>');
+  // Inline formatting inside a quote is exactly what it is in a paragraph: links, code, emphasis, and a link the paragraph would not make.
+  for (const line of ['see [the guide](https://x.test/a_(b)) and `co*de*` and *em* **strong** ~~gone~~', 'bare https://x.test/a, <mailto:a@x.test>', 'a path link [guide.md](docs/guide.md) stays text', 'two\nlines with [a](http://x.test)'])
+    expect(md(line.split('\n').map(l => `> ${l}`).join('\n'))).toBe(`<blockquote>\n${md(line)}\n</blockquote>`);
+  expect(md('> see [the guide](https://x.test/g)')).toBe(`<blockquote>\n<p>see ${link('https://x.test/g', 'the guide')}</p>\n</blockquote>`);
   for (const rule of ['---', '***', '___', '- - -', '----------']) expect(md(`a\n\n${rule}\n\nb`)).toBe('<p>a</p>\n<hr>\n<p>b</p>');
 });
 
