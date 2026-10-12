@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn } from './public/outline-model.js';
+import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask } from './public/outline-model.js';
 
 const tasks = {
   root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2 },
@@ -250,4 +250,37 @@ test('rail docs are leaves of their run: they follow its read state, stay with a
   expect(alpha.items.flatMap(i => [i, ...i.newer]).flatMap(i => i.docs).map(d => d.title)).not.toContain('read and hidden');
   expect(alpha.unread).toBe(railTree(railData()).find(g => g.id === 'a').unread);
   expect(railTree(railData()).flatMap(g => g.items).every(i => Array.isArray(i.docs))).toBe(true);
+});
+
+test('an automatic queue that is not moving says why: held, waiting, or never started', () => {
+  const q = (id, state, position, extra = {}) => ({ id, task_id: 't', state, position, created: '', target: '', pane_id: '', ...extra });
+  const pane = (id, ready, extra = {}) => ({ id, name: id, kind: 'agent', task_id: 't', state: ready ? 'done' : 'working', ready, ...extra });
+  // Nothing to say: manual, the No task queue, nothing queued.
+  expect(queueStatus([q('a', 'queued', 1)], 't', 'manual', [])).toBe(null);
+  expect(queueStatus([{ ...q('a', 'queued', 1), task_id: null }], null, 'auto', [])).toBe(null);
+  expect(queueStatus([q('a', 'done', 1), q('b', 'errored', 2)], 't', 'auto', [])).toBe(null);
+  // Held by the earliest earlier prompt that is blocked or errored; one of another task or a later one does not hold.
+  expect(queueStatus([q('e', 'errored', 1), q('b', 'blocked', 2), q('n', 'queued', 3)], 't', 'auto', [pane('p', false)])).toEqual({ state: 'held', next: 'n', by: 'e', pane: null, text: 'Held by an errored prompt' });
+  expect(queueStatus([q('b', 'blocked', 2), q('n', 'queued', 3)], 't', 'auto')).toMatchObject({ state: 'held', by: 'b', text: 'Held by a blocked prompt' });
+  expect(queueStatus([{ ...q('x', 'blocked', 1), task_id: 'other' }, q('n', 'queued', 3), q('late', 'errored', 4)], 't', 'auto')).toMatchObject({ state: 'start', by: null });
+  // A running prompt ahead, or a busy pane, ends by itself.
+  expect(queueStatus([q('r', 'running', 1, { pane_id: 'p' }), q('n', 'queued', 3)], 't', 'auto', [pane('p', false)])).toEqual({ state: 'waiting', next: 'n', by: 'r', pane: 'p', text: 'Waiting for the running prompt to end' });
+  expect(queueStatus([q('n', 'queued', 3)], 't', 'auto', [pane('idle', true), pane('busy', false), pane('else', false, { task_id: 'other' })])).toEqual({ state: 'waiting', next: 'n', by: null, pane: 'busy', text: 'Waiting for busy to come to rest' });
+  // A prompt that names a pane waits for that pane only; a closed one is no pane at all.
+  expect(queueStatus([q('n', 'queued', 3, { target: 'named' })], 't', 'auto', [pane('busy', false), pane('named', true, { task_id: 'other' })])).toMatchObject({ state: 'start' });
+  expect(queueStatus([q('n', 'queued', 3, { target: 'named' })], 't', 'auto', [pane('named', false, { task_id: 'other' })])).toMatchObject({ state: 'waiting', pane: 'named' });
+  expect(queueStatus([q('n', 'queued', 3)], 't', 'auto', [pane('gone', false, { state: 'closed' }), pane('sh', false, { kind: 'shell' })])).toEqual({ state: 'start', next: 'n', by: null, pane: null, text: 'Not started: press Run next' });
+});
+
+test('a run is filed under its prompt\'s task, and under its own only when it has no prompt', () => {
+  const prompts = new Map([['p1', { id: 'p1', task_id: 'from-prompt' }], ['p0', { id: 'p0', task_id: null }]]);
+  expect(runTask({ prompt_id: 'p1', task_id: 'own' }, prompts)).toBe('from-prompt');
+  expect(runTask({ prompt_id: 'p0', task_id: 'own' }, prompts)).toBe(null);
+  expect(runTask({ prompt_id: 'deleted', task_id: 'own' }, prompts)).toBe('own');
+  expect(runTask({ prompt_id: null, task_id: 'own' }, prompts)).toBe('own');
+  expect(runTask({ task_id: undefined }, { p1: { task_id: 'x' } })).toBe(null);
+  // The rail and the review queue use the same rule.
+  const data = { tasks: [{ id: 'a', title: 'A', created: '1' }, { id: 'b', title: 'B', created: '2' }], prompts: [{ id: 'p', task_id: 'b', state: 'done', body: 'x', position: 1 }], runs: [{ id: 'r', prompt_id: 'p', task_id: 'a', unread: 1, state: 'done', started: '2026-01-01T00:00:00Z', prompt: 'x' }], panes: [] };
+  expect(railTree(data).find(g => g.items.length).id).toBe(runTask(data.runs[0], new Map(data.prompts.map(p => [p.id, p]))));
+  expect(reviewQueue(data).map(g => g.id)).toEqual(['b']);
 });

@@ -4,7 +4,7 @@
 import { api, esc, agentName } from '/pages.js';
 import { patchHTML } from '/workbench.js';
 import { markdown } from '/markdown.js';
-import { reviewQueue, reviewItems, railTree } from '/outline-model.js';
+import { reviewQueue, reviewItems, railTree, queueStatus, runTask } from '/outline-model.js';
 import { nextAfter, waitingFor } from '/queue-model.js';
 
 const VIEWS = { tasks: 'Tasks', open: 'Tasks', everything: 'Everything', 'needs-me': 'Needs me', running: 'Running', queued: 'Queued', 'no-task': 'No task', archive: 'Archive' };
@@ -148,7 +148,9 @@ export function createOutline({ report }) {
     return { lines, index, items: reviewItems(groups), total: filterTask || held ? reviewItems(reviewQueue(data || {})).length : reviewItems(groups).length };
   }
   const lineNode = key => review.index.get(key) || node(key);
-  const taskOf = key => { const n = node(key); return !n ? null : n.kind === 'task' ? n.rec.id : n.kind === 'none' ? null : model.tasks.has(n.rec.task_id) ? n.rec.task_id : null; };
+  const taskOf = key => { const n = node(key); return !n ? null : n.kind === 'task' ? n.rec.id : n.kind === 'none' ? null : ownTask(n); };
+  // A run is filed under its prompt's task, here as in the rail.
+  const ownTask = n => { const id = n.kind === 'run' ? runTask(n.rec, model.prompts) : n.rec.task_id; return model.tasks.has(id) ? id : null; };
   const destination = () => destCleared ? null : taskOf(selected);
   const sourceNote = (r, tasks = model.tasks) => !r || r.from === 'none' ? 'not set' : r.from === 'self' ? '' : r.from === 'default' ? '(default)' : `(from ${tasks.get(r.from)?.title || 'parent'})`;
   // Only profile ids resolve on the backend (profileFor also maps claude-code to claude); a stored value outside that list stays selectable so it is never dropped silently.
@@ -169,7 +171,7 @@ export function createOutline({ report }) {
       tags = [n.kind === 'none' ? `<span class="ol-tag">${plural(n.children.length, 'line')}</span>` : '', r.source === 'omp-todo' ? '<span class="ol-tag">from omp todo</span>' : '', r.archived ? '<span class="ol-tag">archived</span>' : '', has && !open ? `<span class="ol-tag">${plural(n.children.length, 'line')} folded</span>` : ''].join('');
       const stateWord = s.needs ? state('needs input', 'needs_input') : s.running ? state(`${s.running} running`, 'running') : n.kind === 'task' && r.status === 'done' ? state('done') : '';
       const pr = own && !git?.pr && git?.pr_loading ? '<span class="ol-dim">checking…</span>' : own && git?.pr ? `<span class="ol-mono">PR ${esc(git.pr.number)}</span> ${state(git.pr.checks === 'none' ? git.pr.state : `checks ${git.pr.checks}`, git.pr.checks)}` : '';
-      facts = fact('Queue', esc(queue)) + fact('State', stateWord) + unreadFact + fact('Branch', own && branch?.value ? `<span class="ol-mono${branch.from === 'self' ? '' : ' is-inherited'}">${esc(branch.value)}</span>` : '') + fact('Pull request', pr);
+      facts = fact('Queue', [n.kind === 'task' ? queueWord(queueNote(r.id)) : '', esc(queue)].filter(Boolean).join(' ')) + fact('State', stateWord) + unreadFact + fact('Branch', own && branch?.value ? `<span class="ol-mono${branch.from === 'self' ? '' : ' is-inherited'}">${esc(branch.value)}</span>` : '') + fact('Pull request', pr);
     } else if (n.kind === 'prompt') {
       mark = '<span class="ol-mark" aria-label="Prompt">&gt;</span>';
       text = esc(oneLine(r.body)) || '<i>empty prompt</i>';
@@ -231,6 +233,15 @@ export function createOutline({ report }) {
   const harnessSelect = (save, own, resolved, id) => `<select id="${id}" data-save="${esc(save)}">${options([['', `Inherit${resolved && resolved.from !== 'self' && resolved.value ? `: ${resolved.value} ${sourceNote(resolved)}` : ''}`], ...harnesses(own)], own)}</select>`;
   const runRow = r => `<li data-wb-key="rr:${esc(r.id)}"><button type="button" class="ol-rowlink${r.unread ? ' is-unread' : ''}" data-act="select" data-id="run:${esc(r.id)}"><span class="ol-mono">${esc(r.harness)}</span> ${state(r.state)} <span>${r.commits?.length ? plural(r.commits.length, 'commit') : ''}</span> ${r.unread ? '<b class="ol-unread">Unread</b>' : ''} <span class="ol-mono ol-dim">${esc(when(r.finished || r.started))}</span></button></li>`;
   const queueRows = (prompts, taskId) => prompts.length ? `<ol class="ol-list">${prompts.map((p, i) => `<li data-wb-key="q:${esc(p.id)}"><button type="button" class="ol-rowlink" data-act="select" data-id="prompt:${esc(p.id)}"><span class="ol-mark">&gt;</span> <span class="ol-clip">${esc(oneLine(p.body)) || 'empty prompt'}</span> ${state(p.state)}</button>${i ? button('earlier', p.id, 'Earlier', 'subtle', ` data-before="${esc(prompts[i - 1].id)}" data-task="${esc(taskId || '')}"`) : ''}</li>`).join('')}</ol>` : '<p class="ol-dim">No prompts waiting.</p>';
+  // Why an automatic queue is not moving: a word for a row, a line with its link for the task page.
+  const queueNote = id => { const t = model.tasks.get(id); return t ? queueStatus(data?.prompts || [], id, t.resolved?.queue_mode?.value, data?.panes || []) : null; };
+  const queueWord = q => q ? `<span class="ol-state s-${q.state === 'held' ? 'blocked' : q.state === 'waiting' ? 'working' : 'pending'}" title="Auto queue: ${esc(q.text)}">${q.state === 'start' ? 'not started' : q.state}</span>` : '';
+  const queueLine = q => {
+    if (!q) return '';
+    const by = model.prompts.get(q.by), pane = (data.panes || []).find(p => p.id === q.pane);
+    const link = by ? ` <a href="${outlineHash(`prompt:${by.id}`)}">${esc(oneLine(by.body)) || 'empty prompt'}</a>` : pane ? ` <a href="#agent/${encodeURIComponent(pane.id)}">Open the pane</a>` : '';
+    return `<p class="ol-sec-note" data-wb-key="qstatus">${state(q.state === 'start' ? 'not started' : q.state, q.state === 'held' ? 'blocked' : q.state === 'waiting' ? 'working' : 'pending')} ${esc(q.text)}${by ? ':' : '.'}${link}</p>`;
+  };
   const head = (kind, extra = '') => `<div class="ol-detail-head"><button type="button" class="ol-back" data-act="back">Back to outline</button><p class="ol-kind">${kind}${extra}</p></div>`;
   // In the review queue the open item names its place and offers the next oldest one.
   const nextBar = key => {
@@ -262,7 +273,7 @@ export function createOutline({ report }) {
       `<div class="ol-title-row" data-wb-key="title"><label class="ol-visually-hidden" for="olf-title">Title</label><input id="olf-title" class="ol-title-input" data-draft="task:${esc(id)}:title" data-save="task:${esc(id)}:title" value="${esc(val(`task:${id}:title`, t.title))}" maxlength="200"></div>${waitingCount(id) ? `<p class="ol-review-link" data-wb-key="review"><a href="#outline/needs-me/${encodeURIComponent(id)}">Review unread (${waitingCount(id)})</a></p>` : ''}
 <div class="ol-inline" data-wb-key="meta"><label>Status<select data-save="task:${esc(id)}:status">${options(['open', 'active', 'done'].map(s => [s, s]), t.status)}</select></label><label>Move under<select data-save="task:${esc(id)}:parent_id">${options([['', 'Top level'], ...taskOptions(subtreeIds(n))], t.parent_id || '')}</select></label></div>` +
       section('facts', 'Facts', `<p class="ol-dim ol-sec-note">${parent ? `Empty fields are inherited from ${esc(parent.title)}.` : 'Empty fields fall back to the app defaults.'}</p>${rows}`) +
-      section('queue', `Queue <span class="ol-count">${queue.length}</span>`, `${queueRows(queue, id)}<p class="ol-dim ol-sec-note">${mode === 'auto' ? 'Auto: each next prompt runs when the pane comes to rest; start the first with Run next. A blocked prompt holds the queue.' : 'Manual: nothing runs until you press Run.'}${modeNote ? ` ${esc(modeNote)}` : ''}</p>`, `${modeSwitch}${button('run-next', id, 'Run next', 'primary', queue.some(p => p.state === 'queued') ? '' : ' disabled')}`) +
+      section('queue', `Queue <span class="ol-count">${queue.length}</span>`, `${queueLine(queueNote(id))}${queueRows(queue, id)}<p class="ol-dim ol-sec-note">${mode === 'auto' ? 'Auto: each next prompt runs when the pane comes to rest; start the first with Run next. A blocked prompt holds the queue.' : 'Manual: nothing runs until you press Run.'}${modeNote ? ` ${esc(modeNote)}` : ''}</p>`, `${modeSwitch}${button('run-next', id, 'Run next', 'primary', queue.some(p => p.state === 'queued') ? '' : ' disabled')}`) +
       section('panes', `Panes <span class="ol-count">${panes.length}</span>`, panes.length ? `<ul class="ol-list">${panes.map(p => `<li><a href="#agent/${encodeURIComponent(p.id)}">${esc(agentName(p.name, p.id))}</a> <span class="ol-mono">${esc(p.harness || p.kind)}</span> ${state(p.state)} <span class="ol-mono ol-dim">${esc([p.host, p.session].filter(Boolean).join(' / '))}</span></li>`).join('')}</ul>` : '<p class="ol-dim">No panes are assigned. Running a prompt launches one in the repo.</p>') +
       section('git', 'Git', `${gitFacts}${g.fetched ? `<p class="ol-dim ol-sec-note">Read <span class="ol-mono">${esc(when(g.fetched))}</span></p>` : ''}`, button('git-refresh', id, busy.has(`git-refresh:${id}`) ? 'Refreshing…' : 'Refresh')) +
       section('notes', 'Notes', notes ? `<ul class="ol-list ol-notes">${notes}</ul>` : '<p class="ol-dim">No notes.</p>') +
@@ -303,10 +314,10 @@ export function createOutline({ report }) {
     return `<details class="ol-hist${x.unread ? ' is-unread' : ''}" data-wb-key="h:${esc(x.id)}" data-hist="${esc(x.id)}"><summary><span class="ol-clip">${esc(oneLine(x.prompt)) || 'typed in pane'}</span>${state(x.state)}<span class="ol-mono ol-dim">${esc(when(x.finished || x.started))}</span></summary><div class="ol-hist-body">${inner}<p><a href="${outlineHash(`run:${x.id}`)}">Open this run</a></p></div></details>`;
   }
   function runDetail(n) {
-    const r = n.rec, id = r.id, body = bodies.get(id), pane = (data.panes || []).find(p => p.id === r.pane_id), taskId = model.tasks.has(r.task_id) ? r.task_id : '';
+    const r = n.rec, id = r.id, body = bodies.get(id), pane = (data.panes || []).find(p => p.id === r.pane_id), taskId = ownTask(n) || '';
     const waiting = r.state === 'needs_input' || pane?.state === 'needs_input', prompt = model.prompts.get(r.prompt_id), turn = body?.data;
     const provenance = [r.source ? `Source: ${r.source}` : 'Source not recorded', r.response_captured === false ? 'response not captured' : '', prompt ? '' : 'typed straight into the pane'].filter(Boolean).join(' · ');
-    const paneName = agentName(r.pane_name, r.pane_id || ''), ownerId = prompt && model.tasks.has(prompt.task_id) ? prompt.task_id : taskId;
+    const paneName = agentName(r.pane_name, r.pane_id || ''), ownerId = taskId;
     const older = r.pane_id ? (data.runs || []).filter(x => x.pane_id === r.pane_id && x.id !== id && String(x.started) < String(r.started)).sort((a, b) => String(b.started).localeCompare(String(a.started))) : [];
     const HISTORY_CAP = 30;
     return head('Run', ` · ${state(r.state)}${r.unread ? ' · <b class="ol-unread">Unread</b>' : ''}`) + nextBar(`run:${id}`) +
@@ -320,7 +331,7 @@ export function createOutline({ report }) {
       section('history', `History <span class="ol-count">${older.length}</span>`, older.length ? `<div class="ol-hists">${older.slice(0, HISTORY_CAP).map(historyRow).join('')}</div>${older.length > HISTORY_CAP ? `<p class="ol-dim ol-sec-note">The ${HISTORY_CAP} newest are listed; ${older.length - HISTORY_CAP} older ones are in the Everything view.</p>` : ''}` : `<p class="ol-dim">${r.pane_id ? 'Nothing earlier was captured on this pane.' : 'This run names no pane, so it has no thread.'}</p>`) +
       `<details class="ol-facts" data-wb-key="facts"><summary>Details, task and commits</summary>
 <dl class="ol-dl"><dt>Harness</dt><dd class="ol-mono">${esc(r.harness)}</dd><dt>Host</dt><dd class="ol-mono">${esc(r.host || 'local')}</dd><dt>Started</dt><dd class="ol-mono">${esc(when(r.started))}</dd><dt>Finished</dt><dd class="ol-mono">${esc(when(r.finished)) || 'not yet'}</dd><dt>Capture</dt><dd>${esc(provenance)}</dd></dl>
-<div class="ol-inline"><label>Task<select data-save="run:${esc(id)}:task_id">${options([['', 'No task'], ...taskOptions()], taskId)}</select></label></div>
+<div class="ol-inline"><label>Task<select data-save="run:${esc(id)}:task_id"${prompt ? ' disabled' : ''}>${options([['', 'No task'], ...taskOptions()], taskId)}</select></label>${prompt ? '<span class="ol-dim">Filed with its prompt; move the prompt to move this run.</span>' : ''}</div>
 <h4>Commits <span class="ol-count">${r.commits?.length || 0}</span></h4>${r.commits?.length ? `<ul class="ol-list ol-commits">${r.commits.map(c => `<li><span class="ol-mono">${esc(String(c.sha).slice(0, 7))}</span> <span class="ol-clip">${esc(c.subject)}</span></li>`).join('')}</ul>` : '<p class="ol-dim">No commits were made during this run.</p>'}</details>
 <div class="ol-actions" data-wb-key="tools">${button('unread', id, r.unread ? 'Mark read' : 'Mark unread', '', ` data-arg="${r.unread ? '' : '1'}"`)}${button('archive-run', id, r.archived ? 'Unarchive' : 'Archive', '', ` data-arg="${r.archived ? '' : '1'}"`)}</div>`;
   }
@@ -332,7 +343,7 @@ export function createOutline({ report }) {
     const open = rows.filter(t => model.tasks.get(t.id).status !== 'done').length;
     return `<p class="ol-dim ol-tasks-note">${open} open, ${rows.length - open} done. Archived tasks are in the Archive view. <kbd>j</kbd><kbd>k</kbd> move <kbd>Enter</kbd> open</p><ul class="ol-tasks">${rows.map(({ id, depth }) => {
       const t = model.tasks.get(id), n = node(`task:${id}`), st = n?.stats || {}, done = t.status === 'done', kids = (n?.children || []).filter(c => c.kind === 'task').length, notes = t.notes?.length || 0, href = outlineHash(`task:${id}`);
-      const facts = [st.unread ? `<b class="ol-unread">${st.unread} Unread</b>` : '', st.needs ? state('needs input', 'needs_input') : '', st.running ? state(`${st.running} running`, 'running') : '', st.queued ? `${st.queued} queued` : '', st.blocked ? state(`${st.blocked} blocked`, 'blocked') : '', done ? state('done') : ''].filter(Boolean).join(' ');
+      const facts = [st.unread ? `<b class="ol-unread">${st.unread} Unread</b>` : '', st.needs ? state('needs input', 'needs_input') : '', st.running ? state(`${st.running} running`, 'running') : '', st.queued ? `${st.queued} queued ${queueWord(queueNote(id))}` : '', st.blocked ? state(`${st.blocked} blocked`, 'blocked') : '', done ? state('done') : ''].filter(Boolean).join(' ');
       const confirm = confirming === `deltask:${id}` ? `<div class="ol-trow-confirm" role="alert"><p>Delete <b>${esc(t.title)}</b>? ${notes ? `Its ${plural(notes, 'note')} ${notes === 1 ? 'is' : 'are'} deleted. ` : ''}${kids ? `Its ${plural(kids, 'subtask')} ${kids === 1 ? 'moves' : 'move'} up a level. ` : ''}Its prompts and runs are kept under No task.</p><span class="ol-trow-acts">${button('delete-task', id, 'Confirm delete', 'danger')}${button('keep', id, 'Keep')}</span></div>` : '';
       return `<li class="ol-trow${done ? ' is-done' : ''}${id === rowFocus ? ' is-kfocus' : ''}" data-wb-key="tr:${esc(id)}" data-depth="${Math.min(depth, 8)}"><a class="ol-trow-title" href="${href}">${esc(t.title)}</a><span class="ol-trow-facts">${facts}</span><span class="ol-trow-acts"><a class="ol-trow-edit" href="${href}">Edit</a>${button('ask-delete-task', id, 'Delete', 'subtle')}${button('task-done', id, done ? 'Reopen' : 'Done', 'subtle', ` data-arg="${done ? 'open' : 'done'}"`)}</span>${confirm}</li>`;
     }).join('')}</ul>`;
@@ -559,7 +570,7 @@ export function createOutline({ report }) {
     if (e.target.id === 'ol-capture') return void submitCapture(false);
     const id = e.target.dataset.replyRun; if (!id) return;
     const run = node(`run:${id}`)?.rec, body = (drafts.get(`reply:${id}`) || '').trim(); if (!run || !body) return;
-    write(`reply:${id}`, () => api('/prompts', { body, task_id: run.task_id || null, target: run.pane_id, run: true }), result => {
+    write(`reply:${id}`, () => api('/prompts', { body, task_id: ownTask(node(`run:${id}`)), target: run.pane_id, run: true }), result => {
       drafts.delete(`reply:${id}`);
       if (result && !result.ran) { open(`prompt:${result.prompt.id}`); say(`Reply saved, not run: ${result.preflight?.blocks?.[0]?.message || 'preflight found a block'}.`, true); }
       else say('Reply sent.');

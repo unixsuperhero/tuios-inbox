@@ -274,3 +274,30 @@ test('the outline lists the documents a run reported, without carrying its respo
   expect(run).not.toHaveProperty('response'); expect(run).not.toHaveProperty('doc_text');
   expect(runs.filter(r => r.pane_id !== 'doc-pane').every(r => Array.isArray(r.docs) && !r.docs.length)).toBe(true);
 });
+
+test('a turn left open is settled from its pane: closed when the pane is gone or at rest, kept while it still works', async () => {
+  // Its own server and a TUIOS that lists two windows: one working, one at rest. The third pane no longer exists.
+  const main = { home, base }, data = await mkdtemp(join(tmpdir(), 'outline-settle-')), fake = join(data, 'tuios');
+  await Bun.write(fake, `#!/bin/sh\ncase "$1" in list-windows) echo '{"windows":[{"window_id":"live","agent_state":{"state":"working"}},{"window_id":"rest","agent_state":"idle"}]}';; *) echo '{}';; esac\n`);
+  await chmod(fake, 0o755);
+  const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
+  const port = socket.address().port; await new Promise(r => socket.close(r));
+  const second = Bun.spawn([process.execPath, 'server.mjs'], { cwd: import.meta.dir, stdout: 'pipe', stderr: 'inherit',
+    env: { ...process.env, PORT: String(port), TUIOS_INBOX_DATA: data, TUIOS_INBOX_SPOOL: join(data, 'events'), TUIOS_BIN: fake, TUIOS_INBOX_GH: join(main.home, 'gh'), TUIOS_INBOX_COLLECTORS: join(data, 'none.json'), PI_CODING_AGENT_DIR: join(data, 'omp') } });
+  try {
+    const reader = second.stdout.getReader(); expect(new TextDecoder().decode((await reader.read()).value)).toContain('listening on'); reader.releaseLock();
+    home = data; base = `http://127.0.0.1:${port}`;
+    for (const name of ['live', 'rest', 'gone']) await hook('open-' + name, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'working', TUIOS_WINDOW_ID: name, TUIOS_SESSION_ID: 's' },
+      { turn: { session: 's', pane: name, name, harness: 'omp', state: 'working', at: stamp(), prompt: 'ask ' + name, response: '', source: 'pane' } });
+    const runs = new Map((await outline()).runs.map(r => [r.prompt, r]));
+    expect(runs.get('ask live')).toMatchObject({ state: 'working', finished: null });
+    expect(runs.get('ask rest')).toMatchObject({ state: 'idle', unread: false });
+    expect(runs.get('ask gone')).toMatchObject({ state: 'ended', unread: false });
+    for (const name of ['rest', 'gone']) expect(Date.parse(runs.get('ask ' + name).finished)).toBeGreaterThan(0);
+    // Settling again changes nothing, and the pane that is gone is known as closed.
+    await call('/reconcile', {});
+    const again = await outline();
+    expect(again.runs.filter(r => r.state === 'working').map(r => r.prompt)).toEqual(['ask live']);
+    expect(again.runs.find(r => r.prompt === 'ask gone').finished).toBe(runs.get('ask gone').finished);
+  } finally { ({ home, base } = main); second.kill(); await second.exited; await rm(data, { recursive: true, force: true }); }
+});

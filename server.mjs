@@ -405,6 +405,38 @@ async function turnState(e) {
   run('INSERT INTO turns (id,session,pane_id,pane_name,harness,prompt,response,source,state,started,task_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)', turnId, e.session, e.window, agent?.name || '', agent?.harness_id || '', sent?.body || agent?.meta?.prompt || '', '', '', e.state, new Date(e.time / 1e6).toISOString(), agentTask(e.window));
   archiveEmptyTurns(turnId);
 }
+const OPEN_TURNS = "SELECT * FROM turns WHERE finished IS NULL AND state IN ('working','needs_input')";
+// A turn left open by a pane that stopped without a closing event. It is unread only when there is a response to read.
+function closeTurn(row, state, at) {
+  run('UPDATE turns SET state=?, unread=MAX(unread,?), finished=? WHERE id=? AND finished IS NULL', state, Number(Boolean(row.response.trim())), at && at > row.started ? at : now(), row.id);
+  archiveEmptyTurns(row.id);
+}
+// Closes every open turn whose pane is closed, gone with its session, or at rest in a state whose event never arrived
+// (the server was down, or the event stream had a gap). An unreachable session or host settles nothing.
+async function settleTurns(snapshot) {
+  const observed = new Map(); // read now, not reused from earlier in the reconcile: a pane may have started a turn since
+  for (const row of all(OPEN_TURNS)) {
+    try {
+      const a = one('SELECT state,seen FROM agents WHERE id=?', row.pane_id);
+      let state = a?.state === 'closed' ? 'closed' : null;
+      if (!state) {
+        const host = row.session.includes(':') ? row.session.split(':')[0] : 'local';
+        const gone = !observed.has(row.session) && snapshot?.hosts.some(h => h.host === host && h.status === 'up' && !h.error) && !snapshot.sessions.some(s => s.target === row.session && !s.saved);
+        if (!gone && !observed.has(row.session)) observed.set(row.session, await observeHosts(row.session));
+        const w = gone ? null : observed.get(row.session).find(w => (w.window_id || w.id) === row.pane_id);
+        state = !w ? 'closed' : w.agent_state?.state || (typeof w.agent_state === 'string' && w.agent_state) || 'none';
+      }
+      if (['working', 'needs_input'].includes(state)) { if (state !== row.state) run('UPDATE turns SET state=? WHERE id=? AND finished IS NULL', state, row.id); continue; }
+      if (['done', 'errored'].includes(state)) {
+        // The pane is still on the turn that ended: its response can be read now.
+        try { const turn = await captureTurn({ bin: tuios, session: row.session, pane: row.pane_id, time: now(), seed: { state, name: row.pane_name, harness: row.harness } }); if (turn.response.trim()) importTurn(turn, 'settle:' + row.id); } catch (e) { lastError = e.message; }
+        rested.add(row.pane_id);
+      }
+      const current = one('SELECT * FROM turns WHERE id=?', row.id);
+      if (current && current.finished === null) closeTurn(current, state === 'closed' ? 'ended' : state, state === 'closed' ? a?.seen : null);
+    } catch (e) { lastError = e.message; }
+  }
+}
 function importTurn(t, eventId) {
   const key = 'turn:' + eventId, complete = ['done', 'errored'].includes(t.state);
   if ((!complete && !['working', 'needs_input'].includes(t.state)) || one('SELECT id FROM events WHERE id=?', key)) return;
@@ -457,7 +489,10 @@ async function handleEvent(e) {
     const state = e.state || e.agent_state?.state || e.agent_state || 'unknown';
     if (typeof state === 'string') run('UPDATE panes SET state=? WHERE id=?', state, p.id);
   }
-  if (e.window && ['window-exit', 'window-closed'].includes(e.type)) { run('UPDATE panes SET state=? WHERE id=?', 'closed', e.window); run('UPDATE agents SET state=? WHERE id=?', 'closed', e.window); }
+  if (e.window && ['window-exit', 'window-closed'].includes(e.type)) {
+    run('UPDATE panes SET state=? WHERE id=?', 'closed', e.window); run('UPDATE agents SET state=? WHERE id=?', 'closed', e.window);
+    for (const row of all(OPEN_TURNS + ' AND pane_id=?', e.window)) closeTurn(row, 'ended', e.time ? new Date(e.time / 1e6).toISOString() : null);
+  }
   if (e.boot_id && e.seq) run('INSERT OR REPLACE INTO settings VALUES (?,?)', 'cursor', JSON.stringify({ boot_id: e.boot_id, seq: e.seq }));
   changed();
 }
@@ -502,8 +537,9 @@ async function reconcile() {
     } catch (e) { lastError = e.message; }
   }
   // A window that closed while this server was not listening sent no event; its agent can no longer be prompted.
+  let snapshot = null;
   try {
-    const snapshot = await nativeSessions();
+    snapshot = await nativeSessions();
     for (const s of snapshot.sessions.filter(s => !s.saved)) {
       if (!all('SELECT id FROM agents WHERE session=?', s.target).length) continue;
       const windows = observed.get(s.target) || await observeHosts(s.target);
@@ -511,7 +547,8 @@ async function reconcile() {
       run("UPDATE agents SET state='closed' WHERE session=? AND state!='closed' AND id NOT IN (SELECT value FROM json_each(?))", s.target, JSON.stringify(live));
     }
   } catch (e) { lastError = e.message; }
-  for (const row of all("SELECT * FROM turns WHERE finished IS NULL AND state IN ('working','needs_input')")) {
+  await settleTurns(snapshot);
+  for (const row of all(OPEN_TURNS)) {
     if (row.prompt.trim()) continue;
     try {
       const turn = await captureTurn({ bin: tuios, session: row.session, pane: row.pane_id, time: now(), seed: { state: row.state, name: row.pane_name, harness: row.harness } });
@@ -777,11 +814,12 @@ async function settlePrompts() {
         if (!turn) continue;
         run('UPDATE turns SET prompt_id=?,head_before=?,task_id=COALESCE(task_id,?) WHERE id=?', p.id, p.head_before, p.task_id, turn.id); changed();
       }
-      if (!['done', 'errored'].includes(turn.state)) continue;
+      // A run whose pane closed under it never reports done; it ends the prompt as an error, so the queue shows why it holds.
+      if (!['done', 'errored', 'ended'].includes(turn.state)) continue;
       const ctx = outlineContext(), resolved = resolveFields(p, ctx.byId), repo = resolved.repo.value, after = await gitHead(repo);
       const commits = p.head_before && after && after !== p.head_before ? commitRows((await gitLog(repo, `${p.head_before}..${after}`)).out) : [];
       run('UPDATE turns SET head_after=?,commits=? WHERE id=?', after, JSON.stringify(commits), turn.id);
-      run('UPDATE prompts SET state=?,error=?,updated=? WHERE id=?', turn.state, turn.state === 'errored' ? 'The run ended in an error' : '', now(), p.id);
+      run('UPDATE prompts SET state=?,error=?,updated=? WHERE id=?', turn.state === 'done' ? 'done' : 'errored', turn.state === 'errored' ? 'The run ended in an error' : turn.state === 'ended' ? 'The pane closed before the run finished' : '', now(), p.id);
       if (repo) background(gitFacts(repo, resolved.branch.value, true));
       drains.push([p.task_id, p.pane_id]); changed();
     }

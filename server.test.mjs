@@ -236,7 +236,7 @@ else if (command === 'subscribe') {
     expect(first.items.filter(i => i.agent_id === 'recover-working')).toMatchObject([{ id: 'turn:recover-working', title: 'Recover the running prompt', status: 'working', unread: 0, archived: 0 }]);
     expect(first.items.filter(i => i.agent_id === 'recover-waiting')).toMatchObject([{ id: 'turn:recover-waiting', title: 'Recover the waiting prompt', status: 'needs_input', unread: 0, archived: 0 }]);
     expect(await (await request('/turns/recover-working')).json()).toMatchObject({ response: '', finished: null });
-    expect(await (await request('/turns/recover-stale')).json()).toMatchObject({ prompt: '', response: '', state: 'working', archived: 1 });
+    expect(await (await request('/turns/recover-stale')).json()).toMatchObject({ prompt: '', response: '', state: 'done', archived: 1, unread: 0 }); // its pane is at rest: the turn is settled, the old prompt still not imported
     expect(await (await request('/turns/recover-finished')).json()).toMatchObject({ prompt: 'Saved prompt', response: 'Saved reply', state: 'done', finished: at });
     const captured = { session: 's', pane: 'hook-first', name: 'worker', harness: 'codex', state: 'working', at: new Date().toISOString(), prompt: 'Hook arrived before native event', response: '', source: 'pane' };
     const before = await hook('native-race', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'working', TUIOS_WINDOW_ID: captured.pane }, { turn: captured }, { dir, request });

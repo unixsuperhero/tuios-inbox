@@ -74,6 +74,30 @@ export function nextInQueue(prompts, taskId = null) {
 export function queueHeld(prompts, next) {
   return prompts.some(p => p.id !== next.id && inQueue(p, next.task_id) && ['blocked', 'errored', 'running'].includes(p.state) && p.position < next.position);
 }
+/**
+ * Why an automatic queue that has queued prompts is not moving, as one line. Null for a manual queue, the No task queue, or nothing queued.
+ * held: an earlier blocked or errored prompt (`by`) holds it until that prompt is fixed, requeued or deleted.
+ * waiting: it goes on by itself, once the earlier running prompt (`by`) ends or the busy pane (`pane`) comes to rest.
+ * start: no pane is busy, and a queue only advances when a pane comes to rest, so it needs Run next.
+ * @param {object[]} prompts every prompt  @param {object[]} panes the outline's panes: {id, name, kind, task_id, state, ready}
+ * @returns {{state: 'held'|'waiting'|'start', next: string, by: string|null, pane: string|null, text: string}|null}
+ */
+export function queueStatus(prompts, taskId, mode, panes = []) {
+  const next = taskId && mode === 'auto' ? nextInQueue(prompts, taskId) : null;
+  if (!next) return null;
+  const by = prompts.filter(p => p.id !== next.id && inQueue(p, taskId) && ['blocked', 'errored', 'running'].includes(p.state) && p.position < next.position).sort(byPosition)[0];
+  if (by?.state === 'running') return { state: 'waiting', next: next.id, by: by.id, pane: by.pane_id || null, text: 'Waiting for the running prompt to end' };
+  if (by) return { state: 'held', next: next.id, by: by.id, pane: null, text: `Held by ${by.state === 'errored' ? 'an errored' : 'a blocked'} prompt` };
+  const live = panes.filter(p => p.kind === 'agent' && p.state !== 'closed'), named = next.target ? live.find(p => p.id === next.target) : null;
+  const busy = named ? (named.ready ? null : named) : live.find(p => p.task_id === taskId && !p.ready);
+  if (busy) return { state: 'waiting', next: next.id, by: null, pane: busy.id, text: `Waiting for ${busy.name || 'the pane'} to come to rest` };
+  return { state: 'start', next: next.id, by: null, pane: null, text: 'Not started: press Run next' };
+}
+/** The task a run is filed under, everywhere it is shown: its prompt's task when it ran from a prompt, else its own. */
+export function runTask(run, promptsById) {
+  const prompt = get(promptsById, run?.prompt_id);
+  return (prompt ? prompt.task_id : run?.task_id) ?? null;
+}
 
 /**
  * The todo list an oh-my-pi conversation ends with, replayed from its `todo` tool calls.
@@ -111,8 +135,8 @@ export function reviewQueue({ tasks = [], runs = [], prompts = [], panes = [] } 
   const chain = id => { const out = [], seen = new Set(); for (let t = byId.get(id); t && !seen.has(t.id); t = byId.get(t.parent_id)) { seen.add(t.id); out.unshift(t); } return out; };
   const items = [];
   for (const r of runs) {
-    const id = `run:${r.id}`, prompt = promptById.get(r.prompt_id);
-    if (keep.has(id) || !r.archived && (r.unread || r.state === 'needs_input')) items.push({ id, kind: 'run', rec: r, at: ms(r.finished) || ms(r.started), task_id: prompt ? prompt.task_id : r.task_id, pane_id: r.pane_id || '', pane_name: r.pane_name || '' });
+    const id = `run:${r.id}`;
+    if (keep.has(id) || !r.archived && (r.unread || r.state === 'needs_input')) items.push({ id, kind: 'run', rec: r, at: ms(r.finished) || ms(r.started), task_id: runTask(r, promptById), pane_id: r.pane_id || '', pane_name: r.pane_name || '' });
   }
   for (const p of prompts) {
     const id = `prompt:${p.id}`;
@@ -187,9 +211,9 @@ export function railTree({ tasks = [], runs = [], prompts = [], panes = [] } = {
     pane_id: r.pane_id || '', pane_name: paneById.get(r.pane_id)?.name || r.pane_name || '', newer: [],
     docs: (r.docs || []).map((d, n) => ({ id: `doc:${r.id}:${n}`, kind: d.kind, href: d.href, title: d.title, run: `run:${r.id}`, unread: Boolean(r.unread) || r.state === 'needs_input', pane_id: r.pane_id || '', pane_name: paneById.get(r.pane_id)?.name || r.pane_name || '' })) });
   for (const r of runs) {
-    const id = `run:${r.id}`, prompt = promptById.get(r.prompt_id);
+    const id = `run:${r.id}`;
     if (r.archived && !keep.has(id)) continue;
-    const o = place(prompt ? prompt.task_id : r.task_id, id); if (!o) continue;
+    const o = place(runTask(r, promptById), id); if (!o) continue;
     const key = r.pane_id || id; if (!o.panes.has(key)) o.panes.set(key, []);
     o.panes.get(key).push(runItem(r));
   }
