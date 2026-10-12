@@ -9,6 +9,15 @@
 #outline-root .md :is(ul, ol) { margin: 0 0 12px; padding-left: 22px; list-style: revert; }
 #outline-root .md li > :is(ul, ol) { margin: 2px 0; }
 #outline-root .md li.task { list-style: none; }
+/* ...and its vertical rhythm: paragraphs, code, quotes, tables and headings, as markdown.css spaces them. */
+#outline-root .md :is(p, pre, blockquote, .table) { margin: 0 0 12px; }
+#outline-root .md :is(h1, h2, h3, h4, h5, h6) { margin: 20px 0 8px; font-size: 14.5px; font-weight: 600; line-height: 1.35; color: var(--ink); }
+#outline-root .md h1 { font-size: 19px; }
+#outline-root .md h2 { font-size: 17px; }
+#outline-root .md h3 { font-size: 15.5px; }
+#outline-root .md li > p { margin: 0 0 6px; }
+#outline-root .md > :first-child { margin-top: 0; }
+#outline-root .md > :last-child, #outline-root .md blockquote > :last-child { margin-bottom: 0; }
 #outline-root kbd { font: 11.5px/1.5 var(--mono); padding: 0 4px; margin-left: 8px; border: 1px solid var(--line); border-radius: 2px; color: var(--muted); }
 #outline-root kbd + kbd { margin-left: 2px; }
 #outline-root button { min-height: 34px; padding: 6px 12px; }
@@ -56,6 +65,8 @@
 :is(.rt-task, .rt-subtask, .rt-item):hover { background: #243442; }
 :is(.rt-task, .rt-subtask, .rt-item)[aria-current] { outline: 2px solid var(--accent); outline-offset: -2px; color: #fff; }
 .rail :is(.rt-task, .rt-subtask, .rt-item, .rail-heading, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* A document a run reported: the same record, marked as a page. */
+.rt-doc::before { height: 9px; border-style: solid solid double; }
 .rt-stack > summary { width: fit-content; margin-left: 15px; padding: 3px 8px; font-size: 12px; color: var(--accent); cursor: pointer; }
 .rt-stack > summary:hover { text-decoration: underline; text-underline-offset: 3px; }
 .rt-stack > .rt-items { padding-left: 15px; }
@@ -209,6 +220,8 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
 .ol-commits li { flex-wrap: nowrap; }
 .ol-commits .ol-clip { flex: 1; }
 .ol-notes li { display: block; overflow-wrap: anywhere; }
+.ol-docs li { flex-wrap: wrap; }
+.ol-docs li > * { min-width: 0; overflow-wrap: anywhere; }
 .ol-dl { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 0; }
 .ol-dl :is(dt, dd) { padding: 6px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .ol-dl dt { font-size: 13px; color: var(--muted); }
@@ -260,6 +273,7 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
 .ol-tasks { border-top: 2px solid var(--control-line); }
 .ol-trow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; min-height: 44px; padding: 5px 4px 5px calc(4px + var(--d, 0) * 22px); border-bottom: 1px solid var(--line); }
 .ol-trow:hover { background: var(--ol-row); }
+.ol-trow.is-kfocus { background: var(--ol-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
 .ol-trow-title { flex: 1 1 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 15px; font-weight: 600; text-decoration: none; }
 .ol-trow-title:hover { text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
 .ol-trow.is-done .ol-trow-title { font-weight: 400; color: var(--muted); }
@@ -295,6 +309,7 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
   .rail .rail-secondary { max-height: none; }
   .rail .rail-secondary .nav { min-height: 44px; }
   .rail .rail-bottom { margin: 12px 0 0; }
+  .rail .rail-bottom .subtle { max-width: none; white-space: nowrap; }
   .workbench-shell > #outline-root { flex: 1; width: 100%; max-width: 100%; overflow-x: hidden; }
   #outline-root { --ol-twist: 44px; --ol-step: 12px; display: flex; flex-direction: column; font-size: 15px; }
   .ol-center { flex: 1; }
@@ -302,7 +317,11 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
   .ol-head h1 { font-size: 36px; }
   .ol-capture { order: 10; margin: 0; padding: 6px 12px calc(6px + env(safe-area-inset-bottom)); border-width: 2px 0 0; }
   #outline-root .ol-capture input { min-height: 44px; }
-  .ol-chip { max-width: 44%; }
+  /* The chip takes its own row so the destination is never cut. */
+  .ol-capture { flex-wrap: wrap; row-gap: 0; }
+  .ol-chip { flex: 1 1 100%; max-width: none; padding: 0; border: 0; white-space: normal; }
+  .ol-chip > span { overflow: visible; overflow-wrap: anywhere; }
+  .ol-chip > span:only-child { padding-top: 6px; }
   #outline-root .ol-chip button { min-height: 44px; }
   .ol-notice { order: 9; margin: 0; border-width: 1px 0 0; }
   .ol-line { min-height: 56px; padding-right: 16px; }

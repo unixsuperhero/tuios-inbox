@@ -264,3 +264,13 @@ test('a prompt that was sent does not report its own busy pane as a block', asyn
   expect(rerun.status).toBe(409);
   expect((await rerun.json()).preflight.blocks.map(b => b.code)).toEqual(['pane_blocked']);
 });
+
+test('the outline lists the documents a run reported, without carrying its response', async () => {
+  await hook('doc-turn', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: 'doc-pane', TUIOS_SESSION_ID: 's' },
+    { turn: { session: 's', pane: 'doc-pane', name: 'doc-pane', harness: 'omp', state: 'done', at: stamp(), prompt: 'write the guide', source: 'pane',
+      response: 'Saved [guide.md](/Users/x/docs/guide.md), opened with mdoc: [the guide](http://127.0.0.1:4387/items/12). See also [code](src/a.js).' } });
+  const runs = (await outline()).runs, run = runs.find(r => r.pane_id === 'doc-pane');
+  expect(run.docs).toEqual([{ kind: 'file', href: '/Users/x/docs/guide.md', title: 'guide.md' }, { kind: 'mdoc', href: 'http://127.0.0.1:4387/items/12', title: 'the guide' }]);
+  expect(run).not.toHaveProperty('response'); expect(run).not.toHaveProperty('doc_text');
+  expect(runs.filter(r => r.pane_id !== 'doc-pane').every(r => Array.isArray(r.docs) && !r.docs.length)).toBe(true);
+});

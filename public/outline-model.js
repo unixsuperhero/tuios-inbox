@@ -144,6 +144,25 @@ export function reviewQueue({ tasks = [], runs = [], prompts = [], panes = [] } 
 /** Every item of a review queue in reading order: each group's own items, then its subgroups' items. */
 export const reviewItems = groups => groups.flatMap(g => [...g.items, ...g.groups.flatMap(s => s.items)]);
 
+const MDOC = 'http://127.0.0.1:4387/items/';
+/**
+ * The documents an agent reported in a response: mdoc item URLs (the local document viewer), bare or as a Markdown link,
+ * and Markdown links to a .md file path (absolute, relative or file://; a #fragment is dropped). Nothing else counts.
+ * In order of appearance, one per target, at most `cap`.
+ * @returns {{kind: 'mdoc'|'file', href: string, title: string}[]}
+ */
+export function docsIn(text, cap = 5) {
+  const out = [], seen = new Set(), clean = s => String(s || '').replace(/[`*_]/g, '').trim();
+  const add = (kind, href, title) => { if (seen.has(href)) return; seen.add(href); out.push({ kind, href, title }); };
+  for (const m of String(text ?? '').matchAll(/\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?[^)\n]*\)|http:\/\/127\.0\.0\.1:4387\/items\/(\d+)/g)) {
+    if (m[3]) { add('mdoc', MDOC + m[3], `mdoc item ${m[3]}`); continue; }
+    const target = m[2].replace(/#.*$/, ''), item = target.startsWith(MDOC) && /^\d+$/.test(target.slice(MDOC.length)) ? target.slice(MDOC.length) : '';
+    if (item) add('mdoc', target, clean(m[1]) && !clean(m[1]).startsWith('http') ? clean(m[1]) : `mdoc item ${item}`);
+    else if (/\.md$/i.test(target) && (!/^[a-z][a-z0-9+.-]*:/i.test(target) || /^file:\/\//i.test(target))) add('file', target, clean(m[1]) || target.split('/').pop());
+  }
+  return out.slice(0, cap);
+}
+
 const stateWord = r => r.state === 'needs_input' ? 'needs input' : !r.state || r.state === 'none' || r.state === 'unknown' ? 'ended' : r.state;
 /**
  * The left rail: open root tasks, their subtasks flattened to one level, and one entry per pane; never deeper than three levels.
@@ -154,7 +173,9 @@ const stateWord = r => r.state === 'needs_input' ? 'needs input' : !r.state || r
  * @param {{tasks?: object[], runs?: object[], prompts?: object[], panes?: object[]}} data the GET /api/outline payload
  * @param {Set<string>} keep item ids ('run:<id>', 'prompt:<id>') that stay listed even once read: the item that is open
  * @returns {{id: string, title: string, unread: number, oldest: number|null, items: object[], groups: {id: string, title: string, unread: number, oldest: number|null, items: object[]}[]}[]}
- *   an item is {id, kind: 'run'|'prompt', rec, at, unread, word, summary, pane_id, pane_name, newer: item[]}
+ *   an item is {id, kind: 'run'|'prompt', rec, at, unread, word, summary, pane_id, pane_name, newer: item[], docs: doc[]}
+ *   A run item carries the documents of its run as leaves, never a fourth level: the page lists them as siblings after the item.
+ *   a doc is {id: 'doc:<run id>:<n>', kind: 'mdoc'|'file', href, title, run: '<run item id>', unread, pane_id, pane_name}
  */
 export function railTree({ tasks = [], runs = [], prompts = [], panes = [] } = {}, keep = new Set()) {
   const byId = new Map(tasks.map(t => [t.id, t])), promptById = new Map(prompts.map(p => [p.id, p])), paneById = new Map(panes.map(p => [p.id, p]));
@@ -163,7 +184,8 @@ export function railTree({ tasks = [], runs = [], prompts = [], panes = [] } = {
   const owners = new Map(), owner = id => { if (!owners.has(id)) owners.set(id, { panes: new Map(), items: [] }); return owners.get(id); };
   const place = (taskId, id) => { const path = chain(taskId); return path.some(t => t.archived) && !keep.has(id) ? null : owner(path.length ? path.at(-1).id : 'none'); };
   const runItem = r => ({ id: `run:${r.id}`, kind: 'run', rec: r, at: ms(r.finished) || ms(r.started), unread: Boolean(r.unread) || r.state === 'needs_input', word: stateWord(r), summary: summary(r.prompt),
-    pane_id: r.pane_id || '', pane_name: paneById.get(r.pane_id)?.name || r.pane_name || '', newer: [] });
+    pane_id: r.pane_id || '', pane_name: paneById.get(r.pane_id)?.name || r.pane_name || '', newer: [],
+    docs: (r.docs || []).map((d, n) => ({ id: `doc:${r.id}:${n}`, kind: d.kind, href: d.href, title: d.title, run: `run:${r.id}`, unread: Boolean(r.unread) || r.state === 'needs_input', pane_id: r.pane_id || '', pane_name: paneById.get(r.pane_id)?.name || r.pane_name || '' })) });
   for (const r of runs) {
     const id = `run:${r.id}`, prompt = promptById.get(r.prompt_id);
     if (r.archived && !keep.has(id)) continue;
@@ -179,7 +201,7 @@ export function railTree({ tasks = [], runs = [], prompts = [], panes = [] } = {
   for (const p of prompts) {
     const id = `prompt:${p.id}`, waiting = ['blocked', 'errored'].includes(p.state);
     if (!waiting && !keep.has(id)) continue;
-    place(p.task_id, id)?.items.push({ id, kind: 'prompt', rec: p, at: ms(p.updated) || ms(p.created), unread: waiting, word: p.state, summary: summary(p.body), pane_id: p.target || p.pane_id || '', pane_name: paneById.get(p.target || p.pane_id)?.name || '', newer: [] });
+    place(p.task_id, id)?.items.push({ id, kind: 'prompt', rec: p, at: ms(p.updated) || ms(p.created), unread: waiting, word: p.state, summary: summary(p.body), pane_id: p.target || p.pane_id || '', pane_name: paneById.get(p.target || p.pane_id)?.name || '', newer: [], docs: [] });
   }
   // Waiting entries first, oldest first; then what has been read, newest first.
   const waits = i => i.unread || i.newer.some(n => n.unread);

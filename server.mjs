@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { captureTurn } from './scripts/turn.mjs';
 import { createHistory } from './scripts/history.mjs';
 import { pullCollectors } from './scripts/pull-collectors.mjs';
-import { DEFAULTS, resolve as resolveFields, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos } from './public/outline-model.js';
+import { DEFAULTS, resolve as resolveFields, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, docsIn } from './public/outline-model.js';
 
 const root = import.meta.dir;
 const dataDir = process.env.TUIOS_INBOX_DATA || join(homedir(), '.local/share/tuios-inbox');
@@ -684,9 +684,11 @@ async function outline() {
   const tasks = await Promise.all(ctx.tasks.map(async t => { const resolved = resolveFields(t, ctx.byId); return { ...t, resolved, git: await gitFacts(resolved.repo.value, resolved.branch.value), notes: notesOf(t.id) }; }));
   const prompts = await Promise.all(all('SELECT * FROM prompts ORDER BY position,created').map(p => promptView(p, ctx)));
   const runs = all(`SELECT 'turn:'||t.id AS id, t.prompt_id, t.task_id, t.pane_id, COALESCE(NULLIF(a.name,''),t.pane_name) AS pane_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, COALESCE(a.host,'') AS host, t.state, t.unread, t.archived,
-    t.started, t.finished, substr(t.prompt,1,400) AS prompt, t.response<>'' AS response_captured, t.source, t.head_before, t.head_after, t.commits FROM turns t LEFT JOIN agents a ON a.id=t.pane_id
+    t.started, t.finished, substr(t.prompt,1,400) AS prompt, t.response<>'' AS response_captured,
+    CASE WHEN t.response LIKE '%127.0.0.1:4387/items/%' OR t.response LIKE '%.md%' THEN t.response ELSE '' END AS doc_text, t.source, t.head_before, t.head_after, t.commits FROM turns t LEFT JOIN agents a ON a.id=t.pane_id
     WHERE t.id IN (SELECT id FROM turns ORDER BY started DESC LIMIT ?) OR (t.archived=0 AND (t.unread=1 OR t.state='needs_input')) ORDER BY t.started DESC`, outlineRunLimit)
-    .map(r => ({ ...r, unread: Boolean(r.unread), archived: Boolean(r.archived), response_captured: Boolean(r.response_captured), commits: JSON.parse(r.commits) }));
+    // The documents a run reported are read out of its response here; the response itself stays out of the payload.
+    .map(({ doc_text, ...r }) => ({ ...r, docs: docsIn(doc_text), unread: Boolean(r.unread), archived: Boolean(r.archived), response_captured: Boolean(r.response_captured), commits: JSON.parse(r.commits) }));
   return { defaults: DEFAULTS, tasks, prompts, runs, panes: ctx.panes, profiles: ctx.profiles };
 }
 const failPrompt = (key, message) => { run("UPDATE prompts SET state='errored',error=?,updated=? WHERE id=?", message, now(), key); changed(); };

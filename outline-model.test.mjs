@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems } from './public/outline-model.js';
+import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn } from './public/outline-model.js';
 
 const tasks = {
   root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2 },
@@ -219,4 +219,35 @@ test('a sent prompt does not report its own pane being busy; the moment of runni
   for (const state of ['queued', 'blocked', 'errored']) expect(pf({ body: 'x', task_id: 'child', target: 'p1', state }, busy).blocks.map(b => b.code)).toEqual(['pane_blocked']);
   expect(preflight({ prompt: { body: 'x', task_id: 'child', target: 'p1', state: 'done' }, resolved: resolve({ task_id: 'child' }, tasks), panes: busy, profiles, strict: true }).blocks.map(b => b.code)).toEqual(['pane_blocked']);
   expect(pf({ body: ' ', task_id: 'child', target: 'p1', state: 'running' }, busy).blocks.map(b => b.code)).toEqual(['no_text']);
+});
+
+test('docsIn finds mdoc item URLs and Markdown links to .md paths, once each, in order, and nothing else', () => {
+  const text = 'Saved [guide.md](/Users/x/docs/guide.md) and [the **plan**](docs/plan.md#top), opened [view document](http://127.0.0.1:4387/items/792).\n'
+    + 'Also http://127.0.0.1:4387/items/793 and again http://127.0.0.1:4387/items/792 [guide.md](/Users/x/docs/guide.md)\n'
+    + '[site](https://example.md) [raw](https://example.com/a.md) [code](src/a.js) [f](file:///a/b.md) http://127.0.0.1:4387/tags/3 notes.md';
+  expect(docsIn(text)).toEqual([
+    { kind: 'file', href: '/Users/x/docs/guide.md', title: 'guide.md' },
+    { kind: 'file', href: 'docs/plan.md', title: 'the plan' },
+    { kind: 'mdoc', href: 'http://127.0.0.1:4387/items/792', title: 'view document' },
+    { kind: 'mdoc', href: 'http://127.0.0.1:4387/items/793', title: 'mdoc item 793' },
+    { kind: 'file', href: 'file:///a/b.md', title: 'f' },
+  ]);
+  expect(docsIn(text, 2)).toHaveLength(2);
+  expect(docsIn('[](a/b.md) [http://127.0.0.1:4387/items/5](http://127.0.0.1:4387/items/5)')).toEqual([{ kind: 'file', href: 'a/b.md', title: 'b.md' }, { kind: 'mdoc', href: 'http://127.0.0.1:4387/items/5', title: 'mdoc item 5' }]);
+  for (const none of ['', null, undefined, 'no links here', '[x](y.mdx)']) expect(docsIn(none)).toEqual([]);
+});
+
+test('rail docs are leaves of their run: they follow its read state, stay with a stacked run, and add no unread', () => {
+  const data = railData(), doc = (n, title) => ({ kind: 'mdoc', href: 'http://127.0.0.1:4387/items/' + n, title });
+  const set = (id, docs) => { data.runs.find(r => r.id === id).docs = docs; };
+  set('r1', [doc(1, 'one'), { kind: 'file', href: 'docs/a.md', title: 'a.md' }]); set('r2', [doc(2, 'two')]); set('r0', [doc(9, 'read and hidden')]); set('r5', [doc(5, 'five')]);
+  const alpha = railTree(data).find(g => g.id === 'a'), [head, read] = alpha.items;
+  expect(head.docs).toEqual([
+    { id: 'doc:r1:0', kind: 'mdoc', href: 'http://127.0.0.1:4387/items/1', title: 'one', run: 'run:r1', unread: true, pane_id: 'p1', pane_name: 'worker' },
+    { id: 'doc:r1:1', kind: 'file', href: 'docs/a.md', title: 'a.md', run: 'run:r1', unread: true, pane_id: 'p1', pane_name: 'worker' }]);
+  expect(head.newer.map(n => n.docs.map(d => d.title))).toEqual([['two'], []]);
+  expect(read.docs.map(d => [d.title, d.unread, d.pane_name])).toEqual([['five', false, 'reader']]);
+  expect(alpha.items.flatMap(i => [i, ...i.newer]).flatMap(i => i.docs).map(d => d.title)).not.toContain('read and hidden');
+  expect(alpha.unread).toBe(railTree(railData()).find(g => g.id === 'a').unread);
+  expect(railTree(railData()).flatMap(g => g.items).every(i => Array.isArray(i.docs))).toBe(true);
 });

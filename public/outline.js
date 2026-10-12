@@ -48,7 +48,7 @@ export function createOutline({ report }) {
   // The rail's tree lives outside this page's root and is drawn on every page. `opened` is the line whose opening has been
   // acted on (read, scrolled to), so a live refresh never repeats it.
   const railEl = document.getElementById('rail-tree'), railHeading = document.getElementById('rail-heading'), railUnread = document.getElementById('rail-unread');
-  let opened = null, railShown = null;
+  let opened = null, railShown = null, rowFocus = null; // rowFocus: the task row j/k stand on in the tasks list
   const focus = () => view === 'tasks' || view === 'open';
   const supports = r => r?.kind === 'outline';
 
@@ -244,11 +244,11 @@ export function createOutline({ report }) {
     const rows = TASK_FIELDS.map(([f, label, type]) => {
       const r = res[f] || { value: '', from: 'none' }, mine = own[f] !== '' && own[f] != null, key = `task:${id}:${f}`, fid = `olf-${f}`;
       const inherited = !mine && r.value !== '' && r.value != null ? String(r.value) : '';
-      let control;
+      let control; const clear = button('clear-field', key, 'Clear', 'subtle', ` aria-label="Clear ${label}, inherit instead"`);
       if (type === 'harness') control = harnessSelect(key, mine ? own[f] : '', r, fid);
       else if (type === 'mode') control = `<select id="${fid}" data-save="${key}">${options([['', `Inherit${inherited ? `: ${inherited} ${sourceNote(r)}` : ''}`], ['manual', 'manual'], ['auto', 'auto']], mine ? own[f] : '')}</select>`;
-      else control = `<input id="${fid}" class="${f === 'repo' ? '' : 'ol-mono'}" data-draft="${key}" data-save="${key}" value="${esc(val(key, mine ? own[f] : ''))}" placeholder="${esc(inherited || 'not set')}" autocomplete="off" spellcheck="false">${type === 'dir' ? button('browse', key, 'Browse…') : ''}`;
-      const note = mine ? button('clear-field', key, 'Clear', 'subtle', ` aria-label="Clear ${label}, inherit instead"`) : `<span class="ol-src">${esc(sourceNote(r)) || 'not set'}</span>`;
+      else control = `<input id="${fid}" class="${f === 'repo' ? '' : 'ol-mono'}" data-draft="${key}" data-save="${key}" value="${esc(val(key, mine ? own[f] : ''))}" placeholder="${esc(inherited || 'not set')}" autocomplete="off" spellcheck="false">${type === 'dir' ? button('browse', key, 'Browse…') + (mine ? clear : '') : ''}`;
+      const note = !mine ? `<span class="ol-src">${esc(sourceNote(r)) || 'not set'}</span>` : type === 'dir' ? '' : clear;
       const problem = fieldErrors.get(key);
       return `<div class="ol-field${mine ? '' : ' is-inherited'}${type === 'dir' ? ' is-wide' : ''}" data-wb-key="f:${f}"><label for="${fid}">${label}</label><div class="ol-field-edit">${control}</div>${note}${problem ? `<p class="ol-error-text ol-field-error" role="alert">${esc(problem)}</p>` : ''}</div>`;
     }).join('');
@@ -313,6 +313,7 @@ export function createOutline({ report }) {
       `<h2 class="ol-title ol-item-title" data-wb-key="title">${esc(oneLine(turn?.prompt ?? r.prompt)) || 'Typed in pane'}</h2>
 <p class="ol-where" data-wb-key="where">${pane ? `<a href="#agent/${encodeURIComponent(pane.id)}">${esc(paneName)}</a>` : `${esc(paneName)} <span class="ol-dim">(closed)</span>`} <span class="ol-sep">·</span> ${ownerId ? `<a href="${outlineHash(`task:${ownerId}`)}">${esc(model.tasks.get(ownerId).title)}</a>` : 'No task'} <span class="ol-sep">·</span> <span class="ol-mono ol-dim">${esc(when(r.finished || r.started))}</span></p>` +
       section('prompt', 'Prompt', `<pre class="ol-pre">${esc(turn?.prompt ?? r.prompt ?? '')}</pre>`, prompt ? button('select', `prompt:${prompt.id}`, 'Open the prompt', 'subtle') : '') +
+      (r.docs?.length ? section('docs', `Documents <span class="ol-count">${r.docs.length}</span>`, `<ul class="ol-list ol-docs">${r.docs.map(d => `<li>${d.kind === 'mdoc' ? `<a href="${esc(d.href)}" target="_blank" rel="noopener">${esc(d.title)}</a>` : `<span>${esc(d.title)}</span>`} <span class="ol-mono ol-dim">${esc(d.href)}</span></li>`).join('')}</ul>`) : '') +
       section('response', 'Response', body?.error ? `<p class="ol-error-text">The response could not be read: ${esc(body.error)}</p>${button('reload-run', id, 'Try again')}` : !turn ? '<p class="ol-dim" role="status">Loading the response…</p>' : turn.response ? `<div class="md">${markdown(turn.response)}</div>` : `<p class="ol-dim">${r.state === 'working' ? 'Still working. The response appears here when the turn ends.' : 'No response was captured for this run.'}</p>`) +
       `${waiting ? `<p class="ol-callout" data-wb-key="wait">This pane is waiting on a question and will not be typed at. <a href="#item/${encodeURIComponent(id)}">Read and answer the question</a></p>` : ''}
 <form class="ol-reply" data-wb-key="reply" data-reply-run="${esc(id)}"><label for="olf-reply">Reply <small>a new prompt for the same pane${taskId ? `, under ${esc(model.tasks.get(taskId).title)}` : ''}</small></label><textarea id="olf-reply" rows="3" data-draft="reply:${esc(id)}" maxlength="16000" placeholder="Follow up…">${esc(val(`reply:${id}`, ''))}</textarea><div class="ol-actions"><button class="primary" type="submit"${dis(`reply:${id}`)}${waiting ? ' disabled' : ''}>Reply</button><span class="ol-dim">Cmd+Enter sends</span></div></form>` +
@@ -329,11 +330,11 @@ export function createOutline({ report }) {
     const rows = model.order.filter(t => !model.tasks.get(t.id).archived);
     if (!rows.length) return '<div class="ol-empty"><p>No tasks yet. Type one in the line above and press Enter.</p></div>';
     const open = rows.filter(t => model.tasks.get(t.id).status !== 'done').length;
-    return `<p class="ol-dim ol-tasks-note">${open} open, ${rows.length - open} done. Archived tasks are in the Archive view.</p><ul class="ol-tasks">${rows.map(({ id, depth }) => {
+    return `<p class="ol-dim ol-tasks-note">${open} open, ${rows.length - open} done. Archived tasks are in the Archive view. <kbd>j</kbd><kbd>k</kbd> move <kbd>Enter</kbd> open</p><ul class="ol-tasks">${rows.map(({ id, depth }) => {
       const t = model.tasks.get(id), n = node(`task:${id}`), st = n?.stats || {}, done = t.status === 'done', kids = (n?.children || []).filter(c => c.kind === 'task').length, notes = t.notes?.length || 0, href = outlineHash(`task:${id}`);
       const facts = [st.unread ? `<b class="ol-unread">${st.unread} Unread</b>` : '', st.needs ? state('needs input', 'needs_input') : '', st.running ? state(`${st.running} running`, 'running') : '', st.queued ? `${st.queued} queued` : '', st.blocked ? state(`${st.blocked} blocked`, 'blocked') : '', done ? state('done') : ''].filter(Boolean).join(' ');
       const confirm = confirming === `deltask:${id}` ? `<div class="ol-trow-confirm" role="alert"><p>Delete <b>${esc(t.title)}</b>? ${notes ? `Its ${plural(notes, 'note')} ${notes === 1 ? 'is' : 'are'} deleted. ` : ''}${kids ? `Its ${plural(kids, 'subtask')} ${kids === 1 ? 'moves' : 'move'} up a level. ` : ''}Its prompts and runs are kept under No task.</p><span class="ol-trow-acts">${button('delete-task', id, 'Confirm delete', 'danger')}${button('keep', id, 'Keep')}</span></div>` : '';
-      return `<li class="ol-trow${done ? ' is-done' : ''}" data-wb-key="tr:${esc(id)}" data-depth="${Math.min(depth, 8)}"><a class="ol-trow-title" href="${href}">${esc(t.title)}</a><span class="ol-trow-facts">${facts}</span><span class="ol-trow-acts"><a class="ol-trow-edit" href="${href}">Edit</a>${button('ask-delete-task', id, 'Delete', 'subtle')}${button('task-done', id, done ? 'Reopen' : 'Done', 'subtle', ` data-arg="${done ? 'open' : 'done'}"`)}</span>${confirm}</li>`;
+      return `<li class="ol-trow${done ? ' is-done' : ''}${id === rowFocus ? ' is-kfocus' : ''}" data-wb-key="tr:${esc(id)}" data-depth="${Math.min(depth, 8)}"><a class="ol-trow-title" href="${href}">${esc(t.title)}</a><span class="ol-trow-facts">${facts}</span><span class="ol-trow-acts"><a class="ol-trow-edit" href="${href}">Edit</a>${button('ask-delete-task', id, 'Delete', 'subtle')}${button('task-done', id, done ? 'Reopen' : 'Done', 'subtle', ` data-arg="${done ? 'open' : 'done'}"`)}</span>${confirm}</li>`;
     }).join('')}</ul>`;
   }
   function detailHTML() {
@@ -349,8 +350,10 @@ export function createOutline({ report }) {
     if (!data) return `<p class="rt-empty" role="status">${loadError ? 'The tasks could not be loaded.' : 'Loading…'}</p>`;
     if (!groups.length) return '<p class="rt-empty">No open tasks.</p>';
     const link = (e, extra = '') => `<a class="rt-item${e.unread ? ' is-unread' : ''}" href="${outlineHash(e.id)}"${e.id === cur ? ' aria-current="page"' : ''} title="${esc(e.summary)}"><span class="rt-sum">${esc(e.summary) || (e.kind === 'run' ? 'typed in pane' : 'empty prompt')}</span><span class="rt-meta"><span class="ol-state s-${esc(e.kind === 'run' ? e.rec.state : e.word)}">${esc(e.word)}</span> <span class="ol-sep">·</span> ${e.kind === 'run' ? esc(agentName(e.pane_name, e.pane_id)) : 'prompt'}${extra}</span></a>`;
-    const items = (g, owner) => g.items.length ? `<ul class="rt-items">${g.items.map(e => `<li data-wb-key="e:${esc(owner)}:${esc(e.pane_id || e.id)}">${link(e)}${e.newer.length
-      ? `<details class="rt-stack" data-wb-key="s"><summary>+${e.newer.length} newer</summary><ul class="rt-items">${e.newer.map(x => `<li data-wb-key="n:${esc(x.id)}">${link(x)}</li>`).join('')}</ul></details>` : ''}</li>`).join('')}</ul>` : '';
+    // A document a run reported is a leaf beside its run, never a level below it. A local .md cannot be opened by the browser, so it leads to its run.
+    const docs = e => e.docs.map(d => `<li data-wb-key="d:${esc(d.id)}"><a class="rt-item rt-doc${d.unread ? ' is-unread' : ''}" href="${d.kind === 'mdoc' ? esc(d.href) : outlineHash(d.run)}"${d.kind === 'mdoc' ? ' target="_blank" rel="noopener"' : ''} title="${esc(d.href)}"><span class="rt-sum">${esc(d.title)}</span><span class="rt-meta">doc <span class="ol-sep">·</span> ${esc(agentName(d.pane_name, d.pane_id))}</span></a></li>`).join('');
+    const items = (g, owner) => g.items.length ? `<ul class="rt-items">${g.items.map(e => `<li data-wb-key="e:${esc(owner)}:${esc(e.pane_id || e.id)}">${link(e)}</li>${docs(e)}${e.newer.length
+      ? `<li data-wb-key="s:${esc(owner)}:${esc(e.pane_id || e.id)}"><details class="rt-stack"><summary>+${e.newer.length} newer</summary><ul class="rt-items">${e.newer.map(x => `<li data-wb-key="n:${esc(x.id)}">${link(x)}</li>${docs(x)}`).join('')}</ul></details></li>` : ''}`).join('')}</ul>` : '';
     const title = (g, cls, key) => `<a class="${cls}${g.unread ? ' is-unread' : ''}" href="${outlineHash(key)}"${key === cur ? ' aria-current="page"' : ''} title="${esc(g.title)}"><span class="rt-title">${esc(g.title)}</span>${g.unread ? `<b class="rt-count" title="Unread">${g.unread}</b>` : ''}</a>`;
     return groups.map(g => `<section class="rt-group${g.id === 'none' ? ' is-none' : ''}" data-wb-key="t:${esc(g.id)}">${title(g, 'rt-task', g.id === 'none' ? 'none' : `task:${g.id}`)}${items(g, g.id)}${g.groups.map(sub => `<div class="rt-sub" data-wb-key="g:${esc(sub.id)}">${title(sub, 'rt-subtask', `task:${sub.id}`)}${items(sub, sub.id)}</div>`).join('')}</section>`).join('');
   }
@@ -391,7 +394,9 @@ export function createOutline({ report }) {
     patchHTML(detail, detailHTML());
     root.classList.toggle('is-detail', focus() || Boolean(detailOpen && selected));
     const dest = destination(), prompt = capture.value.trimStart().startsWith('>');
-    patchHTML(chip, dest ? `<span>${prompt ? 'Prompt for' : 'Subtask of'} <b>${esc(model.tasks.get(dest).title)}</b></span><button type="button" data-act="clear-dest" aria-label="Clear destination" tabindex="-1">clear</button>` : `<span class="ol-dim">${prompt ? 'Prompt · No task' : 'Task · top level'}</span>`);
+    // The chip says what the next line becomes. A selected prompt or run only lends its task: a plain line is a new task in it, not a child of the prompt.
+    const via = node(selected)?.kind, lent = via === 'prompt' || via === 'run';
+    patchHTML(chip, dest ? `<span${lent ? ` title="The selected ${via} belongs to this task"` : ''}>${prompt ? 'Prompt for' : lent ? 'New task in' : 'Subtask of'} <b>${esc(model.tasks.get(dest).title)}</b></span><button type="button" data-act="clear-dest" aria-label="Clear destination" tabindex="-1">clear</button>` : `<span class="ol-dim">${prompt ? 'Prompt · No task' : 'Task · top level'}</span>`);
     noticeEl.hidden = !notice;
     if (notice) patchHTML(noticeEl, `<p class="${notice.error ? 'is-error' : ''}" role="${notice.error ? 'alert' : 'status'}">${esc(notice.text)}</p><button type="button" class="subtle" data-act="dismiss">Dismiss</button>`);
     const counts = { 'needs-me': 0, running: 0, queued: 0, 'no-task': full.none.children.length };
@@ -577,6 +582,12 @@ export function createOutline({ report }) {
     const t = e.target, typing = t.matches?.('input, textarea, select, [contenteditable]');
     if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'n' || e.key === '/') { e.preventDefault(); detailOpen = false; render(); capture.focus(); return; }
+    if (view === 'tasks') {
+      const rows = model.order.filter(x => !model.tasks.get(x.id)?.archived).map(x => x.id), i = rows.indexOf(rowFocus), d = e.key === 'j' || e.key === 'ArrowDown' ? 1 : e.key === 'k' || e.key === 'ArrowUp' ? -1 : 0;
+      if (d && rows.length) { e.preventDefault(); rowFocus = rows[i < 0 ? d > 0 ? 0 : rows.length - 1 : Math.max(0, Math.min(rows.length - 1, i + d))]; render(); detail.querySelector('.ol-trow.is-kfocus')?.scrollIntoView({ block: 'nearest' }); }
+      else if (e.key === 'Enter' && i >= 0 && !t.closest?.('a, button, summary')) { e.preventDefault(); location.hash = outlineHash(`task:${rowFocus}`); }
+      return;
+    }
     const inTree = t === tree || t === document.body, lines = model.lines.filter(n => n.kind !== 'more'), i = lines.findIndex(n => n.key === selected);
     const rq = view === 'needs-me';
     // In the review queue j and k step over items only and open each one, which is what reads it.
