@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>tuios inbox · task-first outline (prototype)</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="outline.css">
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <p class="brand">tuios inbox</p>
+    <nav id="views" aria-label="Saved views"></nav>
+    <nav class="secondary" aria-label="Other places">
+      <a aria-disabled="true" title="Not part of this prototype">TUIOS</a>
+      <a aria-disabled="true" title="Not part of this prototype">Agent profiles</a>
+      <a aria-disabled="true" title="Not part of this prototype">History</a>
+      <a aria-disabled="true" title="Not part of this prototype">Collectors</a>
+    </nav>
+    <p class="keys" aria-label="Keyboard">
+      <span><kbd>n</kbd> <kbd>/</kbd> capture</span>
+      <span><kbd>j</kbd> <kbd>k</kbd> move</span>
+      <span><kbd>Tab</kbd> re-parent</span>
+      <span><kbd>Enter</kbd> open</span>
+    </p>
+  </aside>
+
+  <main class="center" id="center">
+    <form class="capture" id="capture" autocomplete="off">
+      <label class="sr-only" for="capture-input">New line. Plain text makes a task. Start with a greater-than sign to make a prompt.</label>
+      <span class="chip" id="dest"></span>
+      <input id="capture-input" type="text" placeholder="Type a task, or &gt; a prompt" enterkeyhint="done" spellcheck="false">
+      <span class="capture-hint"><kbd>Enter</kbd> saves <kbd>Cmd</kbd>+<kbd>Enter</kbd> runs a &gt; prompt</span>
+    </form>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+    <header class="heading">
+      <h1 id="view-title">Everything</h1>
+      <p class="proto-label">Prototype · synthetic data</p>
+    </header>
+    <div class="cols" aria-hidden="true">
+      <span>Line</span>
+      <span class="facts"><span>Queued</span><span>State</span><span>Unread</span><span>Branch</span><span>PR and checks</span></span>
+    </div>
+    <div class="scroller" id="scroller">
+      <ul class="outline" id="outline" role="tree" aria-label="Tasks, prompts and runs"></ul>
+    </div>
+  </main>
+
+  <aside class="detail" id="detail" aria-label="Selected line"></aside>
+</div>
+<input type="file" id="dir-fallback" class="sr-only" webkitdirectory tabindex="-1" aria-hidden="true">
+<script type="module" src="outline.js"></script>
+</body>
+</html>
