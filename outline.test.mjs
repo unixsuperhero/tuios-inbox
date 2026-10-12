@@ -31,7 +31,7 @@ beforeAll(async () => {
   await mkdir(repo); await mkdir(plain);
   await sh(repo, 'git', 'init', '-q', '-b', 'main'); await Bun.write(join(repo, 'a.txt'), 'a'); await sh(repo, 'git', 'add', '.'); await sh(repo, 'git', 'commit', '-q', '-m', 'first');
   const fake = join(home, 'tuios'), gh = join(home, 'gh');
-  await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" >> '${log}'\nprintf '\\001' >> '${log}'\ncase "$1" in start-agent) echo '{"window_id":"launched-1","ready":true}';; *) echo '{}';; esac\n`);
+  await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" "$(printf '\\001')" >> '${log}'\ncase "$1" in start-agent) echo '{"window_id":"launched-1","ready":true}';; *) echo '{}';; esac\n`);
   await Bun.write(gh, `#!/bin/sh\ncase "$3" in main) echo '{"number":42,"state":"OPEN","url":"https://example.test/pr/42","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE"}]}';; nopr) echo 'no pull requests found for branch "nopr"' >&2; exit 1;; *) echo 'could not connect' >&2; exit 1;; esac\n`);
   await chmod(fake, 0o755); await chmod(gh, 0o755);
   const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));

@@ -57,7 +57,7 @@
 .ol-line.is-unread { background: var(--surface-raised); }
 .ol-line.is-selected { background: var(--ol-soft); outline: 1px solid var(--ol-soft-line); outline-offset: -1px; }
 .ol-tree:focus-visible .ol-line.is-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
-.ol-main { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.ol-main { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; }
 #outline-root .ol-twist, .ol-twist-gap { flex: none; width: var(--ol-twist); height: var(--ol-twist); min-height: 0; }
 #outline-root .ol-twist { display: grid; place-items: center; padding: 0; border: 0; color: var(--muted); }
 .ol-twist svg { transition: transform .16s cubic-bezier(.16, 1, .3, 1); }
@@ -66,11 +66,13 @@
 .ol-mark-task { width: 9px; height: 9px; border: 1.5px solid var(--ink); }
 .ol-mark-none { width: 9px; height: 9px; border: 1.5px dashed var(--muted); }
 .ol-mark-run { font-weight: 400; font-size: 12px; color: var(--muted); }
-.ol-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-text { min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ol-line:is(.is-task, .is-none) .ol-text { font-weight: 600; }
 .ol-line.is-done .ol-text { font-weight: 400; color: var(--muted); }
 .ol-line.is-run { font-size: 14px; color: var(--muted); }
 .ol-line.is-unread .ol-text { font-weight: 700; color: #fff; }
+/* Wide rows keep the first tag only; the rest would run into the fact columns. The narrow layout wraps them instead. */
+.ol-line.is-run .ol-tag ~ .ol-tag { display: none; }
 .ol-sep { color: var(--control-line); }
 .ol-tag { flex: none; padding: 0 6px; border: 1px solid var(--line); border-radius: 2px; font-size: 12px; line-height: 1.6; color: var(--muted); white-space: nowrap; }
 .ol-fact { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--muted); }
@@ -99,6 +101,7 @@
   .ol-text { max-width: calc(100% - var(--ol-twist) - 48px); }
   .ol-fact { overflow: visible; white-space: normal; }
   .ol-fact:empty { display: none; }
+  .ol-line.is-run .ol-tag ~ .ol-tag { display: inline-block; }
   .ol-fact::before { content: attr(data-label) ': '; font-size: 12px; color: var(--ol-dim); }
   .ol-keys, .ol-capture-hint { display: none; }
 }

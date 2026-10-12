@@ -120,7 +120,8 @@ export function createOutline({ report }) {
   const taskOf = key => { const n = node(key); return !n ? null : n.kind === 'task' ? n.rec.id : n.kind === 'none' ? null : model.tasks.has(n.rec.task_id) ? n.rec.task_id : null; };
   const destination = () => destCleared ? null : taskOf(selected);
   const sourceNote = (r, tasks = model.tasks) => !r || r.from === 'none' ? 'not set' : r.from === 'self' ? '' : r.from === 'default' ? '(default)' : `(from ${tasks.get(r.from)?.title || 'parent'})`;
-  const harnesses = current => [...new Set([data?.defaults?.harness, ...(data?.profiles || []).map(p => p.harness || p.name), ...(data?.panes || []).map(p => p.harness), current].filter(Boolean))];
+  // Only profile ids resolve on the backend (profileFor also maps claude-code to claude); a stored value outside that list stays selectable so it is never dropped silently.
+  const harnesses = current => [...(data?.profiles || []).map(p => [p.id, p.id === p.name ? p.id : `${p.id} (${p.name})`]), ...(current && !(data?.profiles || []).some(p => p.id === current) ? [[current, `${current} (no profile)`]] : [])];
 
   // ---- outline markup ----------------------------------------------------------------------------------------
   const fact = (label, html, cls = '') => `<span class="ol-fact ${cls}" data-label="${label}">${html}</span>`;
@@ -176,7 +177,7 @@ export function createOutline({ report }) {
     if (current && !rows.some(([id]) => id === current)) { const p = panes.find(p => p.id === current); rows.push([current, p ? `${agentName(p.name, p.id)} · ${p.state === 'closed' ? 'closed' : `${p.state} · not at rest`}` : `pane ${current.slice(0, 8)} · gone`]); }
     return rows;
   };
-  const harnessSelect = (save, own, resolved, id) => `<select id="${id}" data-save="${esc(save)}">${options([['', `Inherit${resolved && resolved.from !== 'self' && resolved.value ? `: ${resolved.value} ${sourceNote(resolved)}` : ''}`], ...harnesses(own).map(h => [h, h])], own)}</select>`;
+  const harnessSelect = (save, own, resolved, id) => `<select id="${id}" data-save="${esc(save)}">${options([['', `Inherit${resolved && resolved.from !== 'self' && resolved.value ? `: ${resolved.value} ${sourceNote(resolved)}` : ''}`], ...harnesses(own)], own)}</select>`;
   const runRow = r => `<li data-wb-key="rr:${esc(r.id)}"><button type="button" class="ol-rowlink${r.unread ? ' is-unread' : ''}" data-act="select" data-id="run:${esc(r.id)}"><span class="ol-mono">${esc(r.harness)}</span> ${state(r.state)} <span>${r.commits?.length ? plural(r.commits.length, 'commit') : ''}</span> ${r.unread ? '<b class="ol-unread">Unread</b>' : ''} <span class="ol-mono ol-dim">${esc(when(r.finished || r.started))}</span></button></li>`;
   const queueRows = (prompts, taskId) => prompts.length ? `<ol class="ol-list">${prompts.map((p, i) => `<li data-wb-key="q:${esc(p.id)}"><button type="button" class="ol-rowlink" data-act="select" data-id="prompt:${esc(p.id)}"><span class="ol-mark">&gt;</span> <span class="ol-clip">${esc(oneLine(p.body)) || 'empty prompt'}</span> ${state(p.state)}</button>${i ? button('earlier', p.id, 'Earlier', 'subtle', ` data-before="${esc(prompts[i - 1].id)}" data-task="${esc(taskId || '')}"`) : ''}</li>`).join('')}</ol>` : '<p class="ol-dim">No prompts waiting.</p>';
   const head = (kind, extra = '') => `<div class="ol-detail-head"><button type="button" class="ol-back" data-act="back">Back to outline</button><p class="ol-kind">${kind}${extra}</p></div>`;
