@@ -26,7 +26,7 @@ async function pane(name, taskId) {
   await turnDone('seed-' + name, name, 'earlier'); await call('/agents/update', { ids: [name], set: { task_id: taskId } });
   const resolved = (await outline()).tasks.find(t => t.id === taskId)?.resolved;
   const db = new (await import('bun:sqlite')).Database(join(home, 'inbox.sqlite'));
-  db.run('UPDATE agents SET launch_cwd=?,launch_profile=?,launch_model=? WHERE id=?', [resolved?.cwd.value || (await import('node:os')).homedir(), 'omp', resolved?.model.value || '', name]); db.close();
+  db.run('UPDATE agents SET launch_cwd=?,launch_profile=?,launch_model=?,host=?,session=? WHERE id=?', [resolved?.cwd.value || (await import('node:os')).homedir(), 'omp', resolved?.model.value || '', resolved?.host.value || 'local', resolved?.session.value || 's', name]); db.close();
   await Bun.sleep(5); return name;
 }
 const promptOf = async key => (await outline()).prompts.find(p => p.id === key);
@@ -37,7 +37,18 @@ beforeAll(async () => {
   await mkdir(repo); await mkdir(plain);
   await sh(repo, 'git', 'init', '-q', '-b', 'main'); await Bun.write(join(repo, 'a.txt'), 'a'); await sh(repo, 'git', 'add', '.'); await sh(repo, 'git', 'commit', '-q', '-m', 'first');
   const fake = join(home, 'tuios'), gh = join(home, 'gh');
-  await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" "$(printf '\\001')" >> '${log}'\ncase "$1" in start-agent) echo '{"window_id":"launched-1","ready":true}';; *) echo '{}';; esac\n`);
+  await Bun.write(fake, `#!${process.execPath}
+const args = process.argv.slice(2), log = ${JSON.stringify(log)};
+const { appendFile } = await import('node:fs/promises'); await appendFile(log, args.join('\\0') + '\\0\\x01');
+const file = ${JSON.stringify(join(home, 'native-sessions.json'))};
+const sessions = await Bun.file(file).json().catch(() => [{ name:'s', global:true }, { name:'ordinary', global:false }]);
+let result = {};
+if (args[0] === 'ls') result = args.includes('--all-hosts') ? { hosts:[{host:'local',status:'up',sessions}] } : { sessions };
+if (args[0] === 'new') { sessions.push({ name:args[1], global:args.includes('--global') }); await Bun.write(file, JSON.stringify(sessions)); }
+if (args[0] === 'start-agent') result = {window_id:'launched-1',ready:true,outcome:'ready'};
+if (args[0] === 'list-windows') { const { Database } = await import('bun:sqlite'); const db = new Database(process.env.TUIOS_INBOX_DATA + '/inbox.sqlite'); const target = args[args.indexOf('-s')+1]; result = { windows:db.query("SELECT id AS window_id,state,host FROM agents WHERE session=? AND state<>'closed'").all(target).map(a => ({...a,agent_state:{state:a.state}})) }; db.close(); }
+console.log(JSON.stringify(result));
+`);
   await Bun.write(gh, `#!/bin/sh\ncase "$3" in main) echo '{"number":42,"state":"OPEN","url":"https://example.test/pr/42","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE"}]}';; nopr) echo 'no pull requests found for branch "nopr"' >&2; exit 1;; *) echo 'could not connect' >&2; exit 1;; esac\n`);
   // The opener only records what it was handed; no test ever starts the real `open`.
   await Bun.write(join(home, 'open'), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${join(home, 'open.log')}'\n`);
@@ -83,7 +94,8 @@ test('a blocked run answers 409, keeps the prompt as blocked, and can be queued 
   const res = await call(`/prompts/${prompt.id}/run`, {});
   expect(res.status).toBe(409);
   const refused = await res.json();
-  expect(refused.error).toContain('home directory');
+  expect(refused.error).toContain('execution machine');
+  expect(refused.preflight.blocks).toEqual([{ code: 'no_host', fix: 'host', message: 'Choose an execution machine before creating a pane' }]);
   expect(refused.preflight.warns[0]).toMatchObject({ code: 'nowhere', fix: 'repo' });
   expect(await promptOf(prompt.id)).toMatchObject({ state: 'blocked' });
   expect(await json(`/prompts/${prompt.id}`, { state: 'queued', body: 'orphan, edited' }, 'PATCH')).toMatchObject({ state: 'queued', body: 'orphan, edited', error: '' });
@@ -95,7 +107,7 @@ test('a blocked run answers 409, keeps the prompt as blocked, and can be queued 
 });
 
 test('task facts are set by alias, inherited by lookup, and cleared back to inherit', async () => {
-  const parent = await json('/tasks', { title: 'Fix parser', repo, branch: 'main', harness: 'omp', model: 'gpt-x', queue_mode: 'auto' });
+  const parent = await json('/tasks', { title: 'Fix parser', repo, branch: 'main', harness: 'omp', model: 'gpt-x', host: 'local', queue_mode: 'auto' });
   const kid = await json('/tasks', { title: 'Tokenizer', parent_id: parent.id });
   expect((await call('/tasks', { title: 'Bad', queue_mode: 'sometimes' })).status).toBe(400);
   let o = await outline(), p = o.tasks.find(t => t.id === parent.id), k = o.tasks.find(t => t.id === kid.id);
@@ -187,11 +199,12 @@ test('queues run lowest position first; an automatic queue advances when its pan
   expect(first.status).toBe(202);
   expect((await first.json()).prompt).toMatchObject({ id: ids[2], state: 'running' });
   const bodies = async () => (await sent()).filter(c => c[0] === 'queue' && c.includes(a)).map(c => c.at(-1));
+  const queued = async expected => { const end=Date.now()+4000; while(Date.now()<end && (await bodies()).length<expected.length) await Bun.sleep(25); expect(await bodies()).toEqual(expected); };
   expect(await bodies()).toEqual(['three']);
   await turnDone('q-1', a, 'three');
-  expect(await bodies()).toEqual(['three', 'one']);
+  await queued(['three', 'one']);
   await turnDone('q-2', a, 'one');
-  expect(await bodies()).toEqual(['three', 'one', 'two']);
+  await queued(['three', 'one', 'two']);
   await turnDone('q-3', a, 'two');
   // "four" names a pane that is gone: it becomes blocked and "five" waits behind it.
   await turnDone('q-4', a, 'typed by hand');
@@ -204,7 +217,7 @@ test('queues run lowest position first; an automatic queue advances when its pan
 });
 
 test('with no pane at rest a run launches an agent in the repo and sends there', async () => {
-  const task = await json('/tasks', { title: 'Launch', repo, model: 'gpt-x' });
+  const task = await json('/tasks', { title: 'Launch', repo, model: 'gpt-x', host: 'local' });
   const { prompt } = await json('/prompts', { body: 'start here', task_id: task.id });
   expect(prompt.preflight.blocks).toEqual([]);
   expect((await call(`/prompts/${prompt.id}/run`, { allow_warnings: true })).status).toBe(202);
@@ -238,7 +251,7 @@ test('the outline lists every unread or waiting run, however old, beside the new
     expect(prompts).toEqual(['ask new-b', 'ask new-a', 'ask old-unread']);
     expect(new Set(o.runs.map(r => r.id)).size).toBe(o.runs.length);
     expect(o.runs.find(r => r.prompt === 'ask old-unread')).toMatchObject({ unread: true, archived: false });
-    expect(Object.keys(o).sort()).toEqual(['defaults', 'panes', 'profiles', 'prompts', 'runs', 'tasks']);
+    expect(Object.keys(o).sort()).toEqual(['defaults', 'hosts', 'panes', 'profiles', 'prompts', 'runs', 'sessions', 'tasks']);
   } finally { ({ home, base } = main); second.kill(); await second.exited; await rm(data, { recursive: true, force: true }); }
 });
 
@@ -291,7 +304,7 @@ test('the outline lists the documents a run reported, without carrying its respo
 test('a turn left open is settled from its pane: closed when the pane is gone or at rest, kept while it still works', async () => {
   // Its own server and a TUIOS that lists two windows: one working, one at rest. The third pane no longer exists.
   const main = { home, base }, data = await mkdtemp(join(tmpdir(), 'outline-settle-')), fake = join(data, 'tuios');
-  await Bun.write(fake, `#!/bin/sh\ncase "$1" in list-windows) echo '{"windows":[{"window_id":"live","agent_state":{"state":"working"}},{"window_id":"rest","agent_state":"idle"}]}';; *) echo '{}';; esac\n`);
+  await Bun.write(fake, `#!/bin/sh\ncase "$1" in ls) echo '{"sessions":[{"name":"s","global":true}]}';; list-windows) echo '{"windows":[{"window_id":"live","agent_state":{"state":"working"}},{"window_id":"rest","agent_state":"idle"}]}';; *) echo '{}';; esac\n`);
   await chmod(fake, 0o755);
   const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
@@ -347,6 +360,7 @@ test('a closed pane ends its open turn at once, fails the prompt it was running,
   const working = ['ev-exit', 'ev-closed', 'ev-run'].map(w => ({ window_id: w, agent_state: { state: 'working' } }));
   await Bun.write(stream, '');
   await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" "$(printf '\\001')" >> '${join(data, 'calls.log')}'\ncase "$1" in subscribe) exec tail -n +1 -f '${stream}';;
+ls) echo '{"sessions":[{"name":"s","global":true}]}';;
 list-windows) echo '${JSON.stringify({ windows: [...working, { window_id: 'missed', agent_state: { state: 'done' } }] })}';;
 list-agents) echo '${JSON.stringify({ agents: [{ window_id: 'missed', name: 'missed', state: 'done', harness_id: 'omp', agent_session_id: 'sess-missed', meta: { prompt: 'ask missed' } }] })}';;
 *) echo '{}';; esac\n`);
@@ -444,4 +458,44 @@ test('a pane and a run without a task inherit the task whose session they live i
   expect(run('in no task session').unread).toBe(true);
   // Nothing was written: the pane and its turns still have no task.
   expect(pane('hand-pane').task_id).toBe(null); expect(run('typed by hand').task_id).toBe(null);
+});
+
+test('global inventory is exposed to the outline and ordinary sessions cannot become task or prompt homes', async () => {
+  const data = await outline();
+  expect(data.sessions.filter(s => s.target === 's').map(s => [s.target, s.global])).toEqual([['s', true]]);
+  expect(data.sessions.some(s => s.target === 'ordinary' || s.global !== true)).toBe(false);
+  expect(data.hosts.find(h => h.host === 'local')).toMatchObject({ host: 'local', status: 'up' });
+  expect((await call('/tasks', { title: 'ordinary home', session: 'ordinary' })).status).toBe(400);
+  expect((await call('/prompts', { body: 'ordinary prompt home', session: 'ordinary' })).status).toBe(400);
+  const parent = await json('/tasks', { title: 'Machine parent', session: 's', host: 'local' });
+  const child = await json('/tasks', { title: 'Machine child', parent_id: parent.id });
+  const { prompt } = await json('/prompts', { body: 'inherited execution', task_id: child.id });
+  expect(prompt).toMatchObject({ host: '', session: '', resolved: { host: { value: 'local', from: parent.id }, session: { value: 's', from: parent.id } } });
+  const overridden = await json(`/prompts/${prompt.id}`, { host: 'build', session: 's' }, 'PATCH');
+  expect(overridden).toMatchObject({ host: 'build', session: 's', resolved: { host: { value: 'build', from: 'self' }, session: { value: 's', from: 'self' } } });
+  const cleared = await json(`/prompts/${prompt.id}`, { host: '', session: '' }, 'PATCH');
+  expect(cleared.resolved.host).toEqual({ value: 'local', from: parent.id });
+  expect((await outline()).tasks.find(t => t.id === child.id)).toMatchObject({ host: '', own: { session: '' } });
+});
+
+test('warning override and automatic queues cannot create on an unspecified machine', async () => {
+  const task = await json('/tasks', { title: 'Unspecified automatic machine', queue_mode: 'auto', session: 's' });
+  const rest = await pane('machine-auto-rest', task.id);
+  const { prompt } = await json('/prompts', { body: 'preserve this text', task_id: task.id, run: true, allow_warnings: true });
+  expect(await promptOf(prompt.id)).toMatchObject({ state: 'blocked', pane_id: '', body: 'preserve this text', host: '' });
+  await json(`/prompts/${prompt.id}`, { state: 'queued' }, 'PATCH');
+  await turnDone('machine-auto-trigger', rest, 'completed previous work');
+  for (let i = 0; i < 40 && (await promptOf(prompt.id)).state === 'queued'; i++) await Bun.sleep(50);
+  expect(await promptOf(prompt.id)).toMatchObject({ state: 'blocked', pane_id: '', error: 'Choose an execution machine before creating a pane' });
+  const retry = await call(`/prompts/${prompt.id}/run`, { allow_warnings: true });
+  expect(retry.status).toBe(409);
+  expect((await retry.json()).preflight.blocks.map(b => b.code)).toEqual(['no_host']);
+});
+
+test('a remote directory never borrows local Git preflight even when the same path exists locally', async () => {
+  const task=await json('/tasks',{title:'Remote Git realm',repo,host:'build',branch:'main'});
+  const saved=await json('/prompts',{body:'Inspect on the selected machine',task_id:task.id});
+  expect((await outline()).tasks.find(t=>t.id===task.id).git).toMatchObject({state:'unknown',head:'',pr:null,pr_state:'unknown'});
+  expect(saved.preflight.warns.map(w=>w.code)).toEqual(['remote_git_unknown']);
+  expect(await json('/git/refresh',{task_id:task.id})).toMatchObject({state:'unknown',head:'',pr:null});
 });

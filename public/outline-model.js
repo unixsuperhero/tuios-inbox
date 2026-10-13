@@ -1,6 +1,6 @@
 // Pure outline model: inheritance by lookup, run preflight, queue order. No DOM, no fetch, so server and browser share it.
 export const DEFAULTS = { harness: 'omp', queue_mode: 'manual', launch_mode: 'new' };
-export const FIELDS = ['repo', 'branch', 'harness', 'model', 'queue_mode', 'session', 'workspace', 'launch_mode'];
+export const FIELDS = ['repo', 'branch', 'harness', 'model', 'queue_mode', 'session', 'workspace', 'launch_mode', 'host'];
 const get = (index, key) => key == null ? undefined : index instanceof Map ? index.get(key) : index?.[key];
 const set = value => value !== undefined && value !== null && value !== '';
 const own = (record, field) => { const src = record.own || record; return field === 'repo' ? (set(src.repo) ? src.repo : src.path) : src[field]; };
@@ -44,9 +44,12 @@ export function pickPane(prompt, panes = [], resolved = {}, profiles = []) {
   if (prompt.target) return panes.find(p => p.id === prompt.target) || null;
   if ((resolved.launch_mode?.value ?? prompt.launch_mode ?? DEFAULTS.launch_mode) !== 'reuse') return null;
   const cwd = resolved.cwd?.value, harness = resolved.harness?.value ?? DEFAULTS.harness;
+  const host = resolved.host?.value, session = resolved.session?.value || (prompt.task_id || prompt.id ? `inbox-${(prompt.task_id || prompt.id).slice(0, 8)}` : null);
+  if (!set(host)) return null;
   const profile = profileFor(harness, profiles)?.id ?? harness, model = resolved.model?.value ?? '';
   return panes.find(p => (p.task_id ?? null) === (prompt.task_id ?? null) && p.kind === 'agent' && p.ready && ['idle', 'done'].includes(p.state)
     && set(p.launch_cwd) && set(p.launch_profile) && p.launch_model != null
+    && set(session) && p.host === host && p.session === session
     && p.launch_cwd === cwd && p.launch_profile === profile && p.launch_model === model) || null;
 }
 
@@ -61,6 +64,7 @@ export function preflight({ prompt, resolved, panes = [], git = null, profiles =
   if (sent) ;
   else if (prompt.target) {
     const pane = panes.find(p => p.id === prompt.target);
+    if (pane?.live === false) blocks.push({ code: 'not_global', message: 'Target pane is not in an available native global session', fix: 'target' });
     if (!pane || pane.state === 'closed') warns.push({ code: 'pane_gone', message: 'Target pane is gone; attempting it may fail, or choose another target', fix: 'target' });
     else {
       if (pane.state === 'needs_input') warns.push({ code: 'pane_blocked', message: 'Target pane is waiting on its own question; Queue anyway waits without answering it', fix: 'target' });
@@ -72,10 +76,12 @@ export function preflight({ prompt, resolved, panes = [], git = null, profiles =
       if (set(pane.launch_cwd) && resolved.cwd?.value && pane.launch_cwd !== resolved.cwd.value) warns.push({ code: 'cwd_mismatch', message: `Target pane runs in ${pane.launch_cwd}, prompt expects ${resolved.cwd.value}`, fix: 'target' });
     }
   } else if (!pickPane(prompt, panes, resolved, profiles)) {
+    if (!set(resolved.host?.value)) blocks.push({ code: 'no_host', message: 'Choose an execution machine before creating a pane', fix: 'host' });
     if (!resolved.cwd?.value) warns.push({ code: 'nowhere', message: 'No directory is set; proceeding launches in your home directory', fix: 'repo' });
     if (!profileFor(resolved.harness?.value, profiles)) warns.push({ code: 'no_harness', message: `No saved agent profile for ${resolved.harness?.value || DEFAULTS.harness}; proceeding launches that executable without extra profile arguments`, fix: 'harness' });
   }
   if (new TextEncoder().encode(String(prompt.body || '')).length > 16 * 1024) warns.push({ code: 'native_message_limit', message: 'Prompt exceeds the native 16 KiB queue-message limit; attempting it may be refused, and the full text will be preserved', fix: 'body' });
+  if (!sent && git?.state === 'unknown') warns.push({ code: 'remote_git_unknown', message: git.reason, fix: 'repo' });
   if (git?.state === 'ok') {
     const branch = resolved.branch?.value;
     if (branch && git.head && git.head !== branch) warns.push({ code: 'branch_mismatch', message: `Repo is on ${git.head}, task expects ${branch}` });

@@ -542,7 +542,7 @@ export async function detectShell(t) {
   return parseShell(r.code === 0 ? r.out : '');
 }
 
-export const sourceBlock = (file) => `${BLOCK_OPEN}\n[ "\${TUIOS_ENV:-}" = 1 ] && [ -r ${shq(file)} ] && . ${shq(file)}\n${BLOCK_CLOSE}\n`;
+export const sourceBlock = (file) => `${BLOCK_OPEN}\n{ [ "\${TUIOS_ENV:-}" = 1 ] || [ "\${TUIOS_PANE_HOSTED:-}" = 1 ]; } && [ -r ${shq(file)} ] && . ${shq(file)}\n${BLOCK_CLOSE}\n`;
 
 export function ensureSourceBlock(text, file) {
   const block = sourceBlock(file);

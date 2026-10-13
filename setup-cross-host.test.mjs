@@ -38,6 +38,28 @@ async function run(command, extra, runOpts = {}) {
   const code = await main([command, ...flags(extra)], { run: runOpts.fn || fakeRun(runOpts.extra), out: (l) => lines.push(l), scriptsDir: src });
   return { code, text: lines.join('\n') };
 }
+async function shellOutput(kind, env = {}) {
+  const shell = Bun.which(kind);
+  const args = kind === 'bash' ? ['--noprofile', '--norc', '-i'] : ['-d', '-f', '-i'];
+  const p = Bun.spawn([shell, ...args], {
+    env: { HOME: home, ZDOTDIR: home, PATH: process.env.PATH, TERM: 'dumb', PS1: '', ...env },
+    stdin: new Response(`. ${shellQuote(join(home, kind === 'bash' ? '.bashrc' : '.zshrc'))}\nprintf HOSTED_MARKS_OK\nfalse\nexit 0\n`),
+    stdout: 'pipe', stderr: 'pipe',
+  });
+  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  expect(code).toBe(0);
+  expect(out).toContain('HOSTED_MARKS_OK');
+  return { out, marks: out + err };
+}
+
+function expectCommandMarks({ out, marks }) {
+  expect(marks).toContain('\x1b]133;A\x07');
+  expect(marks).toContain('\x1b]133;B\x07');
+  expect(marks).toContain('\x1b]133;C\x07');
+  expect(out).toContain('HOSTED_MARKS_OK\x1b]133;D;0\x07');
+  expect(out).toContain('\x1b]133;D;1\x07');
+}
+
 const tree = async (dir, base = dir) => {
   const out = [];
   for (const e of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
@@ -55,8 +77,7 @@ beforeEach(async () => {
   shellProbe = BASH_PROBE;
   await writeFile(join(src, 'collector.mjs'), "import { a } from './helper.mjs';\nexport const c = a;\n");
   await writeFile(join(src, 'helper.mjs'), 'export const a = 1;\n');
-  await writeFile(join(src, 'shell.bash'), '# bash marks\n');
-  await writeFile(join(src, 'shell.zsh'), '# zsh marks\n');
+  for (const kind of ['bash', 'zsh']) await writeFile(join(src, `shell.${kind}`), await readFile(new URL(`./scripts/shell.${kind}`, import.meta.url), 'utf8'));
   await writeFile(join(src, 'capture-hook.mjs'), "import { open } from './collector.mjs';\n");
   config = join(home, 'tuios-config.toml');
   await writeFile(config, `# mine\n[general]\nx = 1\n\n[hooks]\nafter-agent-state = '${OLD}'\nafter-command-finished = ["echo keep", '${OLD}']\n\n[debug]\nshow = false\n`);
@@ -214,26 +235,28 @@ describe('install behavior against an isolated home', () => {
     expect(await tree(home)).toEqual(snapshot);
   });
 
-  test('bash startup file gains the marks block once, keeps personal settings, and the runtime copy carries shell.bash', async () => {
+  test('installed bash startup marks local and hosted commands, preserves settings, and installs idempotently', async () => {
     const rc = join(home, '.bashrc');
-    const personal = '# mine\nexport EDITOR=vim\nPROMPT_COMMAND=(one two)\nPS1="\\u> "\n';
+    const personal = `# mine\nexport EDITOR=vim\nPROMPT_COMMAND=('printf PERSONAL_HOOK')\nPS1="mine> "\n`;
     await writeFile(rc, personal);
     expect((await run('install', ['--collector-only'])).code).toBe(0);
-    const rt = join(home, '.local/share/tuios-inbox/collector-runtime/scripts');
-    expect(await readFile(join(rt, 'shell.bash'), 'utf8')).toBe('# bash marks\n');
-    expect(await Bun.file(join(rt, 'shell.zsh')).exists()).toBe(false);
     const after = await readFile(rc, 'utf8');
     expect(after.startsWith(personal)).toBe(true);
-    expect(after).toContain(`. ${join(rt, 'shell.bash')}`);
-    expect(after).toContain('TUIOS_ENV');
-    const again = await run('install', ['--collector-only']);
-    expect(again.code).toBe(0);
+    for (const env of [{ TUIOS_ENV: '1' }, { TUIOS_PANE_HOSTED: '1' }, { TUIOS_ENV: '0', TUIOS_PANE_HOSTED: '1' }]) {
+      const output = await shellOutput('bash', env);
+      expectCommandMarks(output);
+      expect(output.out).toContain('PERSONAL_HOOK');
+    }
+    for (const env of [{}, { TUIOS_ENV: '0', TUIOS_PANE_HOSTED: '0' }, { TUIOS_PANE_HOSTED: '2' }]) {
+      expect((await shellOutput('bash', env)).marks).not.toContain('\x1b]133;');
+    }
+    expect((await run('install', ['--collector-only'])).code).toBe(0);
     expect(await readFile(rc, 'utf8')).toBe(after);
   });
 
-  test('a fresh VPS with no bashrc and no panes gets one created', async () => {
+  test('a fresh VPS with no bashrc and no panes gets working hosted command marks', async () => {
     expect((await run('install', ['--collector-only'])).code).toBe(0);
-    expect(await readFile(join(home, '.bashrc'), 'utf8')).toContain('shell.bash');
+    expectCommandMarks(await shellOutput('bash', { TUIOS_PANE_HOSTED: '1' }));
   });
 
   test('startup files are left alone when every pane already marks commands or the file has native marks', async () => {
@@ -254,12 +277,14 @@ describe('install behavior against an isolated home', () => {
     expect(await readFile(rc, 'utf8')).toBe(native);
   });
 
-  test('zsh with missing marks sources shell.zsh', async () => {
+  test('installed zsh startup marks local and hosted commands, but not unrelated shells', async () => {
     shellProbe = 'SHELL_PATH=/usr/bin/zsh\nSHELL_BASH_VERSION=\n';
     panes = [{ session: 's', window_id: 'w', marks_commands: false }];
     expect((await run('install', ['--collector-only'])).code).toBe(0);
-    expect(await readFile(join(home, '.zshrc'), 'utf8')).toContain('shell.zsh');
-    expect(await readFile(join(home, '.local/share/tuios-inbox/collector-runtime/scripts/shell.zsh'), 'utf8')).toBe('# zsh marks\n');
+    for (const env of [{ TUIOS_ENV: '1' }, { TUIOS_PANE_HOSTED: '1' }, { TUIOS_ENV: '0', TUIOS_PANE_HOSTED: '1' }]) {
+      expectCommandMarks(await shellOutput('zsh', env));
+    }
+    expect((await shellOutput('zsh')).marks).not.toContain('\x1b]133;');
   });
 
   test('an unsupported shell with unmarked panes fails the install honestly and writes no startup file', async () => {

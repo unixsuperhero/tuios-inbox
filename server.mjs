@@ -6,6 +6,8 @@ import { homedir, hostname } from 'node:os';
 import { captureTurn } from './scripts/turn.mjs';
 import { createHistory } from './scripts/history.mjs';
 import { pullCollectors } from './scripts/pull-collectors.mjs';
+import { splitOnHost } from './scripts/native-split.mjs';
+import { nativeOwner } from './scripts/native-owner.mjs';
 import { DEFAULTS, resolve as resolveFields, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, docsIn } from './public/outline-model.js';
 import { parseStyleOverrides } from './public/task-style.js';
 
@@ -99,7 +101,7 @@ if (!one("SELECT 1 FROM settings WHERE key='migrated_items'")) db.transaction(()
 })();
 // Task-first outline: a task carries optional run facts ('' inherits from its parent), prompts wait in queues, and a turn is the run of a prompt.
 const columns = table => all(`SELECT name FROM pragma_table_info('${table}')`).map(c => c.name);
-for (const c of ['branch', 'harness', 'model', 'queue_mode', 'launch_mode', 'source', 'style_theme', 'style_icon', 'style_color']) if (!columns('tasks').includes(c)) db.exec(`ALTER TABLE tasks ADD COLUMN ${c} TEXT NOT NULL DEFAULT ''`);
+for (const c of ['branch', 'harness', 'model', 'queue_mode', 'launch_mode', 'host', 'source', 'style_theme', 'style_icon', 'style_color']) if (!columns('tasks').includes(c)) db.exec(`ALTER TABLE tasks ADD COLUMN ${c} TEXT NOT NULL DEFAULT ''`);
 if (!columns('tasks').includes('style_seed')) db.exec('ALTER TABLE tasks ADD COLUMN style_seed INTEGER');
 for (const c of ['launch_cwd', 'launch_profile', 'launch_model']) if (!columns('agents').includes(c)) db.exec(`ALTER TABLE agents ADD COLUMN ${c} TEXT NOT NULL DEFAULT ''`);
 db.transaction(() => {
@@ -115,7 +117,7 @@ db.transaction(() => {
 })();
 // pane_id, head_before and ran describe the run in flight: where it was sent, the commit it started from, and when.
 db.exec("CREATE TABLE IF NOT EXISTS prompts (id TEXT PRIMARY KEY, body TEXT NOT NULL, task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL, target TEXT NOT NULL DEFAULT '', harness TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', position REAL NOT NULL, state TEXT NOT NULL DEFAULT 'queued', error TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, updated TEXT NOT NULL, pane_id TEXT NOT NULL DEFAULT '', head_before TEXT NOT NULL DEFAULT '', ran TEXT NOT NULL DEFAULT '')");
-if (!columns('prompts').includes('launch_mode')) db.exec("ALTER TABLE prompts ADD COLUMN launch_mode TEXT NOT NULL DEFAULT ''");
+for (const c of ['launch_mode', 'host', 'session']) if (!columns('prompts').includes(c)) db.exec(`ALTER TABLE prompts ADD COLUMN ${c} TEXT NOT NULL DEFAULT ''`);
 for (const [c, type] of [['prompt_id', 'TEXT'], ['head_before', "TEXT NOT NULL DEFAULT ''"], ['head_after', "TEXT NOT NULL DEFAULT ''"], ['commits', "TEXT NOT NULL DEFAULT '[]'"]]) if (!columns('turns').includes(c)) db.exec(`ALTER TABLE turns ADD COLUMN ${c} ${type}`);
 const tuios = process.env.TUIOS_BIN || '/opt/homebrew/bin/tuios';
 const active = new Map();
@@ -140,7 +142,37 @@ async function cached(key, req, build) {
   if (req.headers.get('if-none-match') === hit.etag) return new Response(null, { status: 304, headers });
   return new Response(hit.body, { headers: { ...headers, 'Content-Type': 'application/json;charset=utf-8' } });
 }
+const creating = new Map();
+async function createInSession(session, action, { newSession = false } = {}) {
+  const previous = creating.get(session) || Promise.resolve();
+  const next = previous.catch(() => {}).then(async () => { if (!newSession) await nativeSession(session, true); return action(); });
+  creating.set(session, next);
+  try { return await next; } finally { if (creating.get(session) === next) creating.delete(session); }
+}
+const ownerVerbs = new Set(['session-info','list-workspaces','list-windows','list-agents','get-window','get-agent-state','agent-log','capture-pane','run-command','move-window','set-window','focus-window','select-workspace','close-workspace','set-layout','set-session-name','set-session-accent','set-workspace-name']);
+async function ownerCli(args, json) {
+  const at=args.indexOf('-s'), target=args[at+1], split=target.indexOf(':');
+  const value=flag=>args[args.indexOf(flag)+1], params={session:target.slice(split+1)};
+  if (args.includes('-w')) params.window=value('-w');
+  if (args[0]==='get-window') params.window=args[1];
+  if (args[0]==='list-agents'&&args.includes('--all')) params.all=true;
+  for(const flag of ['--limit','--lines']) if(args.includes(flag)) params[flag.slice(2)]=Number(value(flag));
+  if(args.includes('--scrollback')) params.scrollback=true;
+  if(args[0]==='run-command') { const rest=args.slice(1,at).concat(args.slice(at+2)).filter(x=>x!=='--json'); params.command=rest[0];params.args=rest.slice(1); }
+  if(args[0]==='move-window'||['select-workspace','close-workspace'].includes(args[0])) params.workspace=Number(args[1]);
+  if(args[0]==='focus-window') params.window=args[1];
+  if(args[0]==='set-window') { if(args.includes('--name')) params.name=value('--name'); if(args.includes('--minimize')) params.minimized=true; if(args.includes('--restore')) params.minimized=false; }
+  if(args[0]==='set-session-name') params.name=args.at(-1);
+  if(args[0]==='set-session-accent') params.accent=args.at(-1);
+  if(args[0]==='set-workspace-name') { params.workspace=Number(args[at+2]);params.name=args.at(-1); }
+  if(args[0]==='set-layout') { if(args.includes('--tiling')) params.tiling=value('--tiling')==='true'; for(const flag of ['equalize','rotate']) if(args.includes('--'+flag)) params[flag]=true; if(args.includes('--masters')) params.master_count=Number(value('--masters')); if(args.includes('--master-position')) params.master_position=value('--master-position'); }
+  const result=await nativeOwner({owner:target.slice(0,split),verb:args[0]==='agent-log'?'agent-activity':args[0],params});
+  if (result.success===false||result.error) { const error=new Error(result.error?.message||result.error||result.message||'Native owner operation refused'); Object.assign(error,result);throw error; }
+  return json ? {success:true,untrusted:true,host:target.slice(0,split),...result} : 'Untrusted terminal output from '+target.slice(0,split)+':\n'+(result.text ?? result.output ?? result.content ?? '');
+}
 async function cli(args, timeout = 15000, json = true, cwd = undefined) {
+  const sessionAt=args.indexOf('-s');
+  if(sessionAt!==-1&&args[sessionAt+1].includes(':')&&ownerVerbs.has(args[0])) return ownerCli(args,json);
   const argv = [...args];
   if (json && !argv.includes('--json')) argv.splice(argv.includes('--') ? argv.indexOf('--') : argv.length, 0, '--json');
   const child = Bun.spawn([tuios, ...argv], { cwd, stdout: 'pipe', stderr: 'pipe', env: process.env });
@@ -152,7 +184,7 @@ async function cli(args, timeout = 15000, json = true, cwd = undefined) {
   let value;
   if (json) { try { value = JSON.parse(stdout); } catch {} }
   if (code && !value) throw new Error(stderr.trim() || stdout.trim() || `TUIOS exited ${code}`);
-  if (value?.success === false) throw new Error(value.error || value.message || stderr.trim() || 'Native operation refused');
+  if (value?.success === false) { const error = new Error(value.error || value.message || stderr.trim() || 'Native operation refused'); if (value.window_id || value.id) error.window_id = value.window_id || value.id; throw error; }
   if (args[0] === 'ls' && code === 3 && Array.isArray(value)) value = value.map(s => ({ ...s, saved: true }));
   if (value?.error) throw new Error(typeof value.error === 'string' ? value.error : JSON.stringify(value.error));
   return json ? (value ?? { output: stdout, exit_code: code }) : stdout;
@@ -193,6 +225,7 @@ function withContext(a, taskId, text) {
 }
 function agentFor(key) { const a = one('SELECT * FROM agents WHERE id=?', key); if (!a) throw new Error('Agent not found'); return a; }
 function paneFor(key) { const p = one('SELECT p.*,a.session FROM panes p LEFT JOIN agents a ON a.id=p.id WHERE p.id=?', key); if (!p) throw new Error('Pane not found'); if (!p.session) throw new Error('Pane execution session is unavailable'); return p; }
+async function liveAgent(key) { const a = agentFor(key); await nativeSession(a.session, true); return a; }
 if (!all("SELECT name FROM pragma_table_info('tasks')").some(c => c.name === 'workspace')) db.exec('ALTER TABLE tasks ADD COLUMN workspace INTEGER');
 function threadFor(key) { const t = one('SELECT * FROM threads WHERE id=?', key); if (!t) throw new Error('Thread not found'); return t; }
 function idList(ids) { if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(x => typeof x !== 'string')) throw new Error('ids must be a list of 1 to 1000 ids'); return [...new Set(ids)]; }
@@ -230,9 +263,14 @@ function finish(key, body, status, meta = {}) {
 function resultText(result) { if (typeof result === 'string') return result; for (const key of ['output', 'reply', 'text', 'content']) if (typeof result?.[key] === 'string') return result[key]; return JSON.stringify(result, null, 2); }
 function background(promise) { promise.catch(e => { lastError = e.message; console.error(e); changed(); }); }
 function rows(value, key) { return Array.isArray(value) ? value : value?.[key] || []; }
-async function nativeSessions() {
+async function nativeSessions(globalOnly = true) {
   const [remote, local] = await Promise.allSettled([cli(['ls', '--all-hosts']), cli(['ls'])]);
   const hosts = remote.status === 'fulfilled' ? rows(remote.value, 'hosts').map(h => ({ ...h })) : [{ host: 'local', status: 'unknown', error: remote.reason.message }];
+  if (local.status === 'fulfilled') {
+    const host = hosts.find(h => h.host === 'local');
+    if (!host) hosts.push({ host: 'local', status: 'up' });
+    else if (host.status === 'unknown') Object.assign(host, { status: 'up', error: undefined });
+  }
   const sessions = hosts.flatMap(h => rows(h.sessions, 'sessions').map(s => ({ ...s, name: s.name, host: h.host, target: h.host === 'local' ? s.name : h.host + ':' + s.name, saved: Boolean(s.saved) })));
   if (local.status === 'fulfilled') for (const s of rows(local.value, 'sessions')) {
     const existing = sessions.find(x => x.host === 'local' && x.name === s.name);
@@ -244,12 +282,12 @@ async function nativeSessions() {
     if (host) host.error = local.reason.message;
     else hosts.push({ host: 'local', status: 'down', error: local.reason.message });
   }
-  return { sessions, hosts: hosts.map(({ sessions, ...h }) => h.host === 'local' ? { ...h, hostname: hostname() } : h) };
+  return { sessions: globalOnly ? sessions.filter(s => s.global === true) : sessions, hosts: hosts.map(({ sessions, ...h }) => h.host === 'local' ? { ...h, hostname: hostname() } : h) };
 }
 async function nativeSession(target, mutate = false) {
   required(target, 'Session', 240);
   const snapshot = await nativeSessions(), session = snapshot.sessions.find(s => s.target === target);
-  if (!session) throw new Error('Native session not found');
+  if (!session) throw new Error('Native global session not found');
   const host = snapshot.hosts.find(h => h.host === session.host);
   if (session.saved || host?.status === 'down' || host?.status === 'saved') throw new Error('Session is saved or its host is down; attach it in TUIOS first');
   if (mutate && (host?.read_only || host?.status === 'read-only' || host?.status === 'readonly')) throw new Error('Native host is read-only');
@@ -297,97 +335,105 @@ function assignAgents(ids, set) {
 
 }
 const hostDown = h => ['down', 'saved', 'unknown', 'unreachable', 'read-only', 'readonly'].includes(h?.status) || h?.read_only;
-// Where a new pane goes. The task keeps its home; only this launch addresses another host.
-// A pane on another host is addressed HOST:SESSION, or is a hosted window of the local home.
-async function launchPlan(t, requested, kind) {
-  const current = t.session.includes(':') ? t.session.split(':')[0] : 'local';
-  if (requested === undefined || requested === null || requested === '' || requested === 'task' || requested === current) return { t, windowHost: null };
-  if (typeof requested !== 'string' || requested.length > 120 || /[\x00-\x1f\s:]/.test(requested)) throw new Error('Host must be a registered host name');
+// Execution machine and session container are independent.
+async function executionHost(requested) {
+  if (typeof requested !== 'string' || !requested || requested === 'task' || requested.length > 120 || /[\x00-\x1f\s:]/.test(requested)) throw new Error('Choose an execution machine: local or a configured native host alias');
   const snapshot = await nativeSessions(), host = snapshot.hosts.find(h => h.host === requested);
-  if (!host) throw new Error(`Native host not found: ${requested}`);
-  if (hostDown(host)) throw new Error(`Host ${requested} is ${host.status || 'unavailable'}${host.error ? ': ' + host.error : ''}`);
-  const base = t.session.includes(':') ? t.session.slice(t.session.indexOf(':') + 1) : t.session;
-  if (kind === 'shell' && current === 'local') return { t, windowHost: requested };
-  const session = requested === 'local' ? base : requested + ':' + base;
-  if (kind === 'shell' && !snapshot.sessions.some(s => s.target === session)) throw new Error(`Session ${session} does not exist; create it first or launch an agent there`);
-  return { t: { ...t, session, workspace: null }, windowHost: null };
+  if (!host) throw new Error('Native host not found: ' + requested);
+  if (hostDown(host)) throw new Error('Host ' + requested + ' is ' + (host.status || 'unavailable') + (host.error ? ': ' + host.error : ''));
+  return requested;
+}
+async function launchPlan(t, requested, kind) {
+  const host = await executionHost(requested), owner = t.session.includes(':') ? t.session.split(':')[0] : 'local';
+  if (owner !== 'local' && host !== owner) throw new Error('This execution machine has no proven native mapping from the remote session owner; choose its owning machine or a local global container');
+  return { t: { ...t, host }, windowHost: host };
+}
+function launchProfile(t, profileId, supplied) {
+  const profile = supplied || one('SELECT * FROM profiles WHERE id=?', profileId);
+  if (!profile) throw new Error('Profile not found');
+  if (t.host !== 'local' && !t.session.includes(':') && profile.protocol) throw new Error('Native hosted agents do not support protocol profiles with preserved approval semantics');
+  if (t.host !== 'local' && Object.keys(JSON.parse(profile.env)).length) throw new Error('Profile environment does not cross machines; use a profile without env for another host');
+  return profile;
 }
 async function ensureSession(t) {
-  const snapshot = await nativeSessions();
-  if (snapshot.sessions.some(s => s.target === t.session)) { await taskHome(t.session, t.workspace); return; }
-  if (t.session !== `inbox-${t.id?.slice(0, 8)}` || t.workspace != null) throw new Error('Task home is no longer available; select a live native home');
-  await cli(['new', sessionName(t.session), '--detach'], 15000, false);
+  return createInSession(t.session, async () => {
+    const snapshot = await nativeSessions(false);
+    if (snapshot.sessions.some(s => s.target === t.session)) { await taskHome(t.session, t.workspace); return; }
+    if (t.session !== `inbox-${(t.home_id || t.id)?.slice(0, 8)}` || t.workspace != null) throw new Error('Task home is no longer available; select a live native global home');
+    await cli(['new', sessionName(t.session), '--global', '--detach'], 15000, false);
+  }, { newSession: true });
 }
-// Where the native daemon says a remote session already works: its focused window's directory, else any window's.
-async function remoteDirectory(session) {
-  const windows = rows(await cli(['list-windows', '-s', session]), 'windows');
-  const w = windows.find(x => x.focused && x.cwd) || windows.find(x => x.cwd);
-  if (!w) throw new Error(`Host session ${session} reports no working directory; open a window there first`);
-  return w.cwd;
+const inRemoteDirectory = (cwd, argv) => cwd ? ['sh', '-c', 'cd "$1" || exit; shift; exec "$@"', 'sh', cwd, ...argv] : argv;
+function remotePath(value) { const cwd = required(value, 'Remote directory', 4096); if (/[\x00-\x1f]/.test(cwd)) throw new Error('Remote directory must be one line'); return cwd; }
+const executionDirectory = (value, host) => host === 'local' ? directory(tilde(value)) : remotePath(value);
+const ownerWindow = (target, params) => nativeOwner({ owner: target.slice(0, target.indexOf(':')), verb: 'new-window', params: { session: target.slice(target.indexOf(':') + 1), host: 'local', focus: false, ...params } });
+async function hostedProfile(t, name, profile, cwd, opts) {
+  const args = ['new-window', '-s', t.session, '--host', t.host, '--no-focus', '--grants', 'read,write,fan'];
+  if (t.workspace != null) args.push('--workspace', String(t.workspace));
+  args.push('--', name, ...inRemoteDirectory(cwd, ['env', 'TUIOS_AGENT=' + profile.executable.split('/').at(-1), profile.executable, ...JSON.parse(profile.args), ...(opts.args || [])]));
+  const created = await createInSession(t.session, () => cli(args)), paneId = created.window_id || created.id;
+  if (!paneId) throw new Error('Missing hosted window id: ' + JSON.stringify(created));
+  let failure = '';
+  try { await cli(['wait-for', 'agent-state', '-s', t.session, '-w', paneId, '--until', 'idle,done,needs_input,errored', '--timeout', '120000'], 130000); }
+  catch (e) { failure = e.message; }
+  try {
+    const state = await cli(['get-agent-state', '-s', t.session, '-w', paneId]);
+    const ready = state.ready === true && ['idle','done'].includes(state.state) && !failure;
+    return { ...created, ...state, window_id: paneId, host: t.host, ready, outcome: failure ? 'timeout' : ready ? 'ready' : 'blocked', ...(failure ? { error: failure } : {}) };
+  } catch (e) { return { ...created, window_id: paneId, host: t.host, ready: false, outcome: 'blocked', error: e.message }; }
 }
-// new-window cannot address a remote-owned session; start-agent can, and a plain shell is any program it runs.
-const remoteShell = async (session, workspace, name) => cli(['start-agent', '-s', session, '--name', name, '--grants', 'read,write', '--ready-timeout', '1000', '--cwd', await remoteDirectory(session), ...(workspace != null ? ['--workspace', String(workspace)] : []), 'sh', '--', '-c', 'exec "$SHELL" -i']);
-// For a remote session, `cwd` is a LOCAL directory the native CLI runs in so it maps that repository on the host;
-// without one the agent starts where the remote session already works. For a local session it is the agent's directory.
 function startProfile(t, name, profileId, cwd, opts = {}) {
-  const profile = opts.profile || one('SELECT * FROM profiles WHERE id=?', profileId); if (!profile) throw new Error('Profile not found');
+  const profile = launchProfile(t, profileId, opts.profile);
   const tid = thread(t.id, null, `Starting ${name}`, 'system');
   const mid = message(tid, 'system', 'Starting agent…', 'running');
   background((async () => {
     let started = null, outcome = null, failure = '';
     try {
-      if (t.session.includes(':') && Object.keys(JSON.parse(profile.env)).length) throw new Error('Profile environment does not cross machines; use a profile without env for another host');
+      const remote = t.session.includes(':'), hosted = !remote && t.host !== 'local';
       const args = ['start-agent', '-s', t.session, '--name', name, '--grants', 'read,write,fan', '--ready-timeout', '120000'];
-      const remote = t.session.includes(':');
-      if (remote ? !cwd || cwd === homedir() : cwd) args.push('--cwd', remote ? await remoteDirectory(t.session) : cwd);
+      if ((!remote && cwd) || opts.remoteCwd) args.push('--cwd', opts.remoteCwd || cwd);
       if (t.workspace != null) args.push('--workspace', String(t.workspace));
       if (profile.protocol) args.push('--protocol', profile.protocol);
       for (const [k,v] of Object.entries(JSON.parse(profile.env))) args.push('--env', `${k}=${v}`);
       args.push(profile.executable, '--', ...JSON.parse(profile.args), ...(opts.args || []));
-      const r = await cli(args, 130000, true, remote && cwd && cwd !== homedir() ? cwd : undefined);
+      const r = hosted ? await hostedProfile(t, name, profile, cwd, opts) : await createInSession(t.session, () => cli(args, 130000, true, remote && !opts.remoteCwd && cwd && cwd !== homedir() ? cwd : undefined));
+      if (r.created_session === true) { r.ready = false; r.outcome = 'not_global'; r.error = 'Native startup recreated a missing session without global semantics; no prompt was sent'; }
       const paneId = r.window_id || r.id || r.window;
       if (!paneId) throw new Error(JSON.stringify(r));
-      if (t.id) run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'agent', profile.id, r.outcome === 'window_closed' ? 'closed' : r.ready === false ? 'needs_input' : 'idle', r.agent_session_id || '');
-      seeAgent(paneId, { session: t.session, name, task: t.id || null, host: r.host || (t.session.includes(':') ? t.session.split(':')[0] : 'local') });
+      if (t.id) run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'agent', profile.id, ['window_closed','session_closed','shutdown'].includes(r.outcome) ? 'closed' : r.ready !== true ? 'needs_input' : 'idle', r.agent_session_id || '');
+      seeAgent(paneId, { session: t.session, name, task: t.id || null, state: ['window_closed','session_closed','shutdown'].includes(r.outcome) ? 'closed' : r.ready === true ? r.state || 'idle' : 'needs_input', host: t.host });
       run('UPDATE agents SET session=?,harness=?,launch_cwd=?,launch_profile=?,launch_model=? WHERE id=?', t.session, profile.executable, cwd || '', profile.id, opts.model || '', paneId);
       run('UPDATE threads SET pane_id=? WHERE id=?', paneId, tid);
-      finish(mid, r.ready === true && r.outcome !== 'window_closed' ? `${name} is ready. Compose a prompt to begin.` : `Agent startup outcome: ${JSON.stringify(r)}`, r.outcome === 'window_closed' ? 'failed' : r.ready === true ? 'complete' : 'blocked', r);
-      outcome = r; if (r.outcome === 'window_closed') failure = 'Agent window closed during startup'; else started = paneId;
+      const closed = ['window_closed','session_closed','shutdown'].includes(r.outcome);
+      finish(mid, r.ready === true && !closed ? `${name} is ready. Compose a prompt to begin.` : `Agent startup outcome: ${JSON.stringify(r)}`, closed ? 'failed' : r.ready === true ? 'complete' : 'blocked', r);
+      outcome = r; if (['window_closed','session_closed','shutdown','not_global'].includes(r.outcome)) failure = r.error || 'Agent window closed during startup'; else started = paneId;
     } catch (e) { finish(mid, e.message, 'failed'); failure = e.message; }
     if (opts.after) await opts.after(started, outcome, failure);
   })());
   return tid;
 
 }
-async function newShell(t, name, windowHost = null) {
+async function newShell(t, name, windowHost) {
   await ensureSession(t);
-  const remote = t.session.includes(':') || Boolean(windowHost);
-  if (t.session.includes(':') && !windowHost) {
-    const r = await remoteShell(t.session, t.workspace, name);
-    const paneId = r.window_id;
-    if (!paneId) throw new Error(`Missing window id: ${JSON.stringify(r)}`);
-    run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'shell', null, 'idle', '');
-    seeAgent(paneId, { session: t.session, name, kind: 'shell', state: 'idle', task: t.id, host: r.host || t.session.split(':')[0] });
-    run('UPDATE agents SET session=? WHERE id=?', t.session, paneId);
-    changed(); return paneFor(paneId);
-  }
-  const args = ['new-window', '-s', t.session, '--no-focus'];
-  if (windowHost) args.push('--host', windowHost);
+  const remote = windowHost !== 'local';
+  const args = ['new-window', '-s', t.session, '--host', windowHost, '--no-focus'];
   if (!remote) args.push('--cwd', workingDirectory(t));
   if (t.workspace != null) args.push('--workspace', String(t.workspace));
   args.push('--', name);
   if (!remote) args.push('/bin/zsh', '-d', '-f');
-  const result = await cli(args);
+  else if (t.path || t.worktree) args.push(...inRemoteDirectory(workingDirectory(t), ['sh', '-c', 'exec "${SHELL:-/bin/sh}" -i']));
+  const result = await createInSession(t.session, () => t.session.includes(':') ? ownerWindow(t.session, { name, ...(t.workspace != null ? { workspace:t.workspace } : {}), command:(t.path || t.worktree) ? inRemoteDirectory(workingDirectory(t), ['sh', '-c', 'exec "${SHELL:-/bin/sh}" -i']) : [] }) : cli(args));
   const paneId = result.window_id || result.id;
-  if (!paneId) throw new Error(`Missing window id: ${JSON.stringify(result)}`);
+  if (!paneId) throw new Error('Missing window id: ' + JSON.stringify(result));
   run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'shell', null, 'idle', '');
-  seeAgent(paneId, { session: t.session, name, kind: 'shell', state: 'idle', task: t.id, host: windowHost || result.host || (remote ? t.session.split(':')[0] : 'local') });
+  seeAgent(paneId, { session: t.session, name, kind: 'shell', state: 'idle', task: t.id, host: windowHost });
   run('UPDATE agents SET session=? WHERE id=?', t.session, paneId);
   if (!remote) await cli(['send-text', '-s', t.session, '-w', paneId, `source '${root.replaceAll("'", "'\\''")}/scripts/shell.zsh'\n`], 15000, false);
   changed(); return paneFor(paneId);
 }
 // `p` is an agents row: any TUIOS pane, in whichever session it runs.
 async function promptAgent(a, text) {
+    await nativeSession(a.session, true);
     if (a.kind === 'agent') await cli(['queue', '-s', a.session, '-w', a.id, '--', text], 15000, false);
     else {
       const sent = cli(['run', '-s', a.session, '-w', a.id, '--timeout', '1800000', '--lines', '0', '--', text], 1810000);
@@ -396,6 +442,7 @@ async function promptAgent(a, text) {
     }
 }
 async function execute(p, body, threadId) {
+  await nativeSession(p.session, true);
   if (active.has(p.id)) throw new Error('This pane already has an active request. Wait for its result before replying.');
   const pending = message(threadId, p.kind === 'agent' ? 'agent' : 'shell', 'Waiting for result…', 'running', { boot_id: boot });
   active.set(p.id, threadId);
@@ -572,9 +619,11 @@ async function observeHosts(session) {
 }
 async function reconcile() {
   const executionSessions = all("SELECT DISTINCT a.session FROM panes p JOIN agents a ON a.id=p.id WHERE a.session!=''").map(s => s.session);
+  const inventory = await nativeSessions(), available = new Set(inventory.sessions.filter(s => !s.saved && !hostDown(inventory.hosts.find(h => h.host === s.host))).map(s => s.target));
   const homes = all('SELECT DISTINCT session FROM tasks').map(t => t.session);
   const observed = new Map();
   for (const session of new Set([...executionSessions, ...homes])) {
+    if (!available.has(session)) continue;
     try {
       const windows = await observeHosts(session);
       observed.set(session, windows);
@@ -686,13 +735,14 @@ function text(value, name, max, trim = true) {
 // The facts a task may set for itself; '' or null hands the field back to inheritance.
 function taskFacts(body, t = {}) {
   const out = {};
-  for (const f of ['branch', 'harness', 'model', 'queue_mode', 'launch_mode']) {
+  for (const f of ['branch', 'harness', 'model', 'queue_mode', 'launch_mode', 'host']) {
     out[f] = body[f] === undefined ? t[f] || '' : text(body[f], f, 200);
     if (/[\x00-\x1f]/.test(out[f])) throw new Error(`${f} must be one line`);
   }
   if (!['', 'manual', 'auto'].includes(out.queue_mode)) throw new Error('Queue mode is manual or auto');
   if (!['', 'new', 'reuse'].includes(out.launch_mode)) throw new Error('Launch mode is new or reuse');
   if (/^-|\s/.test(out.branch)) throw new Error('Branch must be a git branch name');
+  if (out.host && (out.host.length > 120 || /[\s:\x00-\x1f]/.test(out.host) || out.host === 'task')) throw new Error('Host must be local or a configured native host alias');
   return out;
 }
 function taskStylePatch(body) {
@@ -756,24 +806,34 @@ async function gitFacts(repo, branch, force = false) {
   })());
   return gitPending.get(key);
 }
+const executionGit = (resolved, force=false) => resolved.host.value && resolved.host.value !== 'local' && resolved.cwd.value
+  ? {state:'unknown',head:'',sha:'',dirty:false,commits:[],pr:null,pr_state:'unknown',reason:'Remote Git state has not been inspected; the selected execution machine validates its directory at launch'}
+  : gitFacts(resolved.cwd.value,resolved.branch.value,force);
 function outlineContext() {
   const tasks = all('SELECT * FROM tasks ORDER BY created DESC').map(t => ({ ...styledTask(t), archived: Boolean(t.archived),
-    own: { repo: t.path, worktree: t.worktree, branch: t.branch, harness: t.harness, model: t.model, queue_mode: t.queue_mode, launch_mode: t.launch_mode, session: t.session === `inbox-${t.id.slice(0, 8)}` ? '' : t.session, workspace: t.workspace } }));
+    own: { repo: t.path, worktree: t.worktree, branch: t.branch, harness: t.harness, model: t.model, queue_mode: t.queue_mode, launch_mode: t.launch_mode, host: t.host, session: t.session === `inbox-${t.id.slice(0, 8)}` ? '' : t.session, workspace: t.workspace } }));
   const busy = new Set(all("SELECT pane_id FROM prompts WHERE state='running' AND pane_id<>''").map(p => p.pane_id));
   const panes = all("SELECT id,name,session,COALESCE(host,'') AS host,harness,kind,state,task_id,launch_cwd,launch_profile,launch_model FROM agents WHERE archived=0 ORDER BY seen DESC")
     .map(p => ({ ...p, ready: !['working', 'needs_input', 'closed'].includes(p.state) && !busy.has(p.id) && !active.has(p.id) }));
   const profiles = all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) }));
   return { tasks, byId: new Map(tasks.map(t => [t.id, t])), panes, profiles };
 }
-async function promptView(p, ctx = outlineContext()) {
-  const resolved = resolveFields(p, ctx.byId), git = await gitFacts(resolved.cwd.value, resolved.branch.value);
+function liveSessions(snapshot) { return new Set(snapshot.sessions.filter(s => !s.saved && !hostDown(snapshot.hosts.find(h => h.host === s.host))).map(s => s.target)); }
+async function liveContext() {
+  const ctx = outlineContext(), snapshot = await nativeSessions(), live = liveSessions(snapshot);
+  ctx.panes = ctx.panes.map(p => ({ ...p, live: live.has(p.session), ready: p.ready && live.has(p.session) }));
+  return { ...ctx, ...snapshot };
+}
+async function promptView(p, ctx = null) {
+  ctx ||= await liveContext();
+  const resolved = resolveFields(p, ctx.byId), git = await executionGit(resolved);
   return { ...p, resolved, preflight: preflight({ prompt: p, resolved, panes: ctx.panes, git, profiles: ctx.profiles }) };
 }
 // The newest runs, plus every unarchived run still waiting to be read or answered however old it is: the review queue must not miss one.
 const outlineRunLimit = Number(process.env.TUIOS_INBOX_OUTLINE_RUNS) || 1000;
 async function outline() {
-  const ctx = outlineContext();
-  const tasks = await Promise.all(ctx.tasks.map(async t => { const resolved = resolveFields(t, ctx.byId); return { ...t, resolved, git: await gitFacts(resolved.cwd.value, resolved.branch.value), notes: notesOf(t.id) }; }));
+  const ctx = await liveContext();
+  const tasks = await Promise.all(ctx.tasks.map(async t => { const resolved = resolveFields(t, ctx.byId); return { ...t, resolved, git: await executionGit(resolved), notes: notesOf(t.id) }; }));
   const prompts = await Promise.all(all('SELECT * FROM prompts ORDER BY position,created').map(p => promptView(p, ctx)));
   // Filing only, never stored and never read by a run: a pane or run without a task inherits the one task whose session it lives in.
   const homes = new Map(); for (const t of all("SELECT id,session FROM tasks WHERE session<>''")) homes.set(t.session, homes.has(t.session) ? null : t.id);
@@ -784,13 +844,14 @@ async function outline() {
     WHERE t.id IN (SELECT id FROM turns ORDER BY started DESC LIMIT ?) OR (t.archived=0 AND (t.unread=1 OR t.state='needs_input')) ORDER BY t.started DESC`, outlineRunLimit)
     // The documents a run reported are read out of its response here; the response itself stays out of the payload.
     .map(({ doc_text, pane_task, ...r }) => ({ ...r, inherits: r.task_id ? null : pane_task || home(r.session), docs: docsIn(doc_text), unread: Boolean(r.unread), archived: Boolean(r.archived), response_captured: Boolean(r.response_captured), commits: JSON.parse(r.commits) }));
-  return { defaults: DEFAULTS, tasks, prompts, runs, panes: ctx.panes.map(p => ({ ...p, inherits: p.task_id ? null : home(p.session) })), profiles: ctx.profiles };
+  return { defaults: DEFAULTS, sessions: ctx.sessions, hosts: ctx.hosts, tasks, prompts, runs, panes: ctx.panes.map(p => ({ ...p, inherits: p.task_id ? null : home(p.session) })), profiles: ctx.profiles };
 }
 const failPrompt = (key, message) => { run("UPDATE prompts SET state='errored',error=?,updated=? WHERE id=?", message, now(), key); changed(); };
 // A shell runs the text as a command and reports through its own command row, so there is no turn to wait for.
 async function sendPrompt(key, paneId, queueOnly = false) {
   const p = one('SELECT * FROM prompts WHERE id=?', key); if (!p) return;
   const a = agentFor(paneId);
+  await nativeSession(a.session, true);
   const text = withContext(a, p.task_id, p.body);
   run('UPDATE prompts SET ran=?,pane_id=?,updated=? WHERE id=?', now(), paneId, now(), key);
   if (queueOnly && a.kind !== 'agent') await cli(['queue', '-s', a.session, '-w', a.id, '--', text], 15000, false);
@@ -799,28 +860,37 @@ async function sendPrompt(key, paneId, queueOnly = false) {
 }
 // Warnings hold the saved prompt until the user explicitly chooses to proceed.
 async function runPrompt(key, allowWarnings = false) {
-  const p = promptFor(key), ctx = outlineContext(), resolved = resolveFields(p, ctx.byId), repo = resolved.cwd.value || homedir();
-  const pf = preflight({ prompt: p, resolved, panes: ctx.panes, git: await gitFacts(resolved.cwd.value, resolved.branch.value), profiles: ctx.profiles, strict: true });
+  const p = promptFor(key), ctx = await liveContext(), resolved = resolveFields(p, ctx.byId), repo = resolved.cwd.value || homedir();
+  const pf = preflight({ prompt: p, resolved, panes: ctx.panes, git: await executionGit(resolved), profiles: ctx.profiles, strict: true });
+  const pane = p.target ? ctx.panes.find(x => x.id === p.target) : pickPane(p, ctx.panes, resolved, ctx.profiles);
+  const task = p.task_id ? one('SELECT * FROM tasks WHERE id=?', p.task_id) : null;
+  const sessionOwner = ctx.byId.get(resolved.session.from) || task;
+  const home = { id: sessionOwner?.id || p.id, session: resolved.session.value || task?.session || `inbox-${p.id.slice(0, 8)}`, workspace: resolved.workspace.value, host: resolved.host.value };
+  const saved = profileFor(resolved.harness.value, ctx.profiles), model = resolved.model.value;
+  const profile = saved ? { ...saved, args: JSON.stringify(saved.args), env: JSON.stringify(saved.env) } : { id: resolved.harness.value, executable: resolved.harness.value, args: '[]', env: '{}', protocol: '' };
+  if (!p.target && !pane && !pf.blocks.length) {
+    try {
+      await launchPlan(home, home.host, 'agent');
+      launchProfile(home, profile.id, profile);
+      if (home.session !== `inbox-${home.id.slice(0, 8)}` || home.workspace != null) await taskHome(home.session, home.workspace);
+    } catch (e) { pf.blocks.push({ code: 'launch_unavailable', message: e.message, fix: 'host' }); }
+  }
   const findings = pf.blocks.length ? pf.blocks : !allowWarnings ? pf.warns : [];
   if (findings.length) { run("UPDATE prompts SET state='blocked',error=?,updated=? WHERE id=?", findings.map(b => b.message).join('; '), now(), p.id); changed(); return { ran: false, preflight: pf, warnings: !pf.blocks.length }; }
-  const pane = p.target ? ctx.panes.find(x => x.id === p.target) : pickPane(p, ctx.panes, resolved, ctx.profiles);
-  run("UPDATE prompts SET state='running',error='',pane_id=?,head_before=?,ran=?,updated=? WHERE id=?", pane?.id || p.target || '', await gitHead(repo), now(), now(), p.id);
+  run("UPDATE prompts SET state='running',error='',pane_id=?,head_before=?,ran=?,updated=? WHERE id=?", pane?.id || p.target || '', await gitHead((pane?.host || resolved.host.value) === 'local' ? repo : null), now(), now(), p.id);
   if (p.target || pane) {
     try { await sendPrompt(p.id, pane?.id || p.target, Boolean(p.target && (!pane?.ready || pane.kind !== 'agent'))); }
     catch (e) { failPrompt(p.id, e.message); return { ran: false, preflight: pf, error: e.message }; }
     return { ran: true, preflight: pf };
   }
-  const task = p.task_id ? one('SELECT * FROM tasks WHERE id=?', p.task_id) : null;
-  const sessionOwner = ctx.byId.get(resolved.session.from) || task;
-  const home = { id: sessionOwner?.id || p.id, session: resolved.session.value || task?.session || `inbox-${p.id.slice(0, 8)}`, workspace: resolved.workspace.value };
-  const saved = profileFor(resolved.harness.value, ctx.profiles), model = resolved.model.value;
-  const profile = saved ? { ...saved, args: JSON.stringify(saved.args), env: JSON.stringify(saved.env) } : { id: resolved.harness.value, executable: resolved.harness.value, args: '[]', env: '{}', protocol: '' };
+
   background((async () => {
     try {
       await ensureSession(home);
       const modelArgs = model ? profile.protocol === 'codex' ? ['-c', `model=${JSON.stringify(model)}`] : ['--model', model] : [];
-      startProfile({ id: task?.id || null, session: home.session, workspace: home.workspace }, `agent-${p.id.slice(0, 6)}`, profile.id, repo, { profile, model, args: modelArgs, after: async (paneId, r, failure) => {
+      startProfile({ id: task?.id || null, session: home.session, workspace: home.workspace, host: home.host }, `agent-${p.id.slice(0, 6)}`, profile.id, home.host === 'local' ? repo : resolved.cwd.value, { profile, model, remoteCwd:home.session.includes(':')?resolved.cwd.value:null, args: modelArgs, after: async (paneId, r, failure) => {
         if (!paneId) return failPrompt(p.id, failure || 'Agent did not start');
+        if (r.ready !== true) { run("UPDATE prompts SET state='blocked',pane_id=?,target=?,error=?,updated=? WHERE id=?", paneId, paneId, 'Agent startup outcome: ' + JSON.stringify(r), now(), p.id); changed(); return; }
         try { await sendPrompt(p.id, paneId); } catch (e) { failPrompt(p.id, e.message); }
       } });
     } catch (e) { failPrompt(p.id, e.message); }
@@ -836,7 +906,7 @@ async function runResponse(p, allowWarnings = false) {
 // Automatic queues advance when a pane rests, using each prompt's own launch mode. The No task queue is manual.
 async function autoDrain(taskId, paneId) {
   if (!taskId) return;
-  const ctx = outlineContext(), task = ctx.byId.get(taskId), pane = ctx.panes.find(x => x.id === paneId);
+  const ctx = await liveContext(), task = ctx.byId.get(taskId), pane = ctx.panes.find(x => x.id === paneId);
   if (!task || resolveFields(task, ctx.byId).queue_mode.value !== 'auto') return;
   const prompts = all('SELECT * FROM prompts WHERE task_id=?', taskId), next = nextInQueue(prompts, taskId);
   if (!next || queueHeld(prompts, next)) return;
@@ -848,7 +918,7 @@ async function autoDrain(taskId, paneId) {
 // One-way import: each todo of an oh-my-pi pane becomes a subtask of the pane's task, matched by title so a repeat changes nothing.
 async function importTodos(paneId) {
   const a = one('SELECT * FROM agents WHERE id=?', paneId);
-  if (!a?.task_id || a.harness !== 'omp' || !a.session || a.session.includes(':')) return;
+  if (!a?.task_id || a.harness !== 'omp' || !a.session || a.session.includes(':') || a.host && a.host !== 'local') return;
   const sid = rows(await cli(['list-agents', '-s', a.session]), 'agents').find(x => x.window_id === paneId)?.agent_session_id;
   if (!sid || !/^[\w-]+$/.test(sid)) return;
   const dir = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.omp/agent'), 'sessions');
@@ -884,7 +954,7 @@ async function settlePrompts() {
       }
       // A run whose pane closed under it never reports done; it ends the prompt as an error, so the queue shows why it holds.
       if (!['done', 'errored', 'ended'].includes(turn.state)) continue;
-      const ctx = outlineContext(), resolved = resolveFields(p, ctx.byId), repo = resolved.cwd.value, after = await gitHead(repo);
+      const ctx = outlineContext(), resolved = resolveFields(p, ctx.byId), repo = one('SELECT host FROM agents WHERE id=?',p.pane_id)?.host === 'local' ? resolved.cwd.value : null, after = await gitHead(repo);
       const commits = p.head_before && after && after !== p.head_before ? commitRows((await gitLog(repo, `${p.head_before}..${after}`)).out) : [];
       run('UPDATE turns SET head_after=?,commits=? WHERE id=?', after, JSON.stringify(commits), turn.id);
       run('UPDATE prompts SET state=?,error=?,updated=? WHERE id=?', turn.state === 'done' ? 'done' : 'errored', turn.state === 'errored' ? 'The run ended in an error' : turn.state === 'ended' ? 'The pane closed before the run finished' : '', now(), p.id);
@@ -911,7 +981,7 @@ async function api(req, url) {
   if (url.pathname === '/api/outline' && method === 'GET') return cached('outline', req, outline);
   if (url.pathname === '/api/git/refresh' && method === 'POST') {
     const ctx = outlineContext(), t = ctx.byId.get(body.task_id); if (!t) throw new Error('Task not found');
-    const r = resolveFields(t, ctx.byId), git = await gitFacts(r.cwd.value, r.branch.value, true);
+    const r = resolveFields(t, ctx.byId), git = await executionGit(r, true);
     await prPending.get(gitKey(r.cwd.value, r.branch.value));
     return response(git);
   }
@@ -920,9 +990,11 @@ async function api(req, url) {
     // A prompt typed at a pane lands in that pane's task unless it names one, even null.
     const task = body.task_id ? taskFor(body.task_id).id : body.task_id === undefined && target ? agentTask(target) : null;
     const facts = taskFacts(body);
-    run('INSERT INTO prompts (id,body,task_id,target,harness,model,launch_mode,position,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)', key, text(body.body, 'Body', Infinity, false), task, target, facts.harness, facts.model, facts.launch_mode, lastPosition() + 1, 'queued', at, at);
+    const session = text(body.session, 'Session', 240); if (session) await taskHome(session, null);
+    run('INSERT INTO prompts (id,body,task_id,target,harness,model,launch_mode,host,session,position,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)', key, text(body.body, 'Body', Infinity, false), task, target, facts.harness, facts.model, facts.launch_mode, facts.host, session, lastPosition() + 1, 'queued', at, at);
     const result = body.run === true ? await runPrompt(key, body.allow_warnings === true) : { ran: false };
     changed(); const prompt = await promptView(promptFor(key));
+    if (result.preflight) prompt.preflight = result.preflight;
     return response({ prompt, ran: result.ran, preflight: prompt.preflight, ...(result.error ? { error: result.error } : {}) }, 201);
   }
   if (parts[1] === 'prompts' && parts[2]) {
@@ -931,7 +1003,8 @@ async function api(req, url) {
       const set = ['updated=?'], args = [now()];
       if (body.body !== undefined) { set.push('body=?'); args.push(text(body.body, 'Body', Infinity, false)); }
       const facts = taskFacts(body, p);
-      for (const f of ['target', 'harness', 'model', 'launch_mode']) if (body[f] !== undefined) { set.push(`${f}=?`); args.push(f === 'target' ? text(body[f], f, 200) : facts[f]); }
+      for (const f of ['target', 'harness', 'model', 'launch_mode', 'host']) if (body[f] !== undefined) { set.push(`${f}=?`); args.push(f === 'target' ? text(body[f], f, 200) : facts[f]); }
+      if (body.session !== undefined) { const session = text(body.session, 'Session', 240); if (session) await taskHome(session, null); set.push('session=?'); args.push(session); }
       if (body.task_id !== undefined) { set.push('task_id=?'); args.push(body.task_id ? taskFor(body.task_id).id : null); }
       if (body.state !== undefined) { if (body.state !== 'queued') throw new Error('A prompt can only be set back to queued'); set.push("state='queued'", "error=''", "pane_id=''"); }
       run(`UPDATE prompts SET ${set.join(',')} WHERE id=?`, ...args, p.id);
@@ -982,12 +1055,11 @@ async function api(req, url) {
     if (!actions.includes(action)) throw new Error('Unsupported native action');
     if (['kill-session','close-workspace','close-window','interrupt-window'].includes(action) && body.confirmed !== true) throw new Error('Explicit confirmation is required');
     if (action === 'create-session') {
-      const name = sessionName(body.name), host = body.host || 'local', snapshot = await nativeSessions();
-      if (!snapshot.hosts.some(h => h.host === host)) throw new Error('Configured native host not found');
-      const target = host === 'local' ? name : host + ':' + name;
+      const name = sessionName(body.name), host = await executionHost(body.host), snapshot = await nativeSessions(false);
+      if (host !== 'local') throw new Error('Native remote session creation cannot create global containers; create a global session on that machine in TUIOS first');
+      const target = name;
       if (snapshot.sessions.some(s => s.target === target)) throw new Error('Session already exists');
-      const args = ['new', name, '--detach']; if (host !== 'local') args.push('--host', host);
-      await cli(args, 15000, false); changed(); return response({ session: target }, 201);
+      await createInSession(target, async () => { if ((await nativeSessions(false)).sessions.some(s => s.target === target)) throw new Error('Session already exists'); await cli(['new', name, '--global', '--detach'], 15000, false); }, { newSession:true }); changed(); return response({ session: target }, 201);
     }
     const session = await nativeSession(body.session, true), target = session.target;
     if (['rename-session','kill-session'].includes(action) && session.host !== 'local') throw new Error('This action is only supported for local sessions');
@@ -1005,32 +1077,28 @@ async function api(req, url) {
     if (action === 'rename-session') {
       const name = sessionName(body.name);
       if ((await nativeSessions()).sessions.some(s => s.host === 'local' && s.name === name)) throw new Error('Session already exists');
-      await cli(['rename-session', '-s', target, name], 15000, false);
-      db.transaction(() => {
-        for (const table of ['tasks','agents','turns']) run(`UPDATE ${table} SET session=? WHERE session=?`, name, target);
-        run("UPDATE messages SET meta=json_set(meta,'$.session',?) WHERE json_extract(meta,'$.session')=?", name, target);
-        run("UPDATE threads SET external_key=replace(external_key,?,?) WHERE kind='mail'", `mail-thread:${boot}:${target}:`, `mail-thread:${boot}:${name}:`);
-        run("UPDATE events SET id=replace(id,?,?) WHERE id LIKE ?", `mail:${boot}:${target}:`, `mail:${boot}:${name}:`, `mail:${boot}:${target}:%`);
-      })();
-      changed(); return response({ session: name });
+      return createInSession(target, async () => {
+        await cli(['rename-session', '-s', target, name], 15000, false);
+        db.transaction(() => {
+          for (const table of ['tasks','agents','turns','prompts']) run(`UPDATE ${table} SET session=? WHERE session=?`, name, target);
+          run("UPDATE messages SET meta=json_set(meta,'$.session',?) WHERE json_extract(meta,'$.session')=?", name, target);
+          run("UPDATE threads SET external_key=replace(external_key,?,?) WHERE kind='mail'", `mail-thread:${boot}:${target}:`, `mail-thread:${boot}:${name}:`);
+          run("UPDATE events SET id=replace(id,?,?) WHERE id LIKE ?", `mail:${boot}:${target}:`, `mail:${boot}:${name}:`, `mail:${boot}:${target}:%`);
+        })();
+        changed(); return response({ session: name });
+      });
     }
     if (action === 'kill-session') { args = ['kill-session', '--', target]; json = false; }
     if (action === 'name-workspace') { args = ['set-workspace-name', '-s', target, String(workspace), '--', label(body.name)]; json = false; }
     if (action === 'select-workspace' || action === 'close-workspace') args = [action, String(workspace), '-s', target];
-    if (action === 'create-window' && session.host !== 'local' && !(body.host && body.host !== 'local')) {
-      if (body.cwd) throw new Error('Directory picker paths are local; remote windows use their native default directory');
-      const r = await remoteShell(target, workspace, required(body.name, 'Window name', 120)); changed(); return response(r, 201);
-    }
     if (action === 'create-window') {
-      args = ['new-window', '-s', target, '--workspace', String(workspace), '--no-focus'];
-      if (body.cwd && (session.host !== 'local' || (body.host && body.host !== 'local'))) throw new Error('Directory picker paths are local; remote windows use their native default directory');
-      if (body.cwd) args.push('--cwd', await directory(body.cwd));
-      if (body.host && body.host !== 'local') {
-        const host = (await nativeSessions()).hosts.find(h => h.host === body.host);
-        if (!host) throw new Error('Configured native host not found');
-        args.push('--host', body.host);
-      }
+      const plan = await launchPlan({ session: target, workspace }, body.host, 'shell');
+      args = ['new-window', '-s', target, '--host', plan.windowHost, '--workspace', String(workspace), '--no-focus'];
+      const cwd = body.cwd ? plan.windowHost === 'local' ? await directory(body.cwd) : remotePath(body.cwd) : null;
+      if (cwd && plan.windowHost === 'local') args.push('--cwd', cwd);
       args.push('--', required(body.name, 'Window name', 120));
+      if (session.host !== 'local') { const result = await createInSession(target, () => ownerWindow(target, {name:required(body.name,'Window name',120),workspace,command:cwd ? inRemoteDirectory(cwd,['sh','-c','exec "${SHELL:-/bin/sh}" -i']) : []})); changed(); return response(result,201); }
+      if (cwd && plan.windowHost !== 'local') args.push(...inRemoteDirectory(cwd, ['sh', '-c', 'exec "${SHELL:-/bin/sh}" -i']));
     }
     if (action === 'rename-window') args = ['set-window', '-s', target, '-w', body.window, '--name', label(body.name)];
     if (action === 'move-window') args = ['move-window', String(workspace), '-s', target, '-w', body.window];
@@ -1044,7 +1112,10 @@ async function api(req, url) {
       if (action === 'split-window') {
         if (!['horizontal','vertical'].includes(body.direction)) throw new Error('Split direction must be horizontal or vertical');
         if (info.tiling_mode !== 'tiling') throw new Error('Split needs native tiling enabled; enable it in the terminal first');
-        args = ['split-window', body.direction, '-s', target, '-w', body.window, '--name', required(body.name, 'Window name', 120)];
+        const plan = await launchPlan({ session: target }, body.host, 'shell');
+        const splitCli = session.host === 'local' ? cli : (args, ...options) => args[0] === 'new-window' ? ownerWindow(target, {name:args[args.indexOf('--')+1],workspace:Number(args[args.indexOf('--workspace')+1]),command:[]}) : cli(args,...options);
+        const result = await createInSession(target, () => splitOnHost({ session: target, window: body.window, direction: body.direction, name: required(body.name, 'Window name', 120), host: session.host === 'local' ? plan.windowHost : 'local' }, { cli:splitCli }));
+        changed(); return response({ ...result, host:plan.windowHost }, 201);
       } else {
         if (body.workspace !== undefined && body.workspace !== info.current_workspace) throw new Error('Layout affects only the current native workspace; select it explicitly in TUIOS first');
         args = ['set-layout', '-s', target];
@@ -1065,11 +1136,11 @@ async function api(req, url) {
     }
     if (action === 'create-agent') {
       const task = body.taskId ? taskFor(body.taskId) : null;
-      if (body.cwd && session.host !== 'local') throw new Error('Directory picker paths are local; remote agents use their native default directory');
-      const cwd = session.host !== 'local' ? (task ? workingDirectory(task) : null) : body.cwd ? await directory(body.cwd) : task ? workingDirectory(task) : homedir();
-      return response({ threadId: startProfile({ id: task?.id || null, session: target, workspace }, required(body.name, 'Agent name', 120), body.profileId, cwd) }, 202);
+      const plan = await launchPlan({ id: task?.id || null, session: target, workspace }, body.host, 'agent');
+      const cwd = body.cwd ? plan.t.host === 'local' ? await directory(body.cwd) : remotePath(body.cwd) : task ? workingDirectory(task) : plan.t.host === 'local' ? homedir() : null;
+      return response({ threadId: startProfile(plan.t, required(body.name, 'Agent name', 120), body.profileId, cwd, { remoteCwd:plan.t.session.includes(':') || body.cwd && plan.t.host !== 'local' ? cwd : null }) }, 202);
     }
-    const result = await cli(args, 15000, json);
+    const result = ['create-window','kill-session'].includes(action) ? await createInSession(target, () => cli(args, 15000, json)) : await cli(args, 15000, json);
     if (['close-window','close-workspace','kill-session'].includes(action)) {
       const live = action === 'close-workspace' ? rows(await cli(['list-windows', '-s', target]), 'windows').map(w => w.window_id) : [];
       const closed = action === 'close-window' ? [body.window] : all('SELECT id FROM agents WHERE session=?', target).filter(p => !live.includes(p.id)).map(p => p.id);
@@ -1077,11 +1148,11 @@ async function api(req, url) {
     }
     changed(); return response(typeof result === 'string' ? { ok: true, output: result } : result);
   }
-  if (url.pathname === '/api/state') return cached('state', req, () => ({ tasks: all('SELECT * FROM tasks ORDER BY created DESC').map(t => ({ ...styledTask(t), notes: notesOf(t.id) })), panes: all("SELECT p.*,a.session,COALESCE(a.host,'') AS host FROM panes p LEFT JOIN agents a ON a.id=p.id"), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), agents: all('SELECT * FROM agents ORDER BY seen DESC'), items: all(`
+  if (url.pathname === '/api/state') return cached('state', req, async () => { const live = liveSessions(await nativeSessions()); return ({ tasks: all('SELECT * FROM tasks ORDER BY created DESC').map(t => ({ ...styledTask(t), notes: notesOf(t.id) })), panes: all("SELECT p.*,a.session,COALESCE(a.host,'') AS host FROM panes p LEFT JOIN agents a ON a.id=p.id").map(p => ({ ...p, live: live.has(p.session) })), profiles: all('SELECT * FROM profiles').map(p => ({ ...p, args: JSON.parse(p.args), env: JSON.parse(p.env) })), agents: all('SELECT * FROM agents ORDER BY seen DESC').map(a => ({ ...a, live: live.has(a.session) })), items: all(`
     SELECT 'turn:'||t.id AS id, 'turn' AS type, substr(t.prompt,1,400) AS title, t.pane_id AS agent_id, COALESCE(a.name,t.pane_name) AS agent_name, COALESCE(NULLIF(a.harness,''),t.harness) AS harness, t.task_id, t.state AS status, t.unread, t.archived, t.started AS created, COALESCE(t.finished,t.started) AS updated, t.response <> '' AS response_captured,
       CASE WHEN p.id IS NOT NULL THEN p.task_id ELSE COALESCE(t.task_id,a.task_id,(SELECT CASE WHEN COUNT(*)=1 THEN id END FROM tasks WHERE session=COALESCE(NULLIF(a.session,''),t.session) AND instr(session,':')=0)) END AS style_task_id FROM turns t LEFT JOIN agents a ON a.id=t.pane_id LEFT JOIN prompts p ON p.id=t.prompt_id
     UNION ALL SELECT 'thread:'||t.id, CASE WHEN t.kind IN ('agent','shell') THEN 'dispatch' WHEN t.kind='hook' THEN 'snapshot' ELSE t.kind END, t.subject, t.pane_id, COALESCE(a.name,''), COALESCE(a.harness,''), t.task_id, COALESCE((SELECT status FROM messages WHERE thread_id=t.id ORDER BY rowid DESC LIMIT 1),''), t.unread, t.archived, t.created, t.updated, 0, COALESCE(t.task_id,a.task_id,(SELECT CASE WHEN COUNT(*)=1 THEN id END FROM tasks WHERE session=a.session AND instr(session,':')=0)) FROM threads t LEFT JOIN agents a ON a.id=t.pane_id
-    ORDER BY updated DESC LIMIT 2000`), lastError, boot, dataDir }));
+    ORDER BY updated DESC LIMIT 2000`), lastError, boot, dataDir }); });
   if (url.pathname === '/api/items/update' && method === 'POST') return response({ ok: true, updated: updateItems(idList(body.ids), body.set) });
   if (url.pathname === '/api/tasks/update' && method === 'POST') {
     const ids = idList(body.ids), set = body.set || {}, fields = [], args = [];
@@ -1142,16 +1213,18 @@ async function api(req, url) {
   if (url.pathname === '/api/tasks' && method === 'POST') {
     // A task may start without a directory; its panes then open in the home directory until one is set.
     const appearance = taskStylePatch(body);
-    const key = id(), repo = body.path ?? body.repo, path = repo ? await directory(tilde(repo)) : '', worktree = body.worktree ? await directory(tilde(body.worktree)) : '', facts = taskFacts(body);
-    const parent = body.parent_id ? parentFor(body.parent_id).id : null;
-    const inheritedSession = parent ? resolveFields(outlineContext().byId.get(parent), outlineContext().byId).session.value : null;
+    const key = id(), repo = body.path ?? body.repo, facts = taskFacts(body);
+    const parent = body.parent_id ? parentFor(body.parent_id).id : null, ctx = outlineContext();
+    const host = resolveFields({ id:key,parent_id:parent,host:facts.host },ctx.byId).host.value;
+    const path = repo ? await executionDirectory(repo,host) : '', worktree = body.worktree ? await executionDirectory(body.worktree,host) : '';
+    const inheritedSession = parent ? resolveFields(ctx.byId.get(parent),ctx.byId).session.value : null;
     const home = body.session ? await taskHome(body.session, body.workspace) : { session: `inbox-${key.slice(0, 8)}`, workspace: body.workspace ?? null };
     if (!body.session && body.workspace != null) await taskHome(inheritedSession || home.session, body.workspace);
     const title = required(body.title, 'Title');
     if (body.notes !== undefined && !Array.isArray(body.notes)) throw new Error('Notes must be a list of {body, context} notes');
     const notes = (body.notes || []).map(n => ({ body: noteBody(n?.body), context: noteContext(n?.context ?? false) }));
     db.transaction(() => {
-      run('INSERT INTO tasks (id,title,path,worktree,status,session,created,parent_id,workspace,branch,harness,model,queue_mode,launch_mode,style_theme,style_icon,style_color) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', key, title, path, worktree, 'open', home.session, now(), parent, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode, facts.launch_mode, appearance.style_theme || '', appearance.style_icon || '', appearance.style_color || '');
+      run('INSERT INTO tasks (id,title,path,worktree,status,session,created,parent_id,workspace,branch,harness,model,queue_mode,launch_mode,host,style_theme,style_icon,style_color) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', key, title, path, worktree, 'open', home.session, now(), parent, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode, facts.launch_mode, facts.host, appearance.style_theme || '', appearance.style_icon || '', appearance.style_color || '');
       for (const n of notes) run('INSERT INTO task_notes (id,task_id,body,context,created,updated) VALUES (?,?,?,?,?,?)', id(), key, n.body, n.context, now(), now());
     })();
     changed(); return response(taskFor(key), 201);
@@ -1187,8 +1260,9 @@ async function api(req, url) {
       if (body.notes !== undefined) throw new Error('Edit notes through /tasks/:id/notes');
       if (!['open', 'active', 'done'].includes(body.status || t.status)) throw new Error('Unknown task status');
       const appearance = taskStylePatch(body), repo = body.path !== undefined ? body.path : body.repo, facts = taskFacts(body, t);
-      const path = repo === undefined ? t.path : repo ? await directory(tilde(repo)) : '', worktree = body.worktree === undefined ? t.worktree : body.worktree ? await directory(body.worktree) : '';
-      const parent = body.parent_id === undefined ? t.parent_id : body.parent_id ? parentFor(body.parent_id, t.id).id : null;
+      const parent = body.parent_id === undefined ? t.parent_id : body.parent_id ? parentFor(body.parent_id, t.id).id : null, ctx = outlineContext();
+      const host = resolveFields({ id:t.id,parent_id:parent,host:facts.host },ctx.byId).host.value;
+      const path = repo === undefined ? t.path : repo ? await executionDirectory(repo,host) : '', worktree = body.worktree === undefined ? t.worktree : body.worktree ? await executionDirectory(body.worktree,host) : '';
       let home = t;
       if (body.session !== undefined || body.workspace !== undefined) {
         const session = body.session === '' || body.session === null ? `inbox-${t.id.slice(0, 8)}` : body.session ?? t.session;
@@ -1198,17 +1272,21 @@ async function api(req, url) {
           home = { session, workspace };
         } else home = await taskHome(session, workspace);
       }
-      run('UPDATE tasks SET title=?,status=?,path=?,worktree=?,parent_id=?,session=?,workspace=?,branch=?,harness=?,model=?,queue_mode=?,launch_mode=?,style_theme=?,style_icon=?,style_color=? WHERE id=?', required(body.title === undefined ? t.title : body.title, 'Title'), body.status || t.status, path, worktree, parent, home.session, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode, facts.launch_mode, appearance.style_theme ?? t.style_theme, appearance.style_icon ?? t.style_icon, appearance.style_color ?? t.style_color, t.id); changed(); return response(taskFor(t.id));
+      run('UPDATE tasks SET title=?,status=?,path=?,worktree=?,parent_id=?,session=?,workspace=?,branch=?,harness=?,model=?,queue_mode=?,launch_mode=?,host=?,style_theme=?,style_icon=?,style_color=? WHERE id=?', required(body.title === undefined ? t.title : body.title, 'Title'), body.status || t.status, path, worktree, parent, home.session, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode, facts.launch_mode, facts.host, appearance.style_theme ?? t.style_theme, appearance.style_icon ?? t.style_icon, appearance.style_color ?? t.style_color, t.id); changed(); return response(taskFor(t.id));
     }
     if (parts[3] === 'panes' && method === 'POST') {
       const name = required(body.name || `shell-${id().slice(0, 6)}`, 'Pane name', 120);
-      const plan = await launchPlan(t, body.host, body.kind === 'agent' ? 'agent' : 'shell');
-      if (body.kind !== 'agent') return response(await newShell(plan.t, name, plan.windowHost), 201);
-      if (plan.t === t) await ensureSession(t);
-      return response({ threadId: startProfile(plan.t, name, body.profileId, workingDirectory(t)) }, 202);
+      const ctx = outlineContext(), effective = resolveFields(ctx.byId.get(t.id), ctx.byId);
+      const owner = ctx.byId.get(effective.session.from) || t;
+      const home = { ...t, session: effective.session.value || t.session, workspace: effective.workspace.value, path: effective.cwd.value || '', worktree: '' };
+      const plan = await launchPlan(home, body.host ?? effective.host.value, body.kind === 'agent' ? 'agent' : 'shell');
+      if (body.kind !== 'agent') return response(await newShell({ ...plan.t, id: t.id, home_id: owner.id }, name, plan.windowHost), 201);
+      launchProfile(plan.t, body.profileId);
+      await ensureSession({ ...plan.t, id: owner.id });
+      return response({ threadId: startProfile(plan.t, name, body.profileId, effective.cwd.value || (plan.t.host === 'local' ? homedir() : null), {remoteCwd:plan.t.session.includes(':')?effective.cwd.value:null}) }, 202);
     }
     if (parts[3] === 'compose' && method === 'POST') {
-      const p = agentFor(body.paneId); if (p.task_id !== t.id) throw new Error('Agent belongs to another task');
+      const p = await liveAgent(body.paneId); if (p.task_id !== t.id) throw new Error('Agent belongs to another task');
       const text = required(body.body, 'Message'); if (active.has(p.id)) throw new Error('Pane is busy with an app request');
       const tid = thread(t.id, p.id, required(body.subject, 'Subject', 200), p.kind), sent = withContext(p, t.id, text);
       message(tid, 'human', sent); background(execute(p, sent, tid)); return response({ threadId: tid }, 202);
@@ -1225,11 +1303,12 @@ async function api(req, url) {
         if (meta.boot_id !== boot) throw new Error('This TUIOS mail thread belongs to an earlier daemon. Compose a new message to a current pane.');
         const target = one('SELECT id FROM panes WHERE id=?', meta.from || '')?.id || meta.to;
         if (!target || target === 'human') throw new Error('No agent recipient is available for this thread.');
+        await nativeSession(meta.session, true);
         const result = await cli(['send-agent-message', '-s', meta.session, '-w', target, '--reply-to', String(meta.id), '--', required(body.body, 'Reply', 8192)]);
         await importMail(meta.session);
         return response(result);
       }
-      const p = agentFor(body.paneId || t.pane_id), text = required(body.body, 'Reply');
+      const p = await liveAgent(body.paneId || t.pane_id), text = required(body.body, 'Reply');
       if (p.id !== t.pane_id && t.task_id && p.task_id !== t.task_id) throw new Error('Pane belongs to another task');
       if (active.has(p.id)) throw new Error('Pane is busy with an app request');
       const sent = withContext(p, t.task_id, text);
@@ -1243,17 +1322,17 @@ async function api(req, url) {
   }
   if (parts[1] === 'agents' && parts[3] === 'prompt' && method === 'POST') {
     // No thread is kept: the result comes back through the hooks as a new turn or command row.
-    const a = agentFor(parts[2]), text = required(body.body, 'Message');
+    const a = await liveAgent(parts[2]), text = required(body.body, 'Message');
     await promptAgent(a, withContext(a, a.task_id, text));
     return response({ ok: true }, 202);
   }
   if (parts[1] === 'agents' && parts[3] === 'question' && method === 'GET') {
     // The lines are the blocked pane's screen: untrusted text, shown and never interpreted.
-    const a = agentFor(parts[2]), p = await cli(['peek-prompt', '-s', a.session, '-w', a.id]);
+    const a = await liveAgent(parts[2]), p = await cli(['peek-prompt', '-s', a.session, '-w', a.id]);
     return response({ found: Boolean(p.found), kind: p.kind || '', lines: p.lines || [], options: p.options || [], actions: p.actions || [], promptId: p.prompt_id || '', reason: p.reason || '' });
   }
   if (parts[1] === 'agents' && parts[3] === 'answer' && method === 'POST') {
-    const a = agentFor(parts[2]);
+    const a = await liveAgent(parts[2]);
     if (!['approve', 'approve_always', 'deny', 'choose', 'text'].includes(body.action)) throw new Error('Unknown answer');
     // The prompt id is the one the page showed, so an answer never lands on a prompt the user has not read.
     const args = ['respond', '-s', a.session, '-w', a.id, '--prompt-id', required(body.promptId, 'Prompt id', 200), '--', body.action];
@@ -1263,7 +1342,7 @@ async function api(req, url) {
     catch (e) { throw new Error(/not_human|for the person/.test(e.message) ? `${e.message}\n${respondHint}` : e.message); }
   }
   if (parts[1] === 'panes' && parts[2]) {
-const p = paneFor(parts[2]);
+    const p = paneFor(parts[2]); await nativeSession(p.session, true);
     if (parts[3] === 'capture') return response({ text: await cli(['capture-pane', '-s', p.session, '-w', p.id, '--scrollback', '--lines', '200'], 15000, false) });
     if (parts[3] === 'interrupt' && method === 'POST') { if (body.confirmed !== true) throw new Error('Explicit confirmation is required'); await cli(['send-keys', '-s', p.session, '-w', p.id, 'ctrl+c'], 15000, false); return response({ ok: true }); }
     if (parts[3] === 'keys' && method === 'POST') {
@@ -1306,7 +1385,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port, idleTimeout: 0, maxReque
     for (const name of ['outline.js', 'outline.css', 'outline-model.js', 'task-style.js', 'task-style-dom.js', 'task-style.css', 'task-editor.js', 'list-tools.js']) files['/' + name] = name;
     if (!files[url.pathname]) return new Response('Not found', { status: 404 });
     return new Response(Bun.file(join(root, 'public', files[url.pathname])), { headers: { 'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' } });
-  } catch (e) { return response({ error: e.message }, 400); }
+  } catch (e) { return response({ error: e.message, ...(e.window_id || e.createdWindowId ? { window_id: e.window_id || e.createdWindowId } : {}) }, 400); }
 } });
 const hookTimer = setInterval(() => background(drainHooks().then(settlePrompts)), 1500);
 const collectorTimer = setInterval(() => background(pullHistory()), 15000);

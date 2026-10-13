@@ -45,6 +45,25 @@ type Window struct {
 	Session   string
 }
 
+// Host is an execution machine from TUIOS native inventory, not a session owner.
+type Host struct {
+	Host     string `json:"host"`
+	Status   string `json:"status"`
+	Hostname string `json:"hostname"`
+	ReadOnly bool   `json:"read_only"`
+}
+
+func (h Host) Available() bool {
+	if h.Host == "" || h.ReadOnly {
+		return false
+	}
+	switch h.Status {
+	case "down", "saved", "unknown", "unreachable", "read-only", "readonly":
+		return false
+	}
+	return true
+}
+
 // Client uses the existing Inbox HTTP API. Network work belongs off the UI goroutine.
 type Client struct {
 	base string
@@ -110,12 +129,26 @@ func (c *Client) CreateTask(title string) (Task, error) {
 	return task, err
 }
 
-// CreateWindow creates and assigns a shell in the task's default session and workspace.
-func (c *Client) CreateWindow(taskID, name string) error {
-	return c.request("POST", "/api/tasks/"+url.PathEscape(taskID)+"/panes", map[string]string{"name": name, "kind": "shell"}, nil)
+// Hosts reads execution machines and their availability from native inventory.
+func (c *Client) Hosts() ([]Host, error) {
+	var inventory struct {
+		Hosts []Host `json:"hosts"`
+	}
+	err := c.request("GET", "/api/hosts", nil, &inventory)
+	return inventory.Hosts, err
 }
 
-// CreateSession creates a local session, assigns its starter panes, and makes it the task's default home.
+// CreateWindow assigns a shell in the task's global session on the explicitly chosen machine.
+func (c *Client) CreateWindow(taskID, name, host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("choose an execution machine first")
+	}
+	return c.request("POST", "/api/tasks/"+url.PathEscape(taskID)+"/panes", map[string]string{"name": name, "kind": "shell", "host": host}, nil)
+}
+
+// CreateSession creates an empty global container and makes it the task's default home.
+// Windows are created separately with an explicit execution machine.
 // Errors after creation name the created session rather than claiming nothing happened.
 func (c *Client) CreateSession(taskID, name string) error {
 	var created struct {
@@ -124,19 +157,8 @@ func (c *Client) CreateSession(taskID, name string) error {
 	if err := c.action(map[string]any{"action": "create-session", "name": name}, &created); err != nil {
 		return err
 	}
-	var inventory struct {
-		Windows []Window `json:"windows"`
-	}
-	if err := c.request("GET", "/api/tuios?session="+url.QueryEscape(created.Session), nil, &inventory); err != nil {
-		return fmt.Errorf("session %q created; reading starter windows failed: %w", created.Session, err)
-	}
-	for _, window := range inventory.Windows {
-		if err := c.action(map[string]any{"action": "assign-task", "taskId": taskID, "session": created.Session, "window": window.ID}, nil); err != nil {
-			return fmt.Errorf("session %q created; assigning window failed: %w", created.Session, err)
-		}
-	}
 	if err := c.action(map[string]any{"action": "bind-task", "taskId": taskID, "session": created.Session}, nil); err != nil {
-		return fmt.Errorf("session %q created and windows assigned; setting the task home failed: %w", created.Session, err)
+		return fmt.Errorf("session %q created; setting the task home failed: %w", created.Session, err)
 	}
 	return nil
 }

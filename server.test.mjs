@@ -19,7 +19,11 @@ async function launch(dir, port, env = {}) {
   reader.releaseLock();
   return proc;
 }
-async function start() { child = await launch(home, port); }
+async function start() {
+  const bin = join(home, 'not-installed');
+  await Bun.write(bin, `#!/bin/sh\ncase "$1" in ls) echo '{"sessions":[{"name":"s","global":true}]}';; *) echo 'Native operation unavailable in fixture' >&2; exit 1;; esac\n`);
+  await chmod(bin,0o755); child = await launch(home, port);
+}
 async function stop() { child.kill(); await child.exited; }
 async function freePort() {
   const socket = createServer();
@@ -55,7 +59,7 @@ const newTask = async title => (await call('/tasks', { title, path: home })).jso
 const tasksOf = (s, ...titles) => titles.map(title => s.items.find(i => i.title === title).task_id);
 
 test('task edits and agent profile arguments survive a backend restart', async () => {
-  const created = await call('/tasks', { title: 'Durable task', path: home, notes: [{ body: 'before', context: true }] });
+  const created = await call('/tasks', { title: 'Durable task', path: home, host: 'local', notes: [{ body: 'before', context: true }] });
   expect(created.status).toBe(201);
   const task = await created.json();
   expect((await call(`/tasks/${task.id}`, { status: 'active' }, 'PATCH')).status).toBe(200);
@@ -64,7 +68,7 @@ test('task edits and agent profile arguments survive a backend restart', async (
   const profile = await configured.json();
   await stop(); await start();
   const state = await (await call('/state')).json();
-  expect(state.tasks.find(t => t.id === task.id)).toMatchObject({ title: 'Durable task', path: home, notes: [{ body: 'before', context: true }], status: 'active', worktree: '' });
+  expect(state.tasks.find(t => t.id === task.id)).toMatchObject({ title: 'Durable task', path: home, host: 'local', notes: [{ body: 'before', context: true }], status: 'active', worktree: '' });
   expect(state.profiles.find(p => p.id === profile.id)).toMatchObject({ executable: 'codex', args: ['--model', 'configured-model'], protocol: 'codex', env: { PROJECT_MODE: 'review' } });
 });
 
@@ -77,7 +81,7 @@ test('a remote web page cannot create tasks through the local command server', a
 });
 
 test('a task may be created without a project directory and given one later', async () => {
-  const created = await (await call('/tasks', { title: 'No directory yet' })).json();
+  const created = await (await call('/tasks', { title: 'No directory yet', host: 'local' })).json();
   expect(created).toMatchObject({ title: 'No directory yet', path: '', worktree: '' });
   expect((await call(`/tasks/${created.id}`, { path: join(home, 'missing') }, 'PATCH')).status).toBe(400);
   const updated = await (await call(`/tasks/${created.id}`, { path: home }, 'PATCH')).json();
@@ -100,9 +104,17 @@ test('a task can be a subtask of another; cycles and self-parenting are refused'
 });
 
 test('invalid working directories and non-argv agent arguments are rejected', async () => {
-  expect((await call('/tasks', { title: 'Invalid', path: join(home, 'missing') })).status).toBe(400);
+  expect((await call('/tasks', { title: 'Invalid', path: join(home, 'missing'), host: 'local' })).status).toBe(400);
   expect((await call('/profiles', { name: 'Bad argv', executable: 'codex', args: '--model x', env: {}, protocol: '' })).status).toBe(400);
   expect((await call('/profiles', { name: 'Bad environment', executable: 'codex', args: [], env: { SECRET: 42 }, protocol: '' })).status).toBe(400);
+});
+test('remote task directories are saved on their selected or inherited machine rather than statted locally', async () => {
+  const parent = await (await call('/tasks', {title:'Remote path parent',host:'build',path:'/remote-only/project'})).json();
+  expect(parent).toMatchObject({host:'build',path:'/remote-only/project'});
+  const child = await (await call('/tasks', {title:'Inherited remote directory',parent_id:parent.id,repo:'/remote-only/child',worktree:'/remote-only/worktree'})).json();
+  expect(child).toMatchObject({host:'',path:'/remote-only/child',worktree:'/remote-only/worktree'});
+  expect(await (await call(`/tasks/${child.id}`,{repo:'/remote-only/changed'},'PATCH')).json()).toMatchObject({path:'/remote-only/changed',session:child.session});
+  expect((await call(`/tasks/${child.id}`,{repo:'/remote-only/changed',host:'local'},'PATCH')).status).toBe(400);
 });
 
 test('a finished agent turn from the hook is unread until its reply is opened', async () => {
@@ -212,7 +224,7 @@ const agents = ` + JSON.stringify(agents) + `;
 const command = process.argv[2];
 if (command === 'list-agents') console.log(JSON.stringify({ agents }));
 else if (command === 'list-windows') console.log(JSON.stringify({ windows: agents.map(a => ({ id: a.window_id, agent_state: a.state })) }));
-else if (command === 'ls') console.log(JSON.stringify({ sessions: [{ name: 's', windows: agents.map(a => ({ id: a.window_id })) }] }));
+else if (command === 'ls') console.log(JSON.stringify({ sessions: [{ name: 's', global: true, windows: agents.map(a => ({ id: a.window_id })) }] }));
 else if (command === 'capture-pane') console.log('you  ' + agents.find(a => a.window_id === process.argv[process.argv.indexOf('-w') + 1]).meta.prompt + String.fromCharCode(10, 10) + 'intermediate output');
 else if (command === 'subscribe') {
   let sent = 0;
@@ -414,7 +426,7 @@ test('an existing database is migrated once: every kind of row becomes an item o
 
 test('task notes are independent and only marked notes reach agent prompts, never shells', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dispatch-notes-')), log = join(dir, 'calls.log'), fake = join(dir, 'tuios');
-  await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" >> '${log}'\nprintf '\\001' >> '${log}'\necho '{}'\n`);
+  await Bun.write(fake, `#!/bin/sh\nprintf '%s\\0' "$@" >> '${log}'\nprintf '\\001' >> '${log}'\ncase "$1" in ls) echo '{"sessions":[{"name":"s","global":true}]}';; list-windows) echo '{"windows":[{"window_id":"agent-pane","agent_state":"done"},{"window_id":"shell-pane","agent_state":"idle"}]}';; *) echo '{}';; esac\n`);
   await chmod(fake, 0o755);
   const at = await freePort(), api = `http://127.0.0.1:${at}`, proc = await launch(dir, at, { TUIOS_BIN: fake });
   const req = (path, body, method = 'POST') => fetch(`${api}/api${path}`, { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body ?? {}) });
@@ -515,6 +527,7 @@ test('a blocked agent\'s question is read from its pane and answered only with t
   await Bun.write(bin, `#!/bin/sh
 printf '%s\\n' "$*" >> '${log}'
 case "$1" in
+  ls) echo '{"sessions":[{"name":"s","global":true}]}';;
   peek-prompt) echo '{"found":true,"kind":"question","lines":["Which color?","1. Red","2. Blue"],"options":[{"n":1,"label":"Red"},{"n":2,"label":"Blue"}],"actions":["choose","text"],"prompt_id":"abc123","reason":"","waiting_ms":900}';;
   respond) case "$*" in
     *stale*) echo '{"error":"nothing was pressed: the prompt on the pane is not the one prompt_id names (prompt_changed)","success":false}'; exit 1;;
@@ -640,16 +653,23 @@ test('launches honor independent child workspace and effective cwd, default fres
   const database = new Database(join(dir, 'inbox.sqlite'), { create: true });
   database.exec("CREATE TABLE tasks (id TEXT PRIMARY KEY,title TEXT NOT NULL,path TEXT NOT NULL,worktree TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'open',session TEXT NOT NULL,created TEXT NOT NULL,archived INTEGER NOT NULL DEFAULT 0)");
   database.run('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?)', ['old', 'Archived old task', '', '', 'done', 'old-session', at, 1]); database.close();
-  await Bun.write(fake, `#!/bin/sh
-printf '%s\\0' "$@" "$(printf '\\001')" >> '${log}'
-case "$1" in
-ls) echo '{"sessions":[{"name":"native-home"}]}';;
-list-workspaces) echo '{"workspaces":[{"workspace":2},{"workspace":3}]}';;
-list-agents) echo '{"agents":[{"window_id":"native-2","agent_session_id":"sid-import","harness_id":"omp","state":"idle"}]}';;
-start-agent) n=$(cat '${dir}/count' 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > '${dir}/count'; printf '{"window_id":"native-%s","ready":false}' "$n";;
-queue) for x in "$@"; do if [ "$x" = 'denied payload' ]; then echo 'native queue permission refused' >&2; exit 1; fi; done; echo '{}';;
-*) echo '{}';;
-esac
+  await Bun.write(fake, `#!${process.execPath}
+const args = process.argv.slice(2), log = ${JSON.stringify(log)};
+const { appendFile } = await import('node:fs/promises'); await appendFile(log, args.join('\\0') + '\\0\\x01');
+const file = ${JSON.stringify(join(dir, 'native-sessions.json'))};
+const sessions = await Bun.file(file).json().catch(() => [{name:'native-home',global:true}]);
+let result = {};
+if (args[0] === 'ls') result = args.includes('--all-hosts') ? {hosts:[{host:'local',status:'up',sessions},{host:'build',status:'up',sessions:[{name:'far-global',global:true}]}]} : {sessions};
+if (args[0] === 'new') { sessions.push({name:args[1],global:args.includes('--global')}); await Bun.write(file,JSON.stringify(sessions)); }
+if (args[0] === 'list-workspaces') result = {workspaces:[{workspace:2},{workspace:3}]};
+if (args[0] === 'list-agents') result = {agents:[{window_id:'native-2',agent_session_id:'sid-import',harness_id:'omp',state:'idle'}]};
+if (args[0] === 'start-agent') { const countFile = ${JSON.stringify(join(dir,'count'))}; const n = Number(await Bun.file(countFile).text().catch(() => '0')) + 1; await Bun.write(countFile, String(n)); while (await Bun.file(${JSON.stringify(join(dir,'gate'))}).exists()) await Bun.sleep(10); result = {window_id:'native-'+n,ready:true,outcome:'ready'}; }
+if (args[0] === 'list-windows') { const { Database } = await import('bun:sqlite'); const db = new Database(process.env.TUIOS_INBOX_DATA + '/inbox.sqlite'); const target = args[args.indexOf('-s')+1]; result = {windows:db.query("SELECT id AS window_id,state,host FROM agents WHERE session=? AND state<>'closed'").all(target).map(a=>({...a,agent_state:{state:a.state}}))}; db.close(); }
+if (args[0] === 'queue' && args.includes('denied payload')) { console.error('native queue permission refused'); process.exit(1); }
+if (args[0] === 'kill-session') { const target=args.at(-1); await Bun.write(file,JSON.stringify(sessions.filter(s=>s.name!==target))); }
+if (args[0] === 'new-window') { const countFile=${JSON.stringify(join(dir,'hosted-count'))}; const n=Number(await Bun.file(countFile).text().catch(()=>'0'))+1; await Bun.write(countFile,String(n)); result={window_id:'hosted-'+n,host:'build'}; }
+if (args[0] === 'get-agent-state') { const mode=await Bun.file(${JSON.stringify(join(dir,'hosted-ready'))}).text().catch(()=>'blocked'); const ready=mode!=='blocked'; result={ready,state:mode==='errored'?'errored':ready?'idle':'needs_input',harness_id:'omp',blocked_by:ready?'':'question'}; }
+console.log(JSON.stringify(result));
 `);
   await chmod(fake, 0o755);
   const port = await freePort(), proc = await launch(dir, port, { TUIOS_BIN: fake, TUIOS_INBOX_GH: '/nonexistent/gh', TUIOS_INBOX_COLLECTORS: join(dir, 'none.json'), PI_CODING_AGENT_DIR: join(dir, 'omp') });
@@ -659,7 +679,7 @@ esac
   const untilPane = async promptId => { let prompt; for (let i = 0; i < 80; i++) { prompt = (await json('/outline')).prompts.find(p => p.id === promptId); if (prompt.pane_id && prompt.state !== 'blocked' && (await calls()).some(c => c[0] === 'queue' && c.includes(prompt.pane_id) && c.at(-1) === prompt.body)) return prompt; await Bun.sleep(25); } throw new Error('Launch did not complete: ' + JSON.stringify(prompt)); };
   try {
     expect((await json('/state')).tasks.find(t => t.id === 'old')).toMatchObject({ style_seed: 1, archived: 1, style: { seed: 1, theme: null, icon: null, color: null } });
-    const parent = await json('/tasks', { title: 'Native parent', repo: dir, worktree: home, session: 'native-home', workspace: 2, model: 'test-model' });
+    const parent = await json('/tasks', { title: 'Native parent', repo: dir, worktree: home, session: 'native-home', workspace: 2, host: 'local', model: 'test-model' });
     const child = await json('/tasks', { title: 'Own project', parent_id: parent.id, repo: dir, workspace: 3 });
     const resolved = (await json('/outline')).tasks.find(t => t.id === child.id);
     expect(resolved.own).toMatchObject({ session: '', workspace: 3, worktree: '' });
@@ -693,7 +713,7 @@ esac
     expect((await json('/history')).records.find(r => r.id === 'legacy:turn:projection')).toMatchObject({ task_id: child.id, style_task_id: null });
     await json('/tasks/' + child.id, { workspace: 2 }, 'PATCH');
     expect((await json('/outline')).tasks.find(t => t.id === child.id)).toMatchObject({ own: { session: '', workspace: 2 }, resolved: { session: { value: 'native-home' }, workspace: { value: 2 } } });
-    const orphan = await json('/prompts', { body: 'fallback payload', harness: 'custom-agent' });
+    const orphan = await json('/prompts', { body: 'fallback payload', harness: 'custom-agent', host: 'local' });
     expect(orphan.preflight.warns.map(w => w.code)).toEqual(['nowhere', 'no_harness']);
     expect((await request('/prompts/' + orphan.prompt.id + '/run', { allow_warnings: true })).status).toBe(202);
     expect(await untilPane(orphan.prompt.id)).toMatchObject({ state: 'running', pane_id: 'native-3' });
@@ -721,6 +741,34 @@ esac
     expect((await request('/prompts/' + unfamiliar.prompt.id + '/run', { allow_warnings: true })).status).toBe(202);
     expect((await calls()).filter(c => c[0] === 'queue' && c.includes('unfamiliar')).map(c => c.at(-1))).toEqual(['unfamiliar payload']);
     expect((await calls()).filter(c => ['run', 'send-text', 'send-keys', 'respond'].includes(c[0]) && c.includes('unfamiliar'))).toEqual([]);
+    const blocked = await json('/prompts',{body:'held hosted payload',task_id:child.id,host:'build',launch_mode:'new',run:true,allow_warnings:true});
+    let blockedView; for(let i=0;i<80;i++){blockedView=(await json('/outline')).prompts.find(p=>p.id===blocked.prompt.id);if(blockedView.state==='blocked')break;await Bun.sleep(25);}
+    expect(blockedView).toMatchObject({state:'blocked',body:'held hosted payload',pane_id:'hosted-1',target:'hosted-1'});
+    expect((await json('/state')).agents.find(a=>a.id==='hosted-1')).toMatchObject({session:'native-home',host:'build',state:'needs_input'});
+    expect((await calls()).filter(c=>c[0]==='queue'&&c.includes('hosted-1'))).toEqual([]);
+    await Bun.write(join(dir,'hosted-ready'),'ready');
+    const hosted = await json('/prompts',{body:'real hosted ready payload',task_id:child.id,host:'build',launch_mode:'new',run:true,allow_warnings:true});
+    expect(await untilPane(hosted.prompt.id)).toMatchObject({state:'running',pane_id:'hosted-2'});
+    await Bun.write(join(dir,'hosted-ready'),'errored');
+    const errored=await json('/prompts',{body:'do not dispatch after failed startup',task_id:child.id,host:'build',launch_mode:'new',run:true,allow_warnings:true});
+    let errorView;for(let i=0;i<80;i++){errorView=(await json('/outline')).prompts.find(p=>p.id===errored.prompt.id);if(errorView.state==='blocked')break;await Bun.sleep(25);}
+    expect(errorView).toMatchObject({state:'blocked',body:'do not dispatch after failed startup',pane_id:'hosted-3',target:'hosted-3'});
+    expect((await calls()).filter(c=>c[0]==='queue'&&c.includes('hosted-3'))).toEqual([]);
+    const unsupported=await json('/prompts',{body:'preserved protocol prompt',task_id:child.id,host:'build',harness:'codex',run:true,allow_warnings:true});
+    expect(unsupported).toMatchObject({ran:false,prompt:{state:'blocked',body:'preserved protocol prompt',pane_id:''}});
+    expect(unsupported.preflight.blocks[0].message).toContain('approval semantics');
+    await Bun.write(join(dir,'gate'),'hold');
+    await json('/tuios/action',{action:'create-agent',session:'native-home',workspace:2,host:'local',name:'before-kill',profileId:'omp'});
+    for(let i=0;i<80&&Number(await Bun.file(join(dir,'count')).text())<5;i++)await Bun.sleep(25);
+    const killing=request('/tuios/action',{action:'kill-session',session:'native-home',confirmed:true});
+    await Bun.sleep(80);
+    const afterKill=await json('/tuios/action',{action:'create-agent',session:'native-home',workspace:2,host:'local',name:'after-kill',profileId:'omp'});
+    await rm(join(dir,'gate'));
+    expect((await killing).status).toBe(200);
+    let failed;for(let i=0;i<80;i++){failed=await json('/threads/'+afterKill.threadId);if(failed.messages.some(m=>m.status==='failed'))break;await Bun.sleep(25);}
+    expect(failed.messages).toMatchObject([{status:'failed',body:'Native global session not found'}]);
+    expect(Number(await Bun.file(join(dir,'count')).text())).toBe(5);
+    expect((await json('/tuios')).sessions.some(s=>s.target==='native-home')).toBe(false);
     db.close();
   } finally { proc.kill(); await proc.exited; await rm(dir, { recursive: true, force: true }); }
 });

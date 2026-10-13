@@ -21,6 +21,7 @@ const (
 	formNewWindow
 	formNewSession
 	formChoose
+	formChooseHost
 )
 
 // Config carries everything the launcher decides.
@@ -41,6 +42,9 @@ type Model struct {
 	Snapshot                                  inbox.Snapshot
 	Windows                                   []inbox.Window
 	TaskID                                    string
+	Hosts                                     []inbox.Host
+	Host                                      string
+	HostCursor, HostScroll                    int
 	TaskCursor, WindowCursor                  int
 	TaskScroll, WindowScroll                  int
 	Form, Continue                            form
@@ -80,6 +84,57 @@ type loadMsg struct {
 type jumpMsg struct {
 	Gen uint64
 	Err error
+}
+
+type hostsMsg struct {
+	Gen   uint64
+	Hosts []inbox.Host
+	Err   error
+}
+
+func (m *Model) hosts() []inbox.Host {
+	query := strings.ToLower(strings.TrimSpace(m.Filter.Text))
+	var hosts []inbox.Host
+	for _, host := range m.Hosts {
+		if query == "" || strings.Contains(strings.ToLower(host.Host+" "+host.Hostname), query) {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
+}
+
+func (m *Model) loadHosts() tea.Cmd {
+	m.Gen++
+	m.Busy = true
+	m.Error = ""
+	gen, client := m.Gen, m.cfg.Client
+	return func() tea.Msg {
+		hosts, err := client.Hosts()
+		return hostsMsg{Gen: gen, Hosts: hosts, Err: err}
+	}
+}
+
+func (m *Model) chooseHost() tea.Cmd {
+	m.openFromForm(formChooseHost)
+	m.Filter = lineEdit{}
+	m.HostCursor, m.HostScroll = 0, 0
+	return m.loadHosts()
+}
+
+func (m *Model) activateHost() tea.Cmd {
+	hosts := m.hosts()
+	if m.Busy || len(hosts) == 0 {
+		return nil
+	}
+	host := hosts[clamp(m.HostCursor, 0, len(hosts)-1)]
+	if !host.Available() {
+		m.Error = "This machine is unavailable or read-only; choose another machine."
+		return nil
+	}
+	m.back()
+	m.Host = host.Host
+	m.Error = ""
+	return nil
 }
 
 // New returns a model that loads on Init.
@@ -232,6 +287,7 @@ func (m *Model) beginForm(f form) {
 	}
 	m.Form = f
 	m.Draft = lineEdit{}
+	m.Host = ""
 	m.Search = false
 }
 
@@ -245,6 +301,20 @@ func (m *Model) submit() tea.Cmd {
 	if f != formNewTask {
 		if _, ok := m.task(); !ok {
 			m.Error = "Choose or create a task first."
+			return nil
+		}
+	}
+	host := m.Host
+	if f == formNewWindow {
+		available := false
+		for _, machine := range m.Hosts {
+			if machine.Host == host && machine.Available() {
+				available = true
+				break
+			}
+		}
+		if !available {
+			m.Error = "Choose an available execution machine first (Ctrl+O)."
 			return nil
 		}
 	}
@@ -265,7 +335,7 @@ func (m *Model) submit() tea.Cmd {
 			}
 			result.Notice = "Task created: " + name
 		case formNewWindow:
-			result.Err = client.CreateWindow(taskID, name)
+			result.Err = client.CreateWindow(taskID, name, host)
 			result.Notice = "Window created: " + name
 		case formNewSession:
 			result.Err = client.CreateSession(taskID, name)
@@ -276,6 +346,10 @@ func (m *Model) submit() tea.Cmd {
 }
 
 func (m *Model) move(delta int) {
+	if m.Form == formChooseHost {
+		m.HostCursor = clamp(m.HostCursor+delta, 0, max(len(m.hosts())-1, 0))
+		return
+	}
 	if m.Writing || (m.Form != formBrowse && m.Form != formChoose) {
 		return
 	}
@@ -316,6 +390,7 @@ func (m *Model) jump() tea.Cmd {
 	}
 	window := m.Windows[m.WindowCursor]
 	session := window.Session
+	// Navigation addresses the session owner; the window's execution machine is independent.
 	if !strings.Contains(session, ":") {
 		session = "local:" + session
 	}
@@ -382,7 +457,7 @@ func (m *Model) handleKey(key, text string) tea.Cmd {
 			m.ExitNote = "Closed while a create request was in flight; the Inbox server may still complete it."
 			return tea.Quit
 		}
-		if (m.Form == formNewTask || m.Form == formChoose) && m.Parent.Form != formBrowse {
+		if (m.Form == formNewTask || m.Form == formChoose || m.Form == formChooseHost) && m.Parent.Form != formBrowse {
 			m.back()
 		} else if m.Form != formBrowse {
 			m.Form = formBrowse
@@ -403,6 +478,25 @@ func (m *Model) handleKey(key, text string) tea.Cmd {
 	}
 	if m.Writing {
 		return nil
+	}
+	if m.Form == formChooseHost {
+		switch key {
+		case "enter":
+			return m.activateHost()
+		case "up":
+			m.move(-1)
+		case "down":
+			m.move(1)
+		case "ctrl+r":
+			return m.loadHosts()
+		default:
+			m.Filter.key(key, text)
+			m.HostCursor, m.HostScroll = 0, 0
+		}
+		return nil
+	}
+	if m.Form == formNewWindow && key == "ctrl+o" {
+		return m.chooseHost()
 	}
 	if m.Form == formNewWindow || m.Form == formNewSession {
 		switch key {
@@ -502,7 +596,13 @@ func (m *Model) click(id int) tea.Cmd {
 		return m.handleKey("enter", "")
 	case hitChoose:
 		return m.handleKey("tab", "")
+	case hitChooseHost:
+		return m.chooseHost()
 	default:
+		if m.Form == formChooseHost {
+			m.HostCursor = id
+			return m.activateHost()
+		}
 		if id < 0 {
 			m.PaneFocus = true
 			m.WindowCursor = -id - 1
@@ -522,6 +622,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 	case loadMsg:
 		cmd = m.handleLoad(msg)
+	case hostsMsg:
+		if msg.Gen == m.Gen && m.Form == formChooseHost {
+			m.Busy = false
+			m.Hosts = msg.Hosts
+			if msg.Err != nil {
+				m.Error = msg.Err.Error()
+			}
+		}
 	case jumpMsg:
 		if msg.Gen == m.Gen && m.Jumping {
 			m.Jumping = false
@@ -539,9 +647,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.Form == formNewTask || m.Form == formNewWindow || m.Form == formNewSession {
 			m.Draft.insert(msg.Content)
-		} else if m.Search || m.Form == formChoose {
+		} else if m.Search || m.Form == formChoose || m.Form == formChooseHost {
 			m.Filter.insert(msg.Content)
 			m.TaskCursor = 0
+			m.HostCursor, m.HostScroll = 0, 0
 		}
 	case tea.MouseClickMsg:
 		if msg.Button == tea.MouseLeft {
@@ -581,4 +690,6 @@ func (m *Model) normalize() {
 	m.WindowCursor = clamp(m.WindowCursor, 0, max(len(m.Windows)-1, 0))
 	m.TaskScroll = scrollWindow(m.TaskScroll, m.TaskCursor, len(tasks), count)
 	m.WindowScroll = scrollWindow(m.WindowScroll, m.WindowCursor, len(m.Windows), count)
+	m.HostCursor = clamp(m.HostCursor, 0, max(len(m.hosts())-1, 0))
+	m.HostScroll = scrollWindow(m.HostScroll, m.HostCursor, len(m.hosts()), count)
 }

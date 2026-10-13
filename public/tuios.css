@@ -12,6 +12,8 @@
 .native-toolbar { display: flex; gap: 16px; justify-content: space-between; align-items: center; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .native-toolbar .hint { margin: 0; }
 .native-layout { display: grid; flex: 1; min-height: 120px; grid-template-columns: 210px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 24px; padding-top: 20px; }
+.native-layout > .inline-list-filter { grid-column: 1 / -1; }
+.native-layout:has(> .inline-list-filter) { grid-template-rows: auto minmax(0, 1fr); }
 .native-tree { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding-right: 16px; border-right: 1px solid var(--line); font-size: 13px; scrollbar-gutter: stable; }
 .native-tree a { display: block; padding: 8px; text-decoration: none; overflow-wrap: anywhere; }
 .native-tree a:hover { background: #243442; }
@@ -161,6 +163,7 @@
 }
 @media (max-width: 850px) {
   .native-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(44px, 30%) minmax(0, 1fr); min-height: 160px; }
+  .native-layout:has(> .inline-list-filter) { grid-template-rows: auto minmax(44px, 30%) minmax(0, 1fr); }
   .native-tree { border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 14px; }
   .native-tree details { margin-bottom: 0; }
   .native-table { min-width: 560px; }

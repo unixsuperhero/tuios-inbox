@@ -17,6 +17,7 @@ const (
 	hitNewSession
 	hitSubmit
 	hitChoose
+	hitChooseHost
 )
 
 // hit is a clickable cell range in body coordinates; id is a task index, -(window index)-1, or a hit constant.
@@ -55,7 +56,9 @@ func (m *Model) headerRows() int {
 	return 2
 }
 
-func (m *Model) split() bool { return m.width() >= 66 && m.Form != formChoose }
+func (m *Model) split() bool {
+	return m.width() >= 66 && m.Form != formChoose && m.Form != formChooseHost
+}
 
 func (m *Model) home(task inbox.Task) string {
 	home := task.Session
@@ -75,6 +78,8 @@ func formTitle(f form) string {
 		return "New session"
 	case formChoose:
 		return "Choose a task"
+	case formChooseHost:
+		return "Choose an execution machine"
 	}
 	return "Task workspace"
 }
@@ -82,7 +87,11 @@ func formTitle(f form) string {
 func (m *Model) hints() string {
 	short := m.width() < 56
 	switch m.Form {
-	case formNewWindow, formNewSession:
+	case formNewWindow:
+		return "⏎ create · tab task · ^o machine · ^n new task · esc back"
+	case formChooseHost:
+		return "↑↓ move · ⏎ choose · type to find · ^r refresh · esc back"
+	case formNewSession:
 		if short {
 			return "⏎ create · tab task · ^n new · esc back"
 		}
@@ -100,7 +109,7 @@ func (m *Model) hints() string {
 
 // rowCount is how many list rows fit below the fixed chrome.
 func (m *Model) rowCount() int {
-	if m.Form != formBrowse && m.Form != formChoose {
+	if m.Form != formBrowse && m.Form != formChoose && m.Form != formChooseHost {
 		return 0
 	}
 	lines, _ := m.layout(0)
@@ -115,6 +124,8 @@ func (m *Model) message() string {
 		return dim.Render("Jumping…")
 	case m.Writing:
 		return dim.Render("Creating… Esc leaves the request running.")
+	case m.Busy && m.Form == formChooseHost:
+		return dim.Render("Loading execution machines…")
 	case m.Busy && m.Notice == "":
 		return dim.Render("Loading task windows… You can keep typing.")
 	case m.Notice != "":
@@ -150,6 +161,43 @@ func (m *Model) layout(count int) ([]string, []hit) {
 	compact := m.h > 0 && m.h < 18
 	task, _ := m.task()
 	switch m.Form {
+	case formChooseHost:
+		if !tight {
+			lines = append(lines, text("Choose the machine that will run this window."))
+		}
+		lines = append(lines, editLine(m.Filter, width), text(accent.Render("Execution machines")))
+		hosts := m.hosts()
+		for row := range count {
+			index := m.HostScroll + row
+			if index >= len(hosts) {
+				empty := ""
+				if row == 0 {
+					empty = "No matching machines. Ctrl+R refreshes inventory."
+					if m.Busy {
+						empty = "Loading execution machines…"
+					}
+				}
+				lines = append(lines, text(dim.Render(empty)))
+				continue
+			}
+			host := hosts[index]
+			label := " " + printable(host.Host)
+			if host.Hostname != "" && host.Hostname != host.Host {
+				label += " · " + printable(host.Hostname)
+			}
+			if !host.Available() {
+				status := host.Status
+				if host.ReadOnly {
+					status = "read-only"
+				}
+				label += " · unavailable (" + printable(status) + ")"
+				label = dim.Render(label)
+			}
+			lines = append(lines, m.row(label, width, index == m.HostCursor, true))
+			if host.Available() {
+				addHit(index, 0, len(lines)-1, width)
+			}
+		}
 	case formNewTask, formNewWindow, formNewSession:
 		if m.Form == formNewTask && !m.tight() {
 			lines = append(lines, text("Give the task a name. Its execution home is created when needed."))
@@ -167,11 +215,19 @@ func (m *Model) layout(count int) ([]string, []hit) {
 			lines = append(lines, text(dim.Render(strings.Repeat("─", width))))
 		}
 		lines = append(lines, text("Name"), editLine(m.Draft, width))
+		if m.Form == formNewWindow {
+			machine := printable(m.Host)
+			if machine == "" {
+				machine = "Choose…"
+			}
+			lines = append(lines, text("[^o] Machine: "+machine))
+			addHit(hitChooseHost, 0, len(lines)-1, width)
+		}
 		if m.Form == formNewWindow && !compact {
 			lines = append(lines, text("Create in "+m.home(task)))
 		}
 		if m.Form == formNewSession && !compact {
-			lines = append(lines, text("Assign the starter window and set this as the task's default home."), text("Previously assigned windows stay with this task."))
+			lines = append(lines, text("Create an empty global session and set it as the task's default home."), text("Windows are created separately on a chosen machine."))
 		}
 		if !compact {
 			lines = append(lines, text(""))

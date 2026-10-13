@@ -1,7 +1,9 @@
 // Page schemas and record markup; app.js owns navigation, dialogs and delegated actions.
 import { markdown } from '/markdown.js';
 import { styleAttrs, taskMark } from '/task-style-dom.js';
-export const store = { state: { tasks: [], panes: [], profiles: [], agents: [], items: [] }, drafts: new Map(), edits: new Map(), liveSessions: null, bodies: new Map(), questions: new Map() };
+import { hostChoices, machineLabel } from '/launch-host.js';
+import { resolve } from '/outline-model.js';
+export const store = { state: { tasks: [], panes: [], profiles: [], agents: [], items: [] }, drafts: new Map(), edits: new Map(), liveSessions: null, liveHosts: null, bodies: new Map(), questions: new Map() };
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 export async function api(path, body, method = 'POST') {
   const response = await fetch('/api' + path, body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) });
@@ -68,7 +70,7 @@ export function recipients(context = {}) {
     ? panes.filter(p => context.taskId == null || p.task_id === context.taskId)
     : agents.filter(a => a.state !== 'closed' && !a.archived && (context.taskId == null || a.task_id === context.taskId))
       .map(a => ({ ...panes.find(p => p.id === a.id), ...a }));
-  return [...new Map(source.filter(row => context.session == null || row.session === context.session).map(row => {
+  return [...new Map(source.filter(row => row.live !== false && (context.session == null || row.session === context.session)).map(row => {
     const kind = row.kind === 'agent' ? 'agent' : 'pane';
     return [row.id, {
       ...row, value: row.id, kind, taskId: row.task_id,
@@ -193,12 +195,12 @@ const statuses = ['open', 'active', 'done'].map(s => ({ value: s, label: s }));
 const basename = path => path.split('/').filter(Boolean).pop() || path;
 // Edit drafts live in store.edits (keyed by task and section) so periodic refreshes never reset what is being typed.
 export const editKey = (taskId, section) => `${taskId}|${section}`;
-const homeText = t => `${t.session} · ${t.workspace == null ? 'session default workspace' : 'workspace ' + t.workspace}`;
+const homeText = t => `${t.session || 'No global session set'} · ${t.workspace == null ? 'session default workspace' : 'workspace ' + t.workspace}`;
 const sectionHead = (t, section, title) => `<div class="section-head"><h2 class="section-title">${title}</h2>${store.edits.has(editKey(t.id, section)) ? '' : `<button type="button" class="subtle" data-do="edit-section" data-id="${esc(t.id)}" data-section="${section}">Edit</button>`}</div>`;
 const sectionButtons = (t, section) => `<div class="actions"><button type="button" class="primary" data-do="save-section"${store.edits.get(editKey(t.id, section))?.saving ? ' disabled' : ''} data-id="${esc(t.id)}" data-section="${section}">Save</button><button type="button" data-do="cancel-section" data-id="${esc(t.id)}" data-section="${section}">Cancel</button></div>`;
 const field = (t, section, name, value) => `data-edit="${esc(editKey(t.id, section))}" data-field="${name}"${value === undefined ? '' : ` value="${esc(value)}"`}`;
 const fact = (label, html) => `<div><dt>${label}</dt><dd>${html}</dd></div>`;
-const optionList = (choices, current) => choices.map(o => `<option value="${esc(o.value)}"${o.value === (current ?? '') ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+const optionList = (choices, current) => choices.map(o => `<option value="${esc(o.value)}"${o.value === (current ?? '') ? ' selected' : ''}${o.disabled ? ' disabled' : ''}>${esc(o.label)}</option>`).join('');
 function titleSection(t) {
   const d = store.edits.get(editKey(t.id, 'title'));
   if (!d) return `<section class="task-section" data-wb-key="section:title">${sectionHead(t, 'title', 'Task')}<dl class="metadata-facts">${fact('Title', esc(t.title))}${fact('Status', badge(t.status))}</dl></section>`;
@@ -207,7 +209,8 @@ function titleSection(t) {
 function pathsSection(t) {
   const d = store.edits.get(editKey(t.id, 'paths'));
   if (!d) return `<section class="task-section" data-wb-key="section:paths">${sectionHead(t, 'paths', 'Directories')}<dl class="metadata-facts">${fact('Project path', t.path ? esc(t.path) : '<span class="hint">Not set · panes open in your home directory</span>')}${fact('Existing worktree', t.worktree ? esc(t.worktree) : '<span class="hint">None · uses the project path</span>')}</dl></section>`;
-  const box = (name, label, placeholder) => `<label class="grow">${label} <small>Optional</small><span class="browse"><input id="task-${name}-${esc(t.id)}" ${field(t, 'paths', name, d[name])} list="path-options" placeholder="${placeholder}"><button type="button" data-do="browse" data-id="task-${name}-${esc(t.id)}">Browse…</button></span></label>`;
+  const local = resolve(t, new Map(store.state.tasks.map(task => [task.id, task]))).host?.value === 'local';
+  const box = (name, label, placeholder) => `<label class="grow">${label} <small>Optional</small><span class="browse"><input id="task-${name}-${esc(t.id)}" ${field(t, 'paths', name, d[name])} list="path-options" placeholder="${placeholder}"><button type="button" data-do="browse" data-id="task-${name}-${esc(t.id)}"${local ? '' : ' disabled title="Local directory picker requires local execution"'}>Browse…</button></span></label>`;
   return `<section class="task-section is-editing" data-wb-key="section:paths">${sectionHead(t, 'paths', 'Directories')}<div class="props">${box('path', 'Project path', 'Not set · panes open in your home directory')}${box('worktree', 'Existing worktree', 'Leave empty to use the project path')}</div>${sectionButtons(t, 'paths')}</section>`;
 }
 function parentSection(t) {
@@ -219,10 +222,12 @@ function parentSection(t) {
 }
 function homeSection(t) {
   const d = store.edits.get(editKey(t.id, 'home'));
-  const link = `<a href="#tuios/${encodeURIComponent(t.session)}${t.workspace == null ? '' : '/' + t.workspace}">${esc(homeText(t))}</a>`;
-  if (!d) return `<section class="task-section" data-wb-key="section:home">${sectionHead(t, 'home', 'Launch home')}<dl class="metadata-facts">${fact('Future launch home', link)}</dl>${hint('Future launches only. Existing panes, assigned work and history are not moved.')}</section>`;
-  const live = store.liveSessions, sessions = [...(live || []), ...(live?.some(s => s.value === d.session) ? [] : [{ value: d.session, label: `${d.session} · not reported live` }])];
-  return `<section class="task-section is-editing" data-wb-key="section:home">${sectionHead(t, 'home', 'Launch home')}<div class="props"><label class="grow">Session<select ${field(t, 'home', 'session')}>${optionList(sessions, d.session)}</select></label><label>Workspace <small>Empty = session default</small><input type="number" min="1" step="1" ${field(t, 'home', 'workspace', d.workspace)}></label></div>${live ? '' : hint('Reading live sessions…')}${hint('Future launches only. Existing panes, assigned work and history are not moved.')}${sectionButtons(t, 'home')}</section>`;
+  const resolved = resolve(t, new Map(store.state.tasks.map(task => [task.id, task]))), host = resolved.host?.value;
+  const machine = host ? machineLabel((store.liveHosts || []).find(h => h.host === host) || { host }) : 'Not set · choose an execution machine';
+  const link = t.session ? `<a href="#tuios/${encodeURIComponent(t.session)}${t.workspace == null ? '' : '/' + t.workspace}">${esc(homeText(t))}</a>` : esc(homeText(t));
+  if (!d) return `<section class="task-section" data-wb-key="section:home">${sectionHead(t, 'home', 'Launch home')}<dl class="metadata-facts">${fact('Global session container', link)}${fact('Execution machine', esc(machine))}</dl>${hint('Future launches only. Existing panes, assigned work and history are not moved.')}</section>`;
+  const live = store.liveSessions, sessions = [{ value: '', label: 'Inherit global session' }, ...(live || []), ...(d.session && !live?.some(s => s.value === d.session) ? [{ value: d.session, label: `${d.session} · unavailable`, disabled: true }] : [])];
+  return `<section class="task-section is-editing" data-wb-key="section:home">${sectionHead(t, 'home', 'Launch home')}<div class="props"><label class="grow">Global session container<select ${field(t, 'home', 'session')}>${optionList(sessions, d.session)}</select></label><label>Execution machine<select ${field(t, 'home', 'host')}>${optionList(hostChoices(store.liveHosts || [], d.host, 'Inherit execution machine · no local default'), d.host)}</select></label><label>Workspace <small>Empty = session default</small><input type="number" min="1" step="1" ${field(t, 'home', 'workspace', d.workspace)}></label></div>${live ? '' : hint('Reading global sessions and execution machines…')}${hint('Execution machine and global session owner are independent. Existing panes, work and history stay unchanged.')}${sectionButtons(t, 'home')}</section>`;
 }
 const notesOf = t => Array.isArray(t.notes) ? t.notes : [];
 function noteHtml(t, n) {

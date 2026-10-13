@@ -93,9 +93,9 @@ turn: { id, session, pane_id, pane_name, harness, prompt, response, source, stat
 
 ## TUIOS management
 
-Choose **TUIOS** to browse native sessions, numbered workspaces, and windows. Each window is one terminal pane. An agent is state and harness metadata on that same pane UUID, not another movable child. The hierarchy includes native panes created outside Inbox.
+Choose **TUIOS** to browse native global sessions, numbered workspaces, and windows. Each window is one terminal pane. An agent is state and harness metadata on that same pane UUID, not another movable child. The hierarchy includes panes created outside Inbox when their session is global; ordinary sessions are not Inbox launch or control targets. Captured history remains available.
 
-The always-visible **TUIOS** navigation link opens **Overview** (`#tuios-overview`), an inventory of all native sessions. Each session has numbered workspace tabs, including empty workspaces, and a list of its windows. Agent panes show an **Agent** label, harness, state, and reported message instead of appearing as a second entity. Session headers show the native host name and, for the local daemon, the backend machine hostname. **Sessions** retains the detailed table browser.
+The always-visible **TUIOS** navigation link opens **Overview** (`#tuios-overview`), an inventory of native global sessions. Each session has numbered workspace tabs, including empty workspaces, and a list of its windows. Agent panes show an **Agent** label, harness, state, and reported message instead of appearing as a second entity. Session headers distinguish the session owner from pane execution machines and show the backend hostname for the local daemon. **Sessions** retains the detailed table browser.
 
 Use **Inspect** to open native details and a snapshot. Use **Move pane** to choose any workspace in the same session, or drag a row onto a workspace tab. Cross-session drops and same-workspace drops send no mutation. Moves retain the native pane UUID and do not change task assignment or future task homes. TUIOS does not support transferring panes between sessions.
 
@@ -103,20 +103,20 @@ Use **Inspect** to open native details and a snapshot. Use **Move pane** to choo
 
 Session and pane tables have Name, Host, State, and Actions columns, with search and host/state filters. Pane details show full native metadata, agent state, bounded activity, and a 200-line terminal snapshot. **Read again** refreshes native state. Browsing never selects a terminal workspace or changes terminal focus. **Select in terminal** and **Focus in terminal** are explicit actions.
 
-Create sessions and panes, label or rename sessions, set session accents, name workspaces, rename panes, move panes between workspaces in the same session, and minimize or restore panes. Splits require an attached terminal client with tiling enabled and can change terminal focus. Session layout controls affect the terminal-selected workspace, not the browsed workspace. Native cross-session pane transfer is unavailable. Session rename and kill are local-only.
+New sessions are empty global containers owned by the backend machine. Pane, agent, and split creation require an explicit execution machine; selecting a remote machine does not change the global container. You can label or rename sessions, set session accents, name workspaces, rename panes, move panes between workspaces in the same session, and minimize or restore panes. Splits require an attached terminal client with BSP tiling enabled and a visible target in its current workspace. Inbox focuses the target, creates a pane with an explicit native host, verifies sibling geometry, and rotates that split only when needed. No terminal host popup or native TUIOS patch is required. If placement fails after creation, the error identifies the retained pane; do not retry creation blindly. Session layout controls affect the terminal-selected workspace, not the browsed workspace. Native cross-session pane transfer is unavailable. Session rename and kill are local-only.
 
 Closing a pane, closing a workspace, killing a session, or interrupting a process requires a confirmation checkbox and explicit submit. Task records and captured history remain stored after native closure. Agent launches use saved profiles and expose the actual startup thread. Queued prompts require native agent metadata and never execute as shell commands. Native grants and human approvals remain enforced.
 
-Use one session per task by default. For a shared project session, use **Bind future task home** on the desired session or workspace:
+Bind tasks to global containers and choose execution machines separately. Use **Bind future task home** on the desired session or workspace:
 
 ```js
-{ title: "Auth", session: "auth", workspace: null } // Session default
-{ title: "Auth", session: "project", workspace: 2 } // Shared session, workspace 2
+{ title: "Auth", session: "global", host: "local", workspace: null }
+{ title: "Build", session: "global", host: "build", workspace: 2 }
 ```
 
-A task home places future shell and agent launches. Changing that home never moves existing panes or rewrites history. Existing controls, capture, and mail use each pane’s execution session. **Assign pane to task** changes work grouping independently of native placement, preserving individually reassigned records. Managed mail requires recipients in the same execution session.
+A task home places future shell and agent launches. Machine, global session, and workspace inherit independently; prompt overrides apply only to that prompt. A missing machine must be selected before a fresh launch rather than defaulting to local or opening a terminal picker. Changing a home never moves existing panes or rewrites history. Existing controls, capture, and mail use each live global pane’s execution session. **Assign pane to task** changes work grouping independently of native placement, preserving individually reassigned records. Managed mail requires recipients in the same execution session.
 
-Working-directory **Browse** opens the backend host’s native directory chooser for local launches. Remote launches inherit native directory defaults and reject local picker paths. Host configuration remains in TUIOS. Remote managed shells do not source the backend’s local shell integration script; command-marking availability is checked by native TUIOS.
+Working-directory **Browse** opens the backend host’s native directory chooser for local launches. Remote paths can be entered manually; the local picker is disabled for remote execution. An omitted remote path uses that machine’s native directory default. Host configuration remains in TUIOS. Remote managed shells do not source the backend’s local shell integration script; command-marking availability is checked by native TUIOS.
 
 ## Working with a task
 
@@ -138,13 +138,17 @@ Prompt and response appearance follows the actual owning task, not the selected 
 
 Advisory checks never permanently block the user. Missing defaults, unfamiliar harness/model names, branch mismatch, dirty work, and pane-state concerns show named warnings with an explicit attempt action. API callers acknowledge these through `allow_warnings: true`. Without a directory, the warning explains the home-directory fallback. Without a saved harness profile, it explains that proceeding launches that executable without extra profile arguments.
 
-The override acknowledges app advice only. It does not grant native permissions or answer human approvals. Missing executables, gone targets, native refusals, and failed launches are actual errors, not reported successes. Busy/question targets wait in the native queue; queued acceptance is not completion.
+The override acknowledges app advice only. It does not grant native permissions or answer human approvals. A fresh launch still requires an available execution machine and a global container. Missing executables, gone targets, native refusals, and failed launches are actual errors, not reported successes. Busy/question targets wait in the native queue; queued acceptance is not completion.
 
 Task-title and prompt editors impose no arbitrary length caps. Native transport limits still apply, including TUIOS's documented 16 KiB queue-message ceiling. You can save the full prompt and explicitly attempt dispatch; actual native refusals remain visible. Prompts are never silently truncated or split.
 
 ### Advanced native launches
 
-Register remote hosts with `tuios hosts add`. The launch dialog lists native link status and disables unavailable hosts. Remote agents use `HOST:SESSION` and the remote executable/checkout defaults; profile environment overrides cannot cross hosts. From a local task home, a remote shell opens as a hosted window in that session. From a remote task home, a shell on another host requires the destination session to exist. No launch changes the task's home.
+Register remote hosts with `tuios hosts add`. Launch dialogs require a machine and disable unavailable or read-only hosts. Local choices show the backend hostname. A hosted remote pane stays in its selected global container; `HOST:SESSION` identifies the container owner, not the process machine. New containers are created on the backend daemon. Existing remote-owned globals support panes and splits on their owner machine through the native control relay. Other execution machines in a remote-owned container are rejected because host aliases are owner-relative; use a backend-owned global for hosted execution instead. Hosted remote agents use the remote executable and checkout; local profile environment overrides and structured protocol adapters cannot cross hosts. Unsupported launches return an error without changing the task home.
+
+Inbox serializes its own launches, renames, and session closures and rechecks the global container before queued creation. Native `start-agent` has no atomic require-existing option: deleting a container outside Inbox during startup can still race its native session auto-creation.
+
+`setup:cross-host` installs command marks for hosted shells (`TUIOS_PANE_HOSTED=1`) as well as local native panes. Hosted agents activate their real harness hooks and report readiness through native pane-addressed calls; Inbox does not manufacture ready state.
 
 Agent profiles configure executable, argv, protocol, and environment. Executable Browse opens the backend host's native macOS file chooser; typing a command resolved through PATH remains valid. Project and existing-worktree Browse controls use the native directory chooser. Canceling either picker preserves the current input. Pickers choose the backend filesystem, not the browser device's filesystem. Put model and reasoning options in argv using your harness's actual CLI flags. Codex app-server and OpenCode ACP profiles use TUIOS's structured terminal adapters. Claude Code and oh-my-pi profiles use their native terminal interfaces. Credentials are inherited from the backend's environment and harness settings. Environment overrides are stored in the local database; prefer inherited credentials.
 
@@ -213,6 +217,7 @@ bin/tuios-inbox-tui --help
 ```
 
 Options: `--url` (default `$TUIOS_INBOX_URL`, then `http://127.0.0.1:4399`), `--client` (default `$TUIOS_CLIENT_ID`) and `--tuios-bin` (default `$TUIOS_BIN`, then `tuios`). Tasks are on the left and the selected task's live windows on the right; on a narrow terminal one column fills the screen and Tab switches. Keys: arrows or `j`/`k`, Tab, Enter, `n` task, `w` window, `s` session, `r` refresh, `/` find, Ctrl+N new task, Esc back or close. The mouse works too. On a very short screen (under 12 rows) rules, descriptions, buttons and the info line are dropped so the Name field, selected task, and status or error line stay visible; the keys still work. Esc from the task chooser or from inline task creation, when either was opened from a window or session form, returns to that form with its typed name, selected task, filter, cursors, scroll and pane focus exactly as they were, even if the selected task has since become unavailable (submitting it is still refused). Choosing or creating a task is the only way to change the form's task. When Ctrl+N or `n` starts the mandatory first-task creation straight from the list, Esc returns to the list and creates nothing. Jumping waits up to 50 seconds for `tuios jump-window` to confirm; a timeout is shown as an error, never as success. State is held in memory only.
+Window creation also requires an execution machine: Ctrl+O or the Machine field opens the native-host chooser. Canceling the chooser preserves the window draft. Session creation makes an empty global container and binds the task home; create its first pane separately with an explicit machine.
 
 Enter on a window runs `tuios jump-window --client CLIENT --session HOST:SESSION WINDOW_UUID` and exits only after TUIOS confirms the jump; a failure is shown and the app stays open. Jumping needs the client that launched the popup, so outside a popup (no `--client`) listing and creating still work and jumping reports that. Core TUIOS has only generic popups; bind the program in `config.toml`:
 

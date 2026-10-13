@@ -4,10 +4,11 @@ import { createWorkbench, patchHTML, terminalResponse } from '/workbench.js';
 import { createQueues } from '/queues.js';
 import { createTuios } from '/tuios.js';
 import { createHistory } from '/history.js';
-import { setupLaunchHost } from '/launch-host.js';
+import { setupLaunchHost, hostUnavailable } from '/launch-host.js';
 import { createOutline, outlineHash, queueHash } from '/outline.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, apiCached, NOT_MODIFIED, esc, taskTree, editKey } from '/pages.js';
 import { applyTaskStyles } from '/task-style-dom.js';
+import { resolve } from '/outline-model.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
 const previousValues = new WeakMap(), creations = new Map(), draftRevisions = new Map(), submissions = new WeakMap();
@@ -19,6 +20,21 @@ function openDialog(dialog) {
 }
 const inboxDraft = { recipientId: '', body: '', revision: 0 };
 const scopedDrafts = new Map(), viewCache = new Map(), composeDrafts = new Map();
+const paneHosts = new Map();
+function paneHostScope(form) {
+  const key = form.elements.taskId.value || '';
+  form.dataset.hostScope = key;
+  const task = store.state.tasks.find(t => t.id === key);
+  const value = paneHosts.has(key) ? paneHosts.get(key) : resolve(task || {}, new Map(store.state.tasks.map(t => [t.id, t]))).host?.value || '';
+  const select = form.elements.host;
+  if (value && ![...select.options].some(o => o.value === value)) { const option = new Option(value, value); option.disabled = true; select.add(option); }
+  select.value = value;
+}
+function taskDirectoryPicker() {
+  const form = $('#task-form'), parent = store.state.tasks.find(t => t.id === form.elements.parent_id.value);
+  const host = parent && resolve(parent, new Map(store.state.tasks.map(t => [t.id, t]))).host?.value;
+  for (const button of form.querySelectorAll('[data-do=browse]')) { button.disabled = Boolean(host && host !== 'local'); button.title = button.disabled ? 'Enter a directory on the remote execution machine manually' : ''; }
+}
 function composerDraft() {
   if (!route || route.kind === 'index') return inboxDraft;
   const key = routeKey(route);
@@ -314,7 +330,7 @@ store.createEntity = ({ kind, taskId, owner, parentId } = {}) => {
   const returnFocus = document.activeElement;
   const notice = dialog.querySelector('.form-error'); if (notice) notice.remove();
   // A task page's "+ New task" or "New subtask…" proposes that task as the parent; it can be cleared.
-  if (kind === 'task') { suggestPaths($('#task-form')); suggestParent($('#task-parent'), parentId ?? (route?.kind === 'task' ? route.id : '')); }
+  if (kind === 'task') { suggestPaths($('#task-form')); suggestParent($('#task-parent'), parentId ?? (route?.kind === 'task' ? route.id : '')); taskDirectoryPicker(); }
   if (kind !== 'task') {
     const form = $('#pane-form');
     form.elements.kind.value = kind === 'pane' ? 'shell' : 'agent';
@@ -323,6 +339,7 @@ store.createEntity = ({ kind, taskId, owner, parentId } = {}) => {
     form.elements.taskId.closest('label').hidden = Boolean(taskId);
     updateMenus();
     if (taskId) { form.elements.taskId.value = taskId; previousValues.set(form.elements.taskId, taskId); }
+    paneHostScope(form);
     $('#pane-startup-status').textContent = ''; paneKind();
     setupLaunchHost(form, api, store).catch(e => error(e, dialog));
   }
@@ -438,9 +455,9 @@ document.addEventListener('click', e => {
       case 'edit-section': {
         const t = store.state.tasks.find(t => t.id === d.id); if (!t) break;
         const key = editKey(d.id, d.section); if (store.edits.has(key)) break;
-        store.edits.set(key, { title: { title: t.title, status: t.status }, paths: { path: t.path, worktree: t.worktree }, parent: { parent_id: t.parent_id || '' }, home: { session: t.session, workspace: t.workspace ?? '' } }[d.section]);
+        store.edits.set(key, { title: { title: t.title, status: t.status }, paths: { path: t.path, worktree: t.worktree }, parent: { parent_id: t.parent_id || '' }, home: { session: t.session || '', workspace: t.workspace ?? '', host: t.host || '' } }[d.section]);
         render();
-        if (d.section === 'home') { try { store.liveSessions = ((await api('/tuios')).sessions || []).map(s => ({ value: s.target, label: `${s.display_name || s.label || s.name || s.target}${s.host && s.host !== 'local' ? ' · ' + s.host : ''}` })); } catch (e) { store.liveSessions = []; error(e); } render(); }
+        if (d.section === 'home') { try { const inventory = await api('/tuios'); store.liveHosts = inventory.hosts || []; store.liveSessions = (inventory.sessions || []).filter(s => s.global === true).map(s => ({ value: s.target, label: `${s.display_name || s.label || s.name || s.target} · owner ${s.host || 'local'}`, disabled: Boolean(s.saved) || Boolean(inventory.hosts?.find(h => h.host === s.host) && hostUnavailable(inventory.hosts.find(h => h.host === s.host))) })); } catch (e) { store.liveSessions = []; store.liveHosts = []; error(e); } render(); }
         break;
       }
       case 'cancel-section': store.edits.delete(editKey(d.id, d.section)); render(); break;
@@ -451,7 +468,7 @@ document.addEventListener('click', e => {
         if (d.section === 'title') await api(`/tasks/${d.id}`, { title: draft.title, status: draft.status }, 'PATCH');
         else if (d.section === 'paths') await api(`/tasks/${d.id}`, { path: draft.path.trim(), worktree: draft.worktree.trim() }, 'PATCH');
         else if (d.section === 'parent') await api(`/tasks/${d.id}`, { parent_id: draft.parent_id }, 'PATCH');
-        else if (d.section === 'home') await api('/tuios/action', { action: 'bind-task', session: draft.session, taskId: d.id, workspace: draft.workspace === '' ? null : Number(draft.workspace) });
+        else if (d.section === 'home') await api(`/tasks/${d.id}`, { host: draft.host, session: draft.session, workspace: draft.workspace === '' ? '' : Number(draft.workspace) }, 'PATCH');
         } catch (e) { draft.saving = false; render(); throw e; }
         // A cancelled or re-opened editor is a different draft; edits typed during the save stay open.
         if (store.edits.get(key) === draft) { if ((draft.revision || 0) === revision) store.edits.delete(key); else draft.saving = false; }
@@ -506,6 +523,9 @@ function rememberEdit(target) {
 document.addEventListener('input', e => { rememberEdit(e.target); });
 document.addEventListener('change', e => {
   const target = e.target;
+  if (target.form?.id === 'pane-form' && target.name === 'host') paneHosts.set(target.form.dataset.hostScope || '', target.value);
+  if (target.id === 'pane-task' && !target.value.startsWith('__new_')) { paneHostScope(target.form); setupLaunchHost(target.form, api, store).catch(error); }
+  if (target.id === 'task-parent') taskDirectoryPicker();
   if (target.dataset.do === 'note-context') { const { id, note } = target.dataset; act(async () => { await api(`/tasks/${id}/notes/${encodeURIComponent(note)}`, { context: target.checked }, 'PATCH'); await saved(); }); return; }
   if (rememberEdit(target)) return;
   if (target.matches('select')) {
@@ -581,6 +601,7 @@ document.addEventListener('submit', e => {
       }
       case 'pane-form': {
         if (!context) return;
+        if (!data.host || !store.liveHosts?.some(h => h.host === data.host && !hostUnavailable(h))) throw new Error('Choose an available execution machine. No default machine is used.');
         const result = await api(`/tasks/${encodeURIComponent(context.taskId || data.taskId)}/panes`, { name: data.name, kind: context.kind === 'pane' ? 'shell' : 'agent', profileId: data.profileId, host: data.host });
         context.accepted = true;
         if (creations.get(context.dialog) !== context) { await refresh(); return; }

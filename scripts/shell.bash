@@ -1,6 +1,6 @@
 # Sourced from ~/.bashrc by setup-cross-host. Marks commands with OSC 133 for tuios run.
 # Same marks as the recipe in `tuios doctor shell`; bash 4.4+ is needed because older bash ignores PS0.
-[[ $- == *i* && ${TUIOS_ENV:-} == 1 ]] || return 0
+[[ $- == *i* && ( ${TUIOS_ENV:-} == 1 || ${TUIOS_PANE_HOSTED:-} == 1 ) ]] || return 0
 (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )) || return 0
 [[ ${_TUIOS_INBOX_OSC133:-} == 1 ]] && return 0
 _TUIOS_INBOX_OSC133=1

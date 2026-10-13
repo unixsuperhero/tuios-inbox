@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask, indicators, sumIndicators, itemKind, queueItems, taskItems, queueCounts, markable, paneTask, taskIndicators } from './public/outline-model.js';
 
 const tasks = {
-  root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2 },
+  root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2, host: 'local' },
   kid: { id: 'kid', parent_id: 'root', repo: '', branch: '', harness: 'claude-code', model: '', queue_mode: '', session: '', workspace: null },
   lone: { id: 'lone', parent_id: null, path: '', branch: '' },
 };
@@ -28,6 +28,14 @@ test('orphans fall back to defaults or none, and a task row may carry repo as pa
   expect(resolve({ id: 't', parent_id: null, own: { repo: '/o' } }, {}).repo).toEqual({ value: '/o', from: 'self' });
   const loop = { a: { id: 'a', parent_id: 'b' }, b: { id: 'b', parent_id: 'a' } };
   expect(resolve(loop.a, loop).repo.from).toBe('none');
+});
+test('execution machine inherits without an implicit local default and fresh creation cannot override its absence', () => {
+  expect(resolve({ body: 'x', task_id: 'kid' }, tasks).host).toEqual({ value: 'local', from: 'root' });
+  expect(resolve({ body: 'x', task_id: 'kid', host: 'build' }, tasks).host).toEqual({ value: 'build', from: 'self' });
+  expect(resolve({ body: 'x', host: '' }, {}).host).toEqual({ value: null, from: 'none' });
+  const prompt = { body: 'x', host: '' };
+  expect(preflight({ prompt, resolved: resolve(prompt, {}), profiles }).blocks).toEqual([{ code: 'no_host', message: 'Choose an execution machine before creating a pane', fix: 'host' }]);
+  expect(preflight({ prompt: { ...prompt, host: 'local' }, resolved: resolve({ ...prompt, host: 'local' }, {}), profiles }).blocks).toEqual([]);
 });
 test('launch mode inherits without copying and child session/workspace resolve independently', () => {
   const hierarchy = {
@@ -64,14 +72,16 @@ test('cwd uses the nearest task directory and never combines a child repo with a
 const pf = (prompt, panes = [], git = null) => preflight({ prompt, resolved: resolve(prompt, tasks), panes, git, profiles });
 const codes = r => r.blocks.map(b => b.code);
 const warnings = r => r.warns.map(w => [w.code, w.fix]);
-const launchedPane = extra => ({ id: 'a', task_id: 'root', kind: 'agent', state: 'idle', ready: true, launch_cwd: '/r', launch_profile: 'omp', launch_model: 'gpt', ...extra });
+const launchedPane = extra => ({ id: 'a', task_id: 'root', session: 'work', host: 'local', kind: 'agent', state: 'idle', ready: true, launch_cwd: '/r', launch_profile: 'omp', launch_model: 'gpt', ...extra });
 test('empty text blocks dispatch, while configuration findings stay actionable warnings', () => {
   expect(pf({ body: ' ', task_id: 'root' }).blocks.map(b => [b.code, b.fix])).toEqual([['no_text', 'body']]);
   expect(warnings(pf({ body: 'x', task_id: null }))).toEqual([['nowhere', 'repo']]);
   expect(warnings(pf({ body: 'x', task_id: 'root', harness: 'gemini' }))).toEqual([['no_harness', 'harness']]);
   expect(warnings(pf({ body: 'x', task_id: 'lone', harness: 'gemini' }))).toEqual([['nowhere', 'repo'], ['no_harness', 'harness']]);
-  for (const prompt of [{ body: 'x', task_id: null }, { body: 'x', harness: 'gemini' }, { body: 'x', target: 'gone' }]) expect(codes(pf(prompt))).toEqual([]);
+  for (const prompt of [{ body: 'x', task_id: null }, { body: 'x', harness: 'gemini' }]) expect(codes(pf(prompt))).toEqual(['no_host']);
+  expect(codes(pf({ body: 'x', target: 'gone' }))).toEqual([]);
   expect(warnings(pf({ body: 'x', task_id: 'kid' }))).toEqual([]);
+  expect(codes(pf({ body: 'x', target: 'ordinary' }, [launchedPane({ id: 'ordinary', live: false })]))).toEqual(['not_global']);
 });
 test('target health and launch-context mismatches warn without preventing an attempt', () => {
   const prompt = { body: 'x', task_id: 'root', target: 'a' };
@@ -129,6 +139,7 @@ test('reuse selects only a known compatible idle app launch, otherwise dispatch 
     { launch_cwd: undefined }, { launch_profile: undefined }, { launch_model: undefined },
     { state: 'working', ready: false }, { state: 'needs_input', ready: false }, { state: 'closed' },
     { kind: 'shell' }, { task_id: 'kid' }, { state: 'unknown' },
+    { host: 'build' }, { host: '' }, { host: undefined }, { session: 'other-global' },
   ].map(launchedPane);
   expect(pickPane(prompt, incompatible, resolved, profiles)).toBe(null);
   expect(pickPane(prompt, [...incompatible, pane], resolved, profiles)).toEqual(pane);

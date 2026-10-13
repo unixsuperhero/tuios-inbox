@@ -1,5 +1,6 @@
 import { store, api, esc } from '/pages.js';
 import { patchHTML } from '/workbench.js';
+import { hostChoices, hostUnavailable, machineLabel } from '/launch-host.js';
 
 const href = (session, workspace, window) => `#tuios${session ? '/' + encodeURIComponent(session) : ''}${workspace != null ? '/' + workspace : ''}${window ? '/' + encodeURIComponent(window) : ''}`;
 const windowId = w => w.window_id || w.id;
@@ -36,9 +37,10 @@ export function createTuios({ root, refresh }) {
     return filters.get(key);
   };
   const sessionLabel = s => s.display_name || s.label || s.name || s.target;
+  const machineName = value => value ? machineLabel((inventory?.hosts || []).find(h => h.host === value) || { host: value }) : 'Not reported';
   const sessionState = s => s.saved ? 'saved' : s.attached ? 'attached' : 'detached';
   const actionButton = (action, context = {}, disabled = '') => `<button type="button" data-native-action="${action}" data-session="${esc(context.session ?? route?.session ?? '')}"${context.workspace != null ? ` data-workspace="${context.workspace}"` : ''}${context.window ? ` data-window="${esc(context.window)}"` : ''}${disabled ? ` disabled title="${esc(disabled)}"` : ''}${destructive.has(action) ? ' class="danger"' : ''}>${names[action]}</button>`;
-  const selectOptions = (choices, value) => choices.map(c => `<option value="${esc(c.value)}"${String(c.value) === String(value ?? '') ? ' selected' : ''}>${esc(c.label)}</option>`).join('');
+  const selectOptions = (choices, value) => choices.map(c => `<option value="${esc(c.value)}"${String(c.value) === String(value ?? '') ? ' selected' : ''}${c.disabled ? ' disabled' : ''}>${esc(c.label)}</option>`).join('');
   const taskOptions = () => [{ value: '', label: 'No task · unassigned' }, ...store.state.tasks.filter(t => !t.archived).map(t => ({ value: t.id, label: t.title }))];
   const knownWorkspaces = session => sessions.get(session)?.workspaces || [];
   const workspaceLabel = w => `${workspaceId(w)} · ${w.name || 'Workspace'}`;
@@ -68,10 +70,10 @@ export function createTuios({ root, refresh }) {
     const field = dialog.querySelector('[name=cwd]');
     if (!field) return;
     const host = dialog.querySelector('[name=host]')?.value;
-    const unavailable = remote(dialogContext.session) || Boolean(host && host !== 'local');
-    field.disabled = unavailable;
+    const unavailable = host !== 'local';
+    field.disabled = !host;
     dialog.querySelector('[data-native-browse]').disabled = unavailable;
-    field.placeholder = unavailable ? 'Remote native default directory' : 'Local directory (optional)';
+    field.placeholder = !host ? 'Choose an execution machine first' : unavailable ? 'Directory on the remote machine (optional)' : 'Local directory (optional)';
   }
   dialog.addEventListener('cancel', e => { e.preventDefault(); closeDialog(); });
   dialog.addEventListener('input', saveDraft);
@@ -81,7 +83,7 @@ export function createTuios({ root, refresh }) {
   function tree() {
     return `<aside id="native-tree" class="native-tree" aria-label="Native session and workspace hierarchy"><a class="native-tree-root" href="#tuios"${!route.session ? ' aria-current="page"' : ''}>All sessions</a>${(inventory?.sessions || []).map(s => {
       const data = sessions.get(s.target), open = expanded.get(s.target) ?? s.target === route.session;
-      return `<details data-wb-key="tree:${esc(s.target)}" data-native-tree="${esc(s.target)}"${open ? ' open' : ''}><summary>${esc(sessionLabel(s))}<small>${esc(s.host || 'local')}</small></summary><a href="${href(s.target)}"${route.session === s.target && !route.workspace ? ' aria-current="page"' : ''}>Inspect session</a>${(data?.workspaces || []).map(w => `<div data-wb-key="tree-workspace:${workspaceId(w)}"><a class="native-tree-workspace" href="${href(s.target, workspaceId(w))}"${route.session === s.target && route.workspace === workspaceId(w) && !route.window ? ' aria-current="page"' : ''}>${esc(workspaceLabel(w))}</a>${(data?.windows || []).filter(p => Number(p.workspace) === workspaceId(w)).map(p => `<a class="native-tree-pane" href="${href(s.target, p.workspace, windowId(p))}"${route.session === s.target && route.window === windowId(p) ? ' aria-current="page"' : ''}>${esc(paneName(p))}</a>`).join('')}</div>`).join('')}${!data ? '<small class="hint">Inspect session to read workspaces.</small>' : ''}</details>`;
+      return `<details data-wb-key="tree:${esc(s.target)}" data-native-tree="${esc(s.target)}"${open ? ' open' : ''}><summary>${esc(sessionLabel(s))}<small>Owner: ${esc(machineName(s.host))}</small></summary><a href="${href(s.target)}"${route.session === s.target && !route.workspace ? ' aria-current="page"' : ''}>Inspect session</a>${(data?.workspaces || []).map(w => `<div data-wb-key="tree-workspace:${workspaceId(w)}"><a class="native-tree-workspace" href="${href(s.target, workspaceId(w))}"${route.session === s.target && route.workspace === workspaceId(w) && !route.window ? ' aria-current="page"' : ''}>${esc(workspaceLabel(w))}</a>${(data?.windows || []).filter(p => Number(p.workspace) === workspaceId(w)).map(p => `<a class="native-tree-pane" href="${href(s.target, p.workspace, windowId(p))}"${route.session === s.target && route.window === windowId(p) ? ' aria-current="page"' : ''}>${esc(paneName(p))}</a>`).join('')}</div>`).join('')}${!data ? '<small class="hint">Inspect session to read workspaces.</small>' : ''}</details>`;
     }).join('')}</aside>`;
   }
   function breadcrumbs() {
@@ -102,7 +104,7 @@ export function createTuios({ root, refresh }) {
   const table = (caption, body) => `<div class="native-table-scroll"><table class="native-table"><caption class="sr-only">${esc(caption)}</caption><thead><tr><th scope="col">Name</th><th scope="col">Host</th><th scope="col">State</th><th scope="col">Actions</th></tr></thead><tbody>${body}</tbody></table></div>`;
   function sessionList() {
     const rows = inventory?.sessions || [], found = filtered(rows, s => s.host || 'local', sessionState);
-    return `<div class="native-section-heading"><h2>Sessions <span>${rows.length}</span></h2>${actionButton('create-session')}</div>${filterBar(rows, s => s.host || 'local', sessionState)}${found.length ? table('Native sessions', found.map(s => `<tr data-wb-key="session:${esc(s.target)}"><td><a class="native-name" href="${href(s.target)}">${esc(sessionLabel(s))}</a><small>${esc(s.target)} · ${esc(s.window_count ?? s.windows?.length ?? 0)} panes</small></td><td>${esc(s.host || 'local')}</td><td><span class="badge">${esc(sessionState(s))}</span></td><td><div class="native-row-actions"><a href="${href(s.target)}">Inspect</a>${actionButton('label-session', { session: s.target })}</div></td></tr>`).join('')) : empty(inventory ? rows.length ? 'No sessions match these filters.' : 'No native sessions found. Create one, or start TUIOS in your terminal.' : 'Reading native sessions…')}<p class="hint">A session per task is the default. For shared sessions, bind each task to a numbered workspace. Hosts are configured in TUIOS, not here.</p>`;
+    return `<div class="native-section-heading"><h2>Sessions <span>${rows.length}</span></h2>${actionButton('create-session')}</div>${filterBar(rows, s => s.host || 'local', sessionState)}${found.length ? table('Native sessions', found.map(s => `<tr data-wb-key="session:${esc(s.target)}"><td><a class="native-name" href="${href(s.target)}">${esc(sessionLabel(s))}</a><small>${esc(s.target)} · ${esc(s.window_count ?? s.windows?.length ?? 0)} panes</small></td><td>${esc(machineName(s.host))}</td><td><span class="badge">${esc(sessionState(s))}</span></td><td><div class="native-row-actions"><a href="${href(s.target)}">Inspect</a>${actionButton('label-session', { session: s.target })}</div></td></tr>`).join('')) : empty(inventory ? rows.length ? 'No sessions match these filters.' : 'No native sessions found. Create one, or start TUIOS in your terminal.' : 'Reading native sessions…')}<p class="hint">Only native global sessions are shown. Bind tasks to a global session and choose their execution machine separately. Hosts are configured in TUIOS, not here.</p>`;
   }
   function paneRows(data) {
     return (data.windows || []).map(w => ({ ...data.agents?.find(a => windowId(a) === windowId(w)), ...w }));
@@ -115,12 +117,12 @@ export function createTuios({ root, refresh }) {
     const managed = store.state.agents.find(a => a.id === id) || store.state.panes.find(p => p.id === id);
     const task = store.state.tasks.find(t => t.id === managed?.task_id);
     const taskLabel = task ? task.title : managed?.task_id ? 'Assigned task unavailable' : 'No task assigned';
-    const host = w.host || s.host || 'local', state = stateName(w), harness = w.harness_id || w.agent_harness || '';
-    return `<article class="native-overview-pane${w.focused ? ' is-focused' : ''}${w.minimized ? ' is-minimized' : ''}" data-wb-key="overview-pane:${esc(s.target)}:${esc(id)}" data-native-pane data-session="${esc(s.target)}" data-window="${esc(id)}" data-workspace="${esc(w.workspace)}" data-status="${esc(state)}" draggable="${!mutation}" aria-describedby="native-overview-instructions"><div class="native-overview-pane-kind">${harness ? 'Agent' : 'Pane'}</div><a class="native-overview-pane-title" href="${href(s.target, w.workspace, id)}" title="${esc(paneName(w))}">${esc(paneName(w))}</a><div class="native-overview-pane-meta"><span class="badge">${esc(state)}</span><span>${esc(harness || 'Terminal')}</span><span>Host: ${esc(host)}</span>${w.focused ? '<span>Terminal focus</span>' : ''}${w.minimized ? '<span>Minimized</span>' : ''}${w.needs_you ? '<span>Needs you</span>' : ''}<span>${task ? `<a href="#task/${encodeURIComponent(task.id)}">${esc(taskLabel)}</a>` : esc(taskLabel)}</span><small title="Native UUID">${esc(id)}</small></div>${harness && (w.agent_message || w.message) ? `<p class="native-agent-message">${esc(w.agent_message || w.message)}</p>` : ''}<div class="native-overview-pane-actions"><a href="${href(s.target, w.workspace, id)}">Inspect</a>${actionButton('move-window', context)}${actionButton('assign-task', context)}</div></article>`;
+    const host = w.host || '', state = stateName(w), harness = w.harness_id || w.agent_harness || '';
+    return `<article class="native-overview-pane${w.focused ? ' is-focused' : ''}${w.minimized ? ' is-minimized' : ''}" data-wb-key="overview-pane:${esc(s.target)}:${esc(id)}" data-native-pane data-session="${esc(s.target)}" data-window="${esc(id)}" data-workspace="${esc(w.workspace)}" data-status="${esc(state)}" draggable="${!mutation}" aria-describedby="native-overview-instructions"><div class="native-overview-pane-kind">${harness ? 'Agent' : 'Pane'}</div><a class="native-overview-pane-title" href="${href(s.target, w.workspace, id)}" title="${esc(paneName(w))}">${esc(paneName(w))}</a><div class="native-overview-pane-meta"><span class="badge">${esc(state)}</span><span>${esc(harness || 'Terminal')}</span><span>Host: ${esc(machineName(host))}</span>${w.focused ? '<span>Terminal focus</span>' : ''}${w.minimized ? '<span>Minimized</span>' : ''}${w.needs_you ? '<span>Needs you</span>' : ''}<span>${task ? `<a href="#task/${encodeURIComponent(task.id)}">${esc(taskLabel)}</a>` : esc(taskLabel)}</span><small title="Native UUID">${esc(id)}</small></div>${harness && (w.agent_message || w.message) ? `<p class="native-agent-message">${esc(w.agent_message || w.message)}</p>` : ''}<div class="native-overview-pane-actions"><a href="${href(s.target, w.workspace, id)}">Inspect</a>${actionButton('move-window', context)}${actionButton('assign-task', context)}</div></article>`;
   }
   function overview() {
     const all = inventory?.sessions || [];
-    const rows = all.flatMap(s => unavailableSession(s) || errors.has('session:' + s.target) ? [] : paneRows(sessions.get(s.target) || {}).map(w => ({ ...w, overviewSession: s.target, overviewSessionName: sessionLabel(s), host: w.host || s.host || 'local', assignedTask: store.state.tasks.find(t => t.id === store.state.agents.find(a => a.id === windowId(w))?.task_id)?.title || '' })));
+    const rows = all.flatMap(s => unavailableSession(s) || errors.has('session:' + s.target) ? [] : paneRows(sessions.get(s.target) || {}).map(w => ({ ...w, overviewSession: s.target, overviewSessionName: sessionLabel(s), host: w.host || '', assignedTask: store.state.tasks.find(t => t.id === store.state.agents.find(a => a.id === windowId(w))?.task_id)?.title || '' })));
     const found = filtered(rows, w => w.host, stateName), f = filter(), activeFilters = Boolean(f.search || f.host || f.status);
     const groups = all.map(s => {
       const data = sessions.get(s.target), unavailable = unavailableSession(s), failure = errors.get('session:' + s.target);
@@ -142,16 +144,16 @@ export function createTuios({ root, refresh }) {
         const ws = workspaceId(w), current = ws === Number(data.info.current_workspace), inWorkspace = panes.filter(p => Number(p.workspace) === ws), occupied = nativePanes.some(p => Number(p.workspace) === ws), context = { session: s.target, workspace: ws };
         return `<section class="native-overview-workspace${occupied ? '' : ' is-empty'}${current ? ' is-current' : ''}" data-wb-key="overview-workspace:${esc(s.target)}:${ws}" role="tabpanel" id="${tabId(ws)}-panel" aria-labelledby="${tabId(ws)}" tabindex="0"${ws === selected ? '' : ' hidden'} data-native-workspace data-session="${esc(s.target)}" data-workspace="${ws}" aria-label="${esc(sessionLabel(s))}, ${esc(workspaceLabel(w))}"><div class="native-overview-workspace-heading"><div><h4><a href="${href(s.target, ws)}">${esc(workspaceLabel(w))}</a></h4><small>${inWorkspace.length} matching pane${inWorkspace.length === 1 ? '' : 's'}${current ? ' · terminal workspace' : ''}</small></div><div class="native-row-actions">${actionButton('create-window', context)}${actionButton('create-agent', context)}</div></div><div class="native-overview-panes">${inWorkspace.map(p => overviewPane(s, p)).join('') || empty(occupied ? 'No panes match these filters. Drop a pane here to move it.' : 'Empty workspace. Drop a pane from this session here.')}</div></section>`;
       }).join('');
-      return `<section class="native-overview-session" data-wb-key="overview-session:${esc(s.target)}" data-session="${esc(s.target)}"><div class="native-overview-session-heading"><div><h3><a href="${href(s.target)}">${esc(sessionLabel(s))}</a></h3><p class="hint">${esc(s.target)} · Host: ${esc(s.host || 'local')}${inventory.hosts.find(h => h.host === s.host)?.hostname ? ' · ' + esc(inventory.hosts.find(h => h.host === s.host).hostname) : ''} · ${esc(sessionState(s))}${!blocked ? ' · ' + nativePanes.length + ' panes' : ''}${reading.has('session:' + s.target) && data ? ' · reading, showing previous read' : data && !blocked ? ' · read ' + esc(data.overviewReadAt) : ''}</p></div><div class="native-row-actions"><a href="${href(s.target)}">Inspect session</a>${actionButton('create-window', { session: s.target }, blocked)}${actionButton('create-agent', { session: s.target }, blocked)}</div></div>${blocked ? `<p class="${failure ? 'form-error danger' : 'native-empty'}"${failure ? ' role="alert"' : ''}>${esc(blocked)}${failure ? ' · Use Read again to retry. No live pane data shown.' : ''}</p>` : `<div class="native-workspace-tabs" role="tablist" aria-label="${esc(sessionLabel(s))} workspaces">${tabs}</div><div class="native-overview-workspaces">${cards || empty(activeFilters ? 'No panes match these filters.' : 'No native workspaces reported.')}</div>`}</section>`;
+      return `<section class="native-overview-session" data-wb-key="overview-session:${esc(s.target)}" data-session="${esc(s.target)}"><div class="native-overview-session-heading"><div><h3><a href="${href(s.target)}">${esc(sessionLabel(s))}</a></h3><p class="hint">${esc(s.target)} · Owner: ${esc(machineName(s.host))} · ${esc(sessionState(s))}${!blocked ? ' · ' + nativePanes.length + ' panes' : ''}${reading.has('session:' + s.target) && data ? ' · reading, showing previous read' : data && !blocked ? ' · read ' + esc(data.overviewReadAt) : ''}</p></div><div class="native-row-actions"><a href="${href(s.target)}">Inspect session</a>${actionButton('create-window', { session: s.target }, blocked)}${actionButton('create-agent', { session: s.target }, blocked)}</div></div>${blocked ? `<p class="${failure ? 'form-error danger' : 'native-empty'}"${failure ? ' role="alert"' : ''}>${esc(blocked)}${failure ? ' · Use Read again to retry. No live pane data shown.' : ''}</p>` : `<div class="native-workspace-tabs" role="tablist" aria-label="${esc(sessionLabel(s))} workspaces">${tabs}</div><div class="native-overview-workspaces">${cards || empty(activeFilters ? 'No panes match these filters.' : 'No native workspaces reported.')}</div>`}</section>`;
     }).join('');
     return `<section class="native-overview"><div class="native-section-heading"><h2>Sessions <span>${all.length} sessions</span></h2>${actionButton('create-session')}</div><div class="native-overview-controls"><details class="native-overview-filter" data-wb-key="overview-filters"><summary>Filter panes</summary>${filterBar(rows, w => w.host, stateName)}</details></div><p id="native-overview-instructions" class="hint">Each agent occupies one pane. Drag a row onto a workspace tab, or use Move pane. TUIOS does not support cross-session moves. Browsing tabs does not change terminal focus.</p>${groups || empty(inventory ? activeFilters ? 'No sessions or panes match these filters.' : 'No native sessions. Create a session to open a pane.' : 'Reading native sessions…')}</section>`;
   }
   function paneList(data) {
     const rows = paneRows(data).filter(w => route.workspace == null || Number(w.workspace) === route.workspace);
-    const host = w => w.host || data.session.host || 'local', found = filtered(rows, host, stateName);
+    const host = w => w.host || '', found = filtered(rows, host, stateName);
     return `${filterBar(rows, host, stateName)}${found.length ? table('Native windows, each one terminal pane', found.map(w => {
       const id = windowId(w), context = { window: id, workspace: w.workspace };
-      return `<tr data-wb-key="pane:${esc(id)}"><td><a class="native-name" href="${href(route.session, w.workspace, id)}">${esc(paneName(w))}</a><small>Workspace ${esc(w.workspace)} · ${esc(id)}</small></td><td>${esc(host(w))}</td><td><span class="badge ${esc(stateName(w))}">${esc(stateName(w))}</span>${w.focused ? '<small>terminal focus</small>' : ''}${w.minimized ? '<small>minimized</small>' : ''}</td><td><div class="native-row-actions"><a href="${href(route.session, w.workspace, id)}">Inspect</a>${actionButton('focus-window', context)}${actionButton(w.minimized ? 'restore-window' : 'minimize-window', context)}${actionButton('move-window', context)}</div></td></tr>`;
+      return `<tr data-wb-key="pane:${esc(id)}"><td><a class="native-name" href="${href(route.session, w.workspace, id)}">${esc(paneName(w))}</a><small>Workspace ${esc(w.workspace)} · ${esc(id)}</small></td><td>${esc(machineName(host(w)))}</td><td><span class="badge ${esc(stateName(w))}">${esc(stateName(w))}</span>${w.focused ? '<small>terminal focus</small>' : ''}${w.minimized ? '<small>minimized</small>' : ''}</td><td><div class="native-row-actions"><a href="${href(route.session, w.workspace, id)}">Inspect</a>${actionButton('focus-window', context)}${actionButton(w.minimized ? 'restore-window' : 'minimize-window', context)}${actionButton('move-window', context)}</div></td></tr>`;
     }).join('')) : empty(rows.length ? 'No panes match these filters.' : 'No panes in this scope. Open a pane or launch an agent.')}`;
   }
   function homeBindings() {
@@ -172,7 +174,7 @@ export function createTuios({ root, refresh }) {
     const known = store.state.agents.find(a => a.id === id), managed = store.state.panes.find(p => p.id === id), task = store.state.tasks.find(t => t.id === known?.task_id);
     const waiting = data.agent?.needs_you || data.agent?.state === 'needs_input';
     const question = store.state.items.find(i => i.agent_id === id && i.type === 'turn' && i.status === 'needs_input' && !i.archived);
-    return `<article class="native-pane" data-wb-key="window-detail:${esc(id)}"><div class="native-section-heading"><div><p class="eyebrow">WINDOW / ONE TERMINAL PANE</p><h2>${esc(paneName(w))}</h2></div><span class="badge ${esc(data.agent?.state)}">${esc(data.agent?.state || stateName(w))}</span></div><dl class="native-facts"><div><dt>Native UUID</dt><dd>${esc(id)}</dd></div><div><dt>Session</dt><dd>${esc(route.session)}</dd></div><div><dt>Workspace</dt><dd>${esc(w.workspace ?? route.workspace)}</dd></div><div><dt>Host</dt><dd>${esc(w.host || sessionData()?.session.host || 'local')}</dd></div><div><dt>Assigned task</dt><dd>${task ? `<a href="#task/${encodeURIComponent(task.id)}">${esc(task.title)}</a>` : 'No task'}</dd></div><div><dt>Harness</dt><dd>${esc(data.agent?.harness_id || known?.harness || 'Not reported')}</dd></div></dl><p class="hint">Full terminal: <code>${esc('tuios attach ' + route.session)}</code>. This is a read-only snapshot, not an interactive terminal.</p><div class="native-actions">${actionButton('focus-window', context)}${actionButton('rename-window', context)}${actionButton('move-window', context)}${actionButton(w.minimized ? 'restore-window' : 'minimize-window', context)}${actionButton('split-window', context, !attached(route.session) ? 'Attach this session first; splitting requires a terminal client.' : '')}${actionButton('assign-task', context)}${actionButton('interrupt-window', context)}${actionButton('close-window', context)}</div>${waiting ? `<div class="native-attention" role="status"><strong>Needs your input</strong><p>Answer the native question or approval in ${question ? `<a href="#item/${encodeURIComponent(question.id)}">the existing question UI</a>` : known ? `<a href="#agent/${encodeURIComponent(id)}">the agent inbox</a>` : 'your TUIOS terminal'}. Queued prompts never grant permissions or answer an approval.</p></div>` : ''}${known?.kind === 'agent' || managed?.kind === 'agent' || data.agent?.harness_id ? `<div class="native-actions">${known ? `<a href="#agent/${encodeURIComponent(id)}">Agent inbox / questions</a>` : ''}${actionButton('send-prompt', context)}</div>` : '<p class="hint">No agent harness is reported for this pane. Use the native terminal for shell input.</p>'}<section><h3>Terminal capture <small>Last 200 lines</small></h3><pre class="native-capture" data-wb-key="capture:${esc(id)}" tabindex="0" aria-label="Read-only terminal capture">${esc(data.text ?? '')}</pre></section><details class="native-metadata" data-wb-key="window-metadata" open><summary>Full native window metadata</summary><pre>${json(w)}</pre></details><details class="native-metadata" data-wb-key="agent-metadata" open><summary>Agent identity, evidence and state</summary><pre>${json(data.agent)}</pre></details><details class="native-metadata" data-wb-key="activity-metadata" open><summary>Agent activity log</summary><pre>${json(data.activity)}</pre></details></article>`;
+    return `<article class="native-pane" data-wb-key="window-detail:${esc(id)}"><div class="native-section-heading"><div><p class="eyebrow">WINDOW / ONE TERMINAL PANE</p><h2>${esc(paneName(w))}</h2></div><span class="badge ${esc(data.agent?.state)}">${esc(data.agent?.state || stateName(w))}</span></div><dl class="native-facts"><div><dt>Native UUID</dt><dd>${esc(id)}</dd></div><div><dt>Session</dt><dd>${esc(route.session)}</dd></div><div><dt>Workspace</dt><dd>${esc(w.workspace ?? route.workspace)}</dd></div><div><dt>Execution machine</dt><dd>${esc(machineName(w.host))}</dd></div><div><dt>Assigned task</dt><dd>${task ? `<a href="#task/${encodeURIComponent(task.id)}">${esc(task.title)}</a>` : 'No task'}</dd></div><div><dt>Harness</dt><dd>${esc(data.agent?.harness_id || known?.harness || 'Not reported')}</dd></div></dl><p class="hint">Full terminal: <code>${esc('tuios attach ' + route.session)}</code>. This is a read-only snapshot, not an interactive terminal.</p><div class="native-actions">${actionButton('focus-window', context)}${actionButton('rename-window', context)}${actionButton('move-window', context)}${actionButton(w.minimized ? 'restore-window' : 'minimize-window', context)}${actionButton('split-window', context, !attached(route.session) ? 'Attach this session first; splitting requires a terminal client.' : '')}${actionButton('assign-task', context)}${actionButton('interrupt-window', context)}${actionButton('close-window', context)}</div>${waiting ? `<div class="native-attention" role="status"><strong>Needs your input</strong><p>Answer the native question or approval in ${question ? `<a href="#item/${encodeURIComponent(question.id)}">the existing question UI</a>` : known ? `<a href="#agent/${encodeURIComponent(id)}">the agent inbox</a>` : 'your TUIOS terminal'}. Queued prompts never grant permissions or answer an approval.</p></div>` : ''}${known?.kind === 'agent' || managed?.kind === 'agent' || data.agent?.harness_id ? `<div class="native-actions">${known ? `<a href="#agent/${encodeURIComponent(id)}">Agent inbox / questions</a>` : ''}${actionButton('send-prompt', context)}</div>` : '<p class="hint">No agent harness is reported for this pane. Use the native terminal for shell input.</p>'}<section><h3>Terminal capture <small>Last 200 lines</small></h3><pre class="native-capture" data-wb-key="capture:${esc(id)}" tabindex="0" aria-label="Read-only terminal capture">${esc(data.text ?? '')}</pre></section><details class="native-metadata" data-wb-key="window-metadata" open><summary>Full native window metadata</summary><pre>${json(w)}</pre></details><details class="native-metadata" data-wb-key="agent-metadata" open><summary>Agent identity, evidence and state</summary><pre>${json(data.agent)}</pre></details><details class="native-metadata" data-wb-key="activity-metadata" open><summary>Agent activity log</summary><pre>${json(data.activity)}</pre></details></article>`;
   }
   function launchStatus() {
     return [...launches].map(([id, label]) => {
@@ -202,7 +204,7 @@ export function createTuios({ root, refresh }) {
     if (!supports(next)) return;
     if (dragging) { deferredRead = true; return; }
     deferredRead = false;
-    const rootRead = readResource('inventory', '/tuios', data => { inventory = data; });
+    const rootRead = readResource('inventory', '/tuios', data => { inventory = { ...data, sessions: (data.sessions || []).filter(s => s.global === true) }; store.liveHosts = data.hosts || []; });
     if (next.view === 'overview') {
       await rootRead;
       if (dragging) { deferredRead = true; return; }
@@ -250,7 +252,14 @@ export function createTuios({ root, refresh }) {
       const value = draft.name ?? (action === 'label-session' ? session?.display_name || session?.label || '' : action === 'rename-session' ? session?.name || context.session : action === 'name-workspace' ? data?.workspaces.find(w => workspaceId(w) === context.workspace)?.name || '' : action === 'rename-window' ? paneName(w || {}) : '');
       fields += field('name', action === 'label-session' ? 'Display label (empty clears; address stays unchanged)' : 'Name', value, (['label-session', 'name-workspace', 'rename-window'].includes(action) ? '' : 'required ') + 'maxlength="120"');
     }
-    if (['create-session', 'create-window'].includes(action)) fields += choice('host', 'Host', [{ value: '', label: 'Session / local default' }, ...(inventory?.hosts || []).filter(h => h.host !== 'local').map(h => ({ value: h.host, label: h.host }))], draft.host || '');
+    if (action === 'create-session') {
+      fields += '<input type="hidden" name="host" value="local">';
+      hint = `Creates an empty native global session owned by ${machineName('local')}. Each new pane chooses its own execution machine.`;
+    }
+    if (['create-window', 'create-agent', 'split-window'].includes(action)) {
+      fields += choice('host', 'Execution machine', hostChoices(inventory?.hosts || [], draft.host || ''), draft.host || '');
+      fields += `<p class="hint">Global session container ${esc(context.session)} · owner ${esc(machineName(session?.host))}. Choosing an execution machine does not change this container.</p>`;
+    }
     if (action === 'move-window') fields += choice('workspace', 'Destination numbered workspace · same session', knownWorkspaces(context.session).map(w => ({ value: workspaceId(w), label: workspaceLabel(w) })), workspace);
     if (['create-window', 'create-agent', 'name-workspace', 'select-workspace', 'close-workspace'].includes(action)) {
       fields += field('workspace', 'Numbered workspace', workspace, 'type="number" min="1" step="1" required list="native-workspace-options"');
@@ -258,7 +267,7 @@ export function createTuios({ root, refresh }) {
     }
     if (['create-window', 'create-agent'].includes(action)) {
       fields += `<label>Working directory <small>Optional · launch directory only</small><span class="browse"><input name="cwd" value="${esc(draft.cwd || '')}" list="path-options" autocomplete="off"><button type="button" data-native-browse>Browse…</button></span></label>`;
-      hint = 'Directory changes apply only to this new pane. Native grants remain enforced. Remote panes use their native default directory; local OS picker paths cannot be sent to remote hosts.';
+      hint = 'Directory changes apply only to this new pane. Native grants remain enforced. Enter remote paths manually; the local OS directory picker is only available for local execution.';
     }
     if (action === 'create-agent') {
       fields += choice('profileId', 'Agent profile', [{ value: '', label: 'Choose a profile' }, ...store.state.profiles.map(p => ({ value: p.id, label: p.name }))], draft.profileId || '');
@@ -274,7 +283,7 @@ export function createTuios({ root, refresh }) {
     if (action === 'bind-task') {
       fields += choice('taskId', 'Task to bind', [{ value: '', label: 'Choose a task' }, ...taskOptions().slice(1)], draft.taskId || '');
       fields += field('workspace', 'Future workspace (empty = session default)', draft.workspace ?? context.workspace ?? '', 'type="number" min="1" step="1"');
-      hint = 'Future launches only. This sets the selected task’s session/workspace home; it never moves existing panes, changes their assignment, or rewrites history. Empty workspace binds the session default. A session per task remains the default.';
+      hint = 'Future launches only. This sets the task’s global session/workspace container; it never moves existing panes, changes execution machines or assignment, or rewrites history. Empty workspace binds the session default.';
     }
     if (action === 'set-layout') {
       fields += choice('tiling', 'Tiling mode', [{ value: '', label: 'Leave unchanged' }, { value: 'true', label: 'Tiling' }, { value: 'false', label: 'Floating' }], draft.tiling || '');
@@ -295,12 +304,18 @@ export function createTuios({ root, refresh }) {
     }
     dialog.innerHTML = `<form id="native-action-form"><div class="dialog-title"><div><p class="eyebrow">NATIVE TUIOS · ${esc(context.session || 'NEW SESSION')}</p><h2 id="native-dialog-title">${esc(names[action])}</h2></div><button type="button" data-native-cancel aria-label="Close dialog">×</button></div>${hint ? `<p class="hint">${esc(hint)}</p>` : ''}${fields}<p id="native-form-error" class="form-error danger" role="alert" hidden></p><div class="native-actions"><button type="button" data-native-cancel>Cancel</button><button type="submit" class="${destructive.has(action) ? 'danger' : 'primary'}">${esc(submitLabel)}</button></div></form>`;
     if (['create-agent', 'bind-task'].includes(action)) dialog.querySelector(`[name="${action === 'create-agent' ? 'profileId' : 'taskId'}"]`).required = true;
+    if (['create-session', 'create-window', 'create-agent', 'split-window'].includes(action)) dialog.querySelector('[name=host]').required = true;
     syncDirectory();
     dialog.showModal();
     dialog.querySelector('input:not([type=checkbox]),textarea,select')?.focus();
   }
   async function mutate(action, context, values = {}) {
     const payload = { action, session: context.session, ...values };
+    if (['create-session', 'create-window', 'create-agent', 'split-window'].includes(action)) {
+      const host = inventory?.hosts.find(h => h.host === payload.host);
+      if (!host || hostUnavailable(host)) throw new Error('Choose an available execution machine. No default machine is used.');
+      if (action === 'create-session' && payload.host !== 'local') throw new Error('Global sessions can only be created on the local owner machine.');
+    }
     if (context.window) payload.window = context.window;
     if (context.workspace != null && payload.workspace == null && action !== 'set-layout') payload.workspace = context.workspace;
     for (const name of ['workspace', 'masters']) if (payload[name] !== undefined) {
@@ -430,11 +445,12 @@ export function createTuios({ root, refresh }) {
     if (button.hasAttribute('data-native-cancel')) return closeDialog();
     if (!button.hasAttribute('data-native-browse')) return;
     const context = dialogContext, field = dialog.querySelector('[name=cwd]');
+    if (dialog.querySelector('[name=host]')?.value !== 'local') return;
     button.disabled = true;
     try {
       const { path } = await api('/pick-directory', {});
-      if (path && dialogContext === context) { field.value = path; field.dispatchEvent(new Event('input', { bubbles: true })); }
-      else if (path) drafts.set(context.key, { ...drafts.get(context.key), cwd: path });
+      if (path && dialogContext === context && dialog.querySelector('[name=host]')?.value === 'local') { field.value = path; field.dispatchEvent(new Event('input', { bubbles: true })); }
+      else if (path && dialogContext !== context && drafts.get(context.key)?.host === 'local') drafts.set(context.key, { ...drafts.get(context.key), cwd: path });
     } catch (err) {
       if (dialogContext === context) { const error = dialog.querySelector('#native-form-error'); error.textContent = err.message; error.hidden = false; }
     } finally { if (dialogContext === context) syncDirectory(); }

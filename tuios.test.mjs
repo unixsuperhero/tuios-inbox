@@ -42,7 +42,9 @@ async function fixture(run) {
     env[key] = join(root, name);
     await mkdir(env[key], { mode: 0o700 });
   }
-  Object.assign(env, { SHELL: '/bin/sh', TERM: 'xterm-256color', TUIOS_BIN: binary, TUIOS_INBOX_DATA: join(root, 'inbox'), TUIOS_INBOX_SPOOL: join(root, 'spool') });
+  Object.assign(env, { HOME: root, SHELL: '/bin/sh', TERM: 'xterm-256color', TUIOS_BIN: binary, TUIOS_INBOX_DATA: join(root, 'inbox'), TUIOS_INBOX_SPOOL: join(root, 'spool') });
+  await mkdir(join(env.XDG_CONFIG_HOME, 'tuios'));
+  await Bun.write(join(env.XDG_CONFIG_HOME, 'tuios', 'config.toml'), '');
   await mkdir(env.TUIOS_INBOX_DATA, { mode: 0o700 });
   const socket = join(env.XDG_RUNTIME_DIR, 'tuios', 'tuios.sock');
   let daemon, server;
@@ -74,15 +76,19 @@ async function fixture(run) {
     }
     const state = () => json('/state');
     await until(state, value => Array.isArray(value.tasks), 'private app readiness');
-    const action = (action, values = {}, status = action === 'create-session' ? 201 : 200) => json('/tuios/action', { action, ...values }, status);
+    const action = (action, values = {}, status = action === 'create-session' ? 201 : 200) => json('/tuios/action', { action, ...(['create-session','create-window','create-agent'].includes(action) ? { host: 'local' } : {}), ...values }, status);
     const hierarchy = session => json('/tuios' + (session ? `?session=${encodeURIComponent(session)}` : ''));
     const detail = (session, window) => json(`/tuios/window?session=${encodeURIComponent(session)}&window=${encodeURIComponent(window)}`);
     const windows = session => native('list-windows', '-s', session);
     const window = (session, id) => native('get-window', '-s', session, id);
-    const create = async (session, workspace, name) => (await action('create-window', { session, workspace, name, cwd: root })).window_id;
+    const create = async (session, workspace, name) => {
+      const pane = (await action('create-window', { session, workspace, name, host: 'local', cwd: root })).window_id;
+      await cli('send-text','-s',session,'-w',pane,"printf '\\033]133;A\\007'\n");
+      return pane;
+    };
     const task = title => json('/tasks', { title, path: root }, 201);
     async function shell(task, name) {
-      const pane = await json(`/tasks/${task.id}/panes`, { kind: 'shell', name }, 201);
+      const pane = await json(`/tasks/${task.id}/panes`, { kind: 'shell', name, host: 'local' }, 201);
       await until(() => window(task.session, pane.id), pane => pane.at_prompt, 'task shell readiness');
       return pane;
     }
@@ -107,6 +113,9 @@ async function fixture(run) {
 nativeTest('native hierarchy identifies session, workspace, pane and agent without moving terminal focus', async () => fixture(async f => {
   await f.action('create-session', { name: 'hierarchy' });
   await f.action('create-session', { name: 'hierarchy-extra' });
+  expect((await f.windows('hierarchy')).windows).toEqual([]);
+  const anchor = await f.create('hierarchy', 1, 'anchor');
+  await f.cli('focus-window', anchor, '-s', 'hierarchy');
   const initial = await f.windows('hierarchy');
   const pane = await f.create('hierarchy', 2, 'review');
   await f.cli('set-agent-state', 'needs_input', '-s', 'hierarchy', '-w', pane, '--harness', 'codex', '-m', 'Review permission needed');
@@ -133,6 +142,8 @@ nativeTest('native hierarchy identifies session, workspace, pane and agent witho
 
 nativeTest('pane management preserves UUID and no-focus intent; exact confirmed close spares similarly named panes', async () => fixture(async f => {
   await f.action('create-session', { name: 'manage' });
+  const anchor = await f.create('manage', 1, 'anchor');
+  await f.cli('focus-window', anchor, '-s', 'manage');
   const initial = await f.windows('manage');
   const pane = await f.create('manage', 2, 'build');
   const other = await f.create('manage', 2, 'build-extra');
@@ -265,7 +276,7 @@ nativeTest('launch host choice lists registered hosts and refuses invalid or unr
   const task = await f.task('Host choice');
   await f.shell(task, 'first');
   const before = (await f.windows(task.session)).windows.length;
-  for (const kind of ['shell', 'agent']) for (const host of ['ghost', 'a:b', 'x y', 42]) {
+  for (const kind of ['shell', 'agent']) for (const host of [undefined, '', 'task', 'ghost', 'a:b', 'x y', 42]) {
     const response = await f.request(`/tasks/${task.id}/panes`, { kind, name: 'nope', host, profileId: 'claude' });
     expect(response.status).toBe(400);
   }
@@ -276,7 +287,7 @@ nativeTest('launch host choice lists registered hosts and refuses invalid or unr
   expect((await f.state()).agents.find(a => a.id === pane.id)).toMatchObject({ session: task.session, host: 'local', task_id: task.id });
 }), 60000);
 
-test('launch host module offers task default plus registered hosts and labels unreachable ones', async () => {
+test('launch host module requires a machine and preserves unavailable explicit choices', async () => {
   const { setupLaunchHost } = await import('./public/launch-host.js');
   const select = { value: 'gone', options: [], replaceChildren(...o) { this.options = o; } };
   const note = { textContent: '' };
@@ -285,15 +296,16 @@ test('launch host module offers task default plus registered hosts and labels un
   globalThis.Option = class { constructor(text, value) { this.text = text; this.value = value; } };
   try {
   await setupLaunchHost(form, async () => ({ hosts: [{ host: 'local', status: 'up' }, { host: 'build', status: 'up' }, { host: 'dead', status: 'down', error: 'timeout' }] }), {});
-  expect(select.options.map(o => [o.value, o.disabled || false])).toEqual([['', false], ['local', false], ['build', false], ['dead', true]]);
+  expect(select.required).toBe(true);
+  expect(select.options.map(o => [o.value, o.disabled || false])).toEqual([['', false], ['local', false], ['build', false], ['dead', true], ['gone', true]]);
   expect(select.options[3].text).toContain('down: timeout');
-  expect(select.value).toBe('');
+  expect(select.value).toBe('gone');
   await setupLaunchHost(form, async () => { throw new Error('boom'); }, {});
   expect(note.textContent).toContain('boom');
   } finally { if (originalOption === undefined) delete globalThis.Option; else globalThis.Option = originalOption; }
 });
 
-test('launch host module resets per open, ignores stale discovery, and disables unknown hosts', async () => {
+test('launch host module ignores stale discovery and disables unknown hosts', async () => {
   const { setupLaunchHost } = await import('./public/launch-host.js');
   const select = { value: '', options: [], replaceChildren(...o) { this.options = o; } };
   const note = { textContent: '' };
@@ -315,3 +327,37 @@ test('launch host module resets per open, ignores stale discovery, and disables 
   expect(note.textContent).toContain('boom');
   } finally { if (originalOption === undefined) delete globalThis.Option; else globalThis.Option = originalOption; }
 });
+
+nativeTest('ordinary sessions remain historical but cannot receive new Inbox work', async () => fixture(async f => {
+  await f.action('create-session', { name: 'global-only' });
+  await f.cli('new', 'ordinary-history', '--detach');
+  const ordinary = (await f.windows('ordinary-history')).windows[0].window_id;
+  const at = new Date().toISOString();
+  await Bun.write(join(f.env.TUIOS_INBOX_SPOOL, 'ordinary-history.json'), JSON.stringify({ id:'ordinary-history', time:at, values:{TUIOS_EVENT:'after-agent-state',TUIOS_AGENT_STATE:'done',TUIOS_WINDOW_ID:ordinary,TUIOS_SESSION_ID:'ordinary-history'}, turn:{session:'ordinary-history',pane:ordinary,name:'historical ordinary pane',harness:'omp',state:'done',at,prompt:'old prompt',response:'retained old result',source:'pane'} }));
+  await f.json('/reconcile', {});
+  const outline = await f.json('/outline');
+  expect(outline.sessions.map(s => [s.name,s.global])).toEqual([['global-only',true]]);
+  expect(outline.panes.find(p => p.id === ordinary)).toMatchObject({ live:false,ready:false,session:'ordinary-history' });
+  const run = outline.runs.find(r => r.pane_id === ordinary);
+  expect(await f.json('/turns/' + run.id.slice(5))).toMatchObject({ prompt:'old prompt',response:'retained old result' });
+  expect((await f.request('/agents/' + ordinary + '/prompt', { body:'must not be sent' })).status).toBe(400);
+  const blocked = await f.json('/prompts', { body:'keep unsent ordinary continuation',target:ordinary,run:true,allow_warnings:true },201);
+  expect(blocked).toMatchObject({ ran:false,prompt:{state:'blocked',body:'keep unsent ordinary continuation'} });
+  expect(blocked.preflight.blocks.map(b => b.code)).toEqual(['not_global']);
+  expect((await f.request('/tuios/action', {action:'create-window',session:'global-only',workspace:1,name:'missing-machine'})).status).toBe(400);
+  expect((await f.windows('global-only')).windows).toEqual([]);
+  expect(await f.cli('capture-pane','-s','ordinary-history','-w',ordinary,'--scrollback','--lines','100')).not.toContain('must not be sent');
+}),60000);
+
+
+nativeTest('renaming a global container migrates explicit prompt homes without copying inherited ones', async () => fixture(async f => {
+  await f.action('create-session', { name: 'rename-before' });
+  const task = await f.json('/tasks', {title:'Rename home',session:'rename-before',host:'local'},201);
+  const explicit = await f.json('/prompts', {body:'Explicit home',task_id:task.id,session:'rename-before'},201);
+  const inherited = await f.json('/prompts', {body:'Inherited home',task_id:task.id},201);
+  await f.action('rename-session', {session:'rename-before',name:'rename-after'});
+  const prompts = (await f.json('/outline')).prompts;
+  expect(prompts.find(p=>p.id===explicit.prompt.id)).toMatchObject({session:'rename-after',resolved:{session:{value:'rename-after',from:'self'}}});
+  expect(prompts.find(p=>p.id===inherited.prompt.id)).toMatchObject({session:'',resolved:{session:{value:'rename-after',from:task.id}}});
+  expect((await f.state()).tasks.find(t=>t.id===task.id)).toMatchObject({session:'rename-after',host:'local'});
+}),60000);

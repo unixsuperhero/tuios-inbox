@@ -1,6 +1,12 @@
-// Host choice for new panes. The task keeps its home; the choice applies to this launch only.
 const opens = new WeakMap();
-const taskDefault = () => new Option("Task's host (default)", '');
+
+export const hostUnavailable = host => Boolean(host.read_only) || Boolean(host.status && !['up', 'connected', 'ok'].includes(host.status));
+export const machineLabel = host => host.host === 'local' ? `${host.hostname || 'Local machine'} · local` : host.hostname && host.hostname !== host.host ? `${host.host} · ${host.hostname}` : host.host;
+export function hostChoices(hosts = [], current = '', blank = 'Choose an execution machine') {
+  const choices = [{ value: '', label: blank }, ...hosts.map(h => ({ value: h.host, label: `${machineLabel(h)}${h.read_only ? ' · read-only' : hostUnavailable(h) ? ` · ${h.status || 'unavailable'}${h.error ? ': ' + h.error : ''}` : ''}`, disabled: hostUnavailable(h) }))];
+  if (current && !choices.some(c => c.value === current)) choices.push({ value: current, label: `${current} · unavailable`, disabled: true });
+  return choices;
+}
 
 export async function setupLaunchHost(form, api, store) {
   const label = form.querySelector('#pane-host-label');
@@ -8,26 +14,25 @@ export async function setupLaunchHost(form, api, store) {
   const select = label.querySelector('select'), note = label.querySelector('small');
   const open = (opens.get(form) || 0) + 1;
   opens.set(form, open);
-  // Every open starts from the task default; no host from a previous open stays selectable.
-  select.replaceChildren(taskDefault());
-  select.value = '';
-  note.textContent = 'Loading registered hosts… The task\'s own host is used unless you pick one.';
-  let hosts;
-  try { hosts = (await api('/hosts')).hosts || []; }
-  catch (error) {
+  const current = select.value;
+  select.required = true;
+  const replace = hosts => {
+    select.replaceChildren(...hostChoices(hosts, current).map(c => { const option = new Option(c.label, c.value); option.disabled = Boolean(c.disabled); return option; }));
+    select.value = current;
+  };
+  replace(store.liveHosts || []);
+  note.textContent = 'Loading execution machines…';
+  try {
+    const hosts = (await api('/hosts')).hosts || [];
     if (opens.get(form) !== open) return;
-    note.textContent = `Hosts unavailable: ${error.message}. The task's own host is used.`;
-    return;
+    store.liveHosts = hosts;
+    const selected = select.value;
+    select.replaceChildren(...hostChoices(hosts, selected).map(c => { const option = new Option(c.label, c.value); option.disabled = Boolean(c.disabled); return option; }));
+    select.value = selected;
+    note.textContent = 'Choose where this pane runs. Its global session container stays unchanged.';
+  } catch (error) {
+    if (opens.get(form) !== open) return;
+    select.replaceChildren(...hostChoices([], select.value).map(c => { const option = new Option(c.label, c.value); option.disabled = Boolean(c.disabled); return option; }));
+    note.textContent = `Execution machines unavailable: ${error.message}. No default machine is used.`;
   }
-  if (opens.get(form) !== open) return;
-  const options = [taskDefault()];
-  for (const h of hosts) {
-    const bad = h.status && !['up', 'connected', 'ok'].includes(h.status);
-    const option = new Option(`${h.host}${bad ? ` · ${h.status}${h.error ? ': ' + h.error : ''}` : ''}`, h.host);
-    option.disabled = Boolean(bad) || Boolean(h.read_only);
-    options.push(option);
-  }
-  select.replaceChildren(...options);
-  select.value = '';
-  note.textContent = hosts.length > 1 ? 'Only this new pane runs there; the task and its other panes stay put.' : 'No other host is registered (tuios hosts add).';
 }
