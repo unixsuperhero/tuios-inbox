@@ -81,15 +81,19 @@ export function createQueues({ root, navigate, load, review, refresh, report }) 
     renderRail(state); renderMain(state);
   }
 
+  function visibleRows() {
+    const ids = new Set([...root.querySelectorAll('.qb-rows > .wb-record:not([hidden])')].map(el => el.dataset.wbKey));
+    return current().rows.filter(r => ids.has(r.id));
+  }
   function move(delta) {
-    const { bucket, rows, item } = current(); if (!bucket || !rows.length) return;
+    const { bucket, item } = current(), rows = visibleRows(); if (!bucket || !rows.length) return;
     const i = item ? rows.findIndex(r => r.id === item.id) : -1;
-    const target = i < 0 ? rows[0] : rows[Math.min(rows.length - 1, Math.max(0, i + delta))];
+    const target = delta === Infinity ? rows.at(-1) : i < 0 ? rows[0] : rows[Math.min(rows.length - 1, Math.max(0, i + delta))];
     if (target && target.id !== item?.id) navigate({ kind: 'queue', bucket: bucket.id, item: target.id });
   }
 
   function advance() {
-    const { bucket, rows, item } = current(); if (!bucket || !item || reviewing) return;
+    const { bucket, item } = current(), rows = visibleRows(); if (!bucket || !item || reviewing) return;
     const next = nextAfter(rows, item.id);
     navigate({ kind: 'queue', bucket: bucket.id, item: next || undefined });
   }
@@ -125,9 +129,10 @@ export function createQueues({ root, navigate, load, review, refresh, report }) 
     else if (e.target.closest('[data-qb-toggle]') && !e.target.closest('button').disabled) toggleRead();
   });
   document.addEventListener('keydown', e => {
-    if (!supports(route) || typing() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.defaultPrevented || e.isComposing || !supports(route) || typing() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); move(1); }
     else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); move(-1); }
+    else if (e.key === 'g' || e.key === 'G') { e.preventDefault(); move(e.key === 'g' ? -Infinity : Infinity); }
     else if (e.key === 'n') { e.preventDefault(); advance(); }
     else if (e.key === 'u') { e.preventDefault(); toggleRead(); }
   });

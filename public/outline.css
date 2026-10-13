@@ -516,4 +516,24 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
 .ol-card-footer span { color: var(--ol-dim); }
 #outline-root .ol-completed > h2 { margin-bottom: 16px; font-size: 18px; }
 @media (max-width: 760px) { .ol-task-card :is(button, .ol-card-footer a) { min-height: 44px; } }
+#outline-root .ol-capture { display: block; padding: 12px; }
+#outline-root .ol-chip { max-width: 100%; margin-bottom: 8px; }
+.task-draft { min-height: 110px; max-height: 32vh; overflow: auto; }
+.task-draft-row { display: flex; align-items: start; gap: 8px; min-height: 36px; }
+#outline-root .task-draft-row input[type=checkbox] { flex: none; width: 18px; min-height: 18px; margin: 10px 0 0; accent-color: var(--accent); }
+#outline-root .task-draft-row textarea { flex: 1; min-width: 0; min-height: 36px; resize: none; overflow: hidden; border: 0; padding: 7px 4px; background: transparent; font: inherit; line-height: 22px; }
+.task-draft-row textarea:focus { outline: 0; }
+.task-draft-row:focus-within { background: var(--surface); }
+.task-draft-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+#task-draft-help, .task-draft-status { color: var(--muted); font-size: 12px; }
+.task-draft-actions button { flex: none; }
+.ol-search, .inline-list-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: var(--muted); padding: 8px 0; }
+#outline-root .ol-search { margin: 4px 16px; }
+.ol-search input, .inline-list-filter input { flex: 1; min-width: 100px; width: 100%; }
+.rail-search { width: calc(100% - 16px); margin: 4px 8px; }
+.inline-list-filter > span:last-child { font-variant-numeric: tabular-nums; }
+[data-list-filtered][hidden] { display: none !important; }
+[tabindex="-1"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 760px) { .task-draft-actions { flex-wrap: wrap; } .ol-keys { white-space: normal; } }
+
 

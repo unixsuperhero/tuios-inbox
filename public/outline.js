@@ -4,6 +4,7 @@
 import { api, apiCached, NOT_MODIFIED, esc, agentName } from '/pages.js';
 import { patchHTML } from '/workbench.js';
 import { markdown } from '/markdown.js';
+import { createTaskEditor } from '/task-editor.js';
 import { reviewQueue, reviewItems, queueStatus, runTask, taskItems, queueItems, queueCounts, markable, taskIndicators, itemKind } from '/outline-model.js';
 import { nextAfter, waitingFor } from '/queue-model.js';
 import { styleAttrs, taskMark, applyTaskStyles } from '/task-style-dom.js';
@@ -50,22 +51,33 @@ export function createOutline({ report }) {
   root.id = 'outline-root'; root.setAttribute('aria-label', 'Outline'); root.setAttribute('role', 'main');
   root.innerHTML = `<div class="ol-center">
 <header class="ol-head"><h1 id="ol-title">Tasks</h1><p class="ol-keys" id="ol-keys"></p></header>
-<form class="ol-capture" id="ol-capture" autocomplete="off"><span class="ol-chip" id="ol-chip"></span><input id="ol-capture-input" aria-label="New task" aria-describedby="ol-capture-hint" placeholder="Add a task" enterkeyhint="done"><button type="submit" class="primary">Add task</button><span class="ol-capture-hint" id="ol-capture-hint">Enter adds · open a task to see its turns</span></form>
+<section class="ol-capture" id="ol-capture" aria-label="Create tasks"><span class="ol-chip" id="ol-chip"></span><div id="ol-task-editor"></div></section>
 <div id="ol-notice" class="ol-notice" hidden></div>
 <p id="ol-filter" class="ol-filter" hidden></p>
+<label class="ol-search"><span>Filter list</span><input id="ol-search" type="search" placeholder="Filter tasks, prompts, state, agent…" autocomplete="off"><span id="ol-search-count" role="status"></span></label>
 <div class="ol-cols" id="ol-cols" aria-hidden="true">${COLS}</div>
 <div id="ol-tree" class="ol-tree" role="tree" tabindex="0" aria-label="Tasks, prompts and runs"></div>
 </div>
 <aside id="ol-detail" class="ol-detail" aria-label="Selected line"></aside>`;
   shell.append(root);
   const $ = s => root.querySelector(s);
-  const tree = $('#ol-tree'), detail = $('#ol-detail'), capture = $('#ol-capture-input'), noticeEl = $('#ol-notice'), chip = $('#ol-chip'), filterEl = $('#ol-filter'), colsEl = $('#ol-cols'), keysEl = $('#ol-keys');
+  const tree = $('#ol-tree'), detail = $('#ol-detail'), noticeEl = $('#ol-notice'), chip = $('#ol-chip'), filterEl = $('#ol-filter'), colsEl = $('#ol-cols'), keysEl = $('#ol-keys');
+  const capture = createTaskEditor($('#ol-task-editor'), {
+    create: body => api('/tasks', body), complete: id => api('/tasks/' + encodeURIComponent(id), { status: 'done' }, 'PATCH'),
+    parent: () => destination(), report, saved: async count => { await fetchOutline(); say(count + ' tasks saved.'); },
+  });
 
   let active = false, view = 'tasks', data = null, loadError = '', stale = true, inflight = null, again = null;
   // The Queue page: its scope, the open item (which stays listed once read, until the selection moves on), and the item whose opening has been acted on.
   let taskId = null, taskPlanning = false;
   const queueView = () => view === 'queue' || view === 'task';
   let qScope = { type: 'all' }, qSel = null, qRead = null, qItems = [], qShown = CHUNK, treeShown = CHUNK;
+  const searches = new Map();
+  const searchKey = () => view + ':' + (taskId && view === 'task' ? taskId : view === 'queue' ? qScope.type + ':' + (qScope.id || '') : '');
+  const query = () => (searches.get(searchKey()) || '').trim().toLocaleLowerCase();
+  const matches = (record, needle = query()) => !needle || [record.title, record.body, record.prompt, record.summary, record.state, record.status, record.task, record.pane, record.pane_name, record.harness].some(v => String(v || '').toLocaleLowerCase().includes(needle));
+  const taskMatches = n => matches(n.rec) || (data?.panes || []).some(p => p.task_id === n.rec.id && matches({ ...p, title: p.name })) || n.children.some(c => c.kind === 'task' ? taskMatches(c) : matches(c.rec));
+  $('#ol-search').addEventListener('input', e => { searches.set(searchKey(), e.target.value); qShown = CHUNK; treeShown = CHUNK; render(); });
   const histShown = new Map(), memo = new Map();
   // A part of the page is only touched when its markup changed since it was last drawn.
   let painted = new WeakMap();
@@ -87,6 +99,8 @@ export function createOutline({ report }) {
   // The rail's tree lives outside this page's root and is drawn on every page. `opened` is the line whose opening has been
   // acted on (read, scrolled to), so a live refresh never repeats it.
   const railEl = document.getElementById('rail-tree'), railHeading = document.getElementById('rail-heading'), railUnread = document.getElementById('rail-unread'), railQueue = document.getElementById('rail-queue'), railQueueCount = document.getElementById('rail-queue-count');
+  const railSearch = document.createElement('input'); railSearch.type = 'search'; railSearch.className = 'rail-search'; railSearch.placeholder = 'Filter tasks…'; railSearch.setAttribute('aria-label', 'Filter task navigation'); railEl?.before(railSearch);
+  railSearch.addEventListener('input', renderRail);
   let opened = null, railShown = null, rowFocus = null; // rowFocus: the task row j/k stand on in the tasks list
   const focus = () => view === 'tasks' || view === 'open';
   const supports = r => r?.kind === 'outline';
@@ -140,6 +154,7 @@ export function createOutline({ report }) {
     return null;
   }
   function isOpen(n) {
+    if (query()) return Boolean(n.children.length);
     if (n.kind === 'rgroup') return !collapsed.has(n.key);
     if (!n.children.length) return false;
     if (expanded.has(n.key)) return true;
@@ -154,7 +169,7 @@ export function createOutline({ report }) {
       out.push(n);
       if (!isOpen(n)) continue;
       let children = n.children; const more = [];
-      if (!filtered()) {
+      if (!filtered() && !query()) {
         const keep = c => c.key === selected || c.stats.unread || c.stats.running || c.stats.needs;
         const finished = children.filter(c => c.kind === 'prompt' && ['done', 'errored'].includes(c.rec.state) && !keep(c));
         const oldRuns = children.filter(c => c.kind === 'run' && !keep(c)).slice(RUN_CAP);
@@ -254,6 +269,7 @@ export function createOutline({ report }) {
   const scopeLabel = s => s.type === 'task' ? `Task: ${s.id === 'none' ? 'No task' : model.tasks.get(s.id)?.title || 'a task that no longer exists'}` : s.type === 'session' ? `Session: ${s.id}` : s.type === 'pane' ? `Pane: ${paneLabel(s.id)}` : 'All';
   const sameScope = (a, b) => a.type === b.type && (a.type === 'all' || a.id === b.id);
   function queueHTML() {
+    if (!qItems.length && query()) return '<p class="ol-empty" role="status">No prompts or turns match this filter.</p>';
     if (!qItems.length && view === 'task') return '<p class="ol-empty" role="status">No turns or queued prompts for this task yet.</p>';
     if (!qItems.length) return `<div class="ol-empty q-empty" role="status"><p class="q-clear">${icon('done', '')}Queue clear</p><p>Nothing is waiting in ${qScope.type === 'all' ? 'any task' : esc(scopeLabel(qScope))}.</p>${qScope.type !== 'all' && qCount({ type: 'all' }) ? `<p><a href="#queue">Show everything waiting (${qCount({ type: 'all' })})</a></p>` : ''}</div>`;
     const at = qItems.findIndex(i => i.id === qSel); if (at >= qShown) qShown = at + 1;
@@ -443,8 +459,8 @@ export function createOutline({ report }) {
   }
   function tasksHTML() {
     if (!data) return loadError ? `<div class="ol-empty"><p>The tasks could not be loaded: ${esc(loadError)}</p>${button('retry', '', 'Try again')}</div>` : '<p class="ol-empty" role="status">Loading the tasks…</p>';
-    const rows = model.roots.filter(n => n.kind === 'task' && !n.rec.archived), openRows = rows.filter(hasOpenTask), completed = rows.filter(n => !hasOpenTask(n));
-    if (!rows.length) return '<p class="ol-empty">Add a task above to start planning work.</p>';
+    const rows = model.roots.filter(n => n.kind === 'task' && !n.rec.archived && taskMatches(n)), openRows = rows.filter(hasOpenTask), completed = rows.filter(n => !hasOpenTask(n));
+    if (!rows.length) return `<p class="ol-empty" role="status">${query() ? 'No tasks match this filter.' : 'Add a task above to start planning work.'}</p>`;
     return `<p class="ol-dim ol-tasks-note">${plural(openRows.length, 'open task')} · New prompts start fresh agents. Sessions are containers, not shared conversations.</p><ul class="ol-task-grid">${openRows.map(taskCard).join('')}</ul>${completed.length ? `<section class="ol-completed"><h2>Completed <span class="ol-count">${completed.length}</span></h2><ul class="ol-task-grid">${completed.map(taskCard).join('')}</ul></section>` : ''}`;
   }
   function detailHTML() {
@@ -466,10 +482,14 @@ export function createOutline({ report }) {
     const tasks = new Map(data.tasks.map(t => [t.id, t])), children = new Map();
     for (const t of tasks.values()) { const parent = tasks.has(t.parent_id) ? t.parent_id : ''; if (!children.has(parent)) children.set(parent, []); children.get(parent).push(t); }
     const open = (t, seen = new Set()) => { if (t.archived || seen.has(t.id)) return false; seen.add(t.id); return t.status !== 'done' || (children.get(t.id) || []).some(c => open(c, new Set(seen))); };
+    const needle = railSearch.value.trim().toLocaleLowerCase(), keep = new Set();
+    if (needle) for (const t of tasks.values()) if (!t.archived && matches(t, needle)) {
+      const seen = new Set(); for (let p = t; p && !seen.has(p.id); p = tasks.get(p.parent_id)) { seen.add(p.id); keep.add(p.id); }
+    }
     const visited = new Set();
     const row = (t, depth, completed = false) => {
-      if (visited.has(t.id) || t.archived) return ''; visited.add(t.id);
-      const kids = (children.get(t.id) || []).filter(c => completed ? !open(c) : open(c)), ti = taskInd().get(t.id);
+      if (visited.has(t.id) || t.archived || needle && !keep.has(t.id)) return ''; visited.add(t.id);
+      const kids = (children.get(t.id) || []).filter(c => (!needle || keep.has(c.id)) && (completed ? !open(c) : open(c))), ti = taskInd().get(t.id);
       return `<section class="task-style-surface rt-group" data-wb-key="t:${esc(t.id)}" ${styleAttrs(t)}><div class="rt-head"><a class="${depth ? 'rt-subtask' : 'rt-task'}" href="${outlineHash(`task:${t.id}`)}"${cur === `task:${t.id}` ? ' aria-current="page"' : ''}>${taskMark(t)}<span class="rt-title">${esc(t.title)}</span></a>${ti?.waiting ? `<a class="rt-q" href="${queueHash({ type: 'task', id: t.id })}" aria-label="Review results for ${esc(t.title)}">${icon('queue', '')}${ti.waiting}</a>` : ''}${strip(ti?.indicators, ' rt-inds')}</div>${kids.map(c => row(c, depth + 1, completed)).join('')}</section>`;
     };
     const roots = [...tasks.values()].filter(t => !tasks.has(t.parent_id));
@@ -500,7 +520,7 @@ export function createOutline({ report }) {
     const rq = view === 'needs-me', qv = queueView();
     if (qv) {
       // The open item is kept in the list even once read; when nothing is open, or it has gone, the oldest waiting item opens.
-      qItems = view === 'task' ? taskItems(data || {}, taskId) : queueItems(data || {}, qScope, new Set(qSel ? [qSel] : []));
+      qItems = (view === 'task' ? taskItems(data || {}, taskId) : queueItems(data || {}, qScope, new Set(qSel ? [qSel] : []))).filter(i => matches(i) || matches(i.rec));
       if (data && !qItems.some(i => i.id === qSel)) qSel = qItems[0]?.id ?? null;
       selected = qSel;
     }
@@ -508,10 +528,19 @@ export function createOutline({ report }) {
     review = rq || !data ? buildReview(full) : { lines: [], index: new Map(), items: [], total: 0 };
     if (view !== 'open' && selected && !full.index.has(selected) && !review.index.has(selected)) { selected = null; detailOpen = false; }
     model.lines = focus() || qv ? [] : rq ? review.lines : flatten(full.roots.map(n => prune(n)).filter(Boolean));
+    if (query()) {
+      const keep = new Set();
+      for (const n of model.lines) if (matches(n.rec || {}) || matches(n.group || {}) || matches(n.item || {}) || n.parent?.group && matches(n.parent.group)) for (let p = n; p; p = p.parent) keep.add(p.key);
+      model.lines = model.lines.filter(n => keep.has(n.key));
+      if (!qv && view !== 'tasks' && view !== 'open' && selected && !model.lines.some(n => n.key === selected)) { selected = model.lines.find(n => n.kind !== 'rgroup')?.key || null; detailOpen = false; }
+    }
+    if (document.activeElement !== $('#ol-search')) $('#ol-search').value = searches.get(searchKey()) || '';
+    $('.ol-search').hidden = view === 'open';
+    $('#ol-search-count').textContent = query() ? (qv ? qItems.length : view === 'tasks' ? model.roots.filter(n => n.kind === 'task' && !n.rec.archived && taskMatches(n)).length : model.lines.length) + ' matches' : '';
     root.classList.toggle('is-focus', focus()); root.classList.toggle('is-open', view === 'open'); root.classList.toggle('is-tasks', view === 'tasks');
     root.classList.toggle('is-review', rq); root.classList.toggle('is-queue', qv);
     paint(colsEl, rq ? REVIEW_COLS : COLS);
-    paint(keysEl, qv ? '<kbd>j</kbd><kbd>k</kbd> move <kbd>n</kbd> next' : '<kbd>n</kbd> new line <kbd>j</kbd><kbd>k</kbd> move <kbd>Tab</kbd> indent task <kbd>Enter</kbd> open');
+    paint(keysEl, '<kbd>/</kbd> filter <kbd>g</kbd>/<kbd>G</kbd> first/last <kbd>{</kbd>/<kbd>}</kbd> sections');
     filterEl.hidden = !(rq && filterTask || qv && data);
     if (qv && data) paint(filterEl, chipsHTML());
     else if (rq && filterTask) paint(filterEl, `<span>Only <b>${esc(data ? full.tasks.get(filterTask)?.title || 'a task that no longer exists' : 'one task')}</b> and its subtasks</span><a href="#outline/needs-me">Show everything waiting</a>`);
@@ -547,7 +576,7 @@ export function createOutline({ report }) {
       if (n?.kind === 'run' && n.rec.unread) write(`read:${n.rec.id}`, () => api(`/turns/${turnId(n.rec.id)}`, { unread: false }, 'PATCH'));
     }
     // The same in the queue: the open item is read once, and stays listed until you move on.
-    if (qv && data && qRead !== qSel && !taskPlanning) {
+    if (qv && data && qRead !== qSel && !taskPlanning && document.activeElement !== $('#ol-search')) {
       qRead = qSel; detail.scrollTop = 0;
       if (n?.kind === 'run' && n.rec.unread) write(`read:${n.rec.id}`, () => api(`/turns/${turnId(n.rec.id)}`, { unread: false }, 'PATCH'));
     }
@@ -624,12 +653,6 @@ export function createOutline({ report }) {
     if (target === undefined) { say(direction > 0 ? 'Nothing above to indent under.' : 'Already at the top level.'); return true; }
     write(`save:task:${n.rec.id}:parent_id`, () => api(`/tasks/${encodeURIComponent(n.rec.id)}`, { parent_id: target }, 'PATCH'), () => { if (target) { expanded.add(`task:${target}`); collapsed.delete(`task:${target}`); } render(); });
     return true;
-  }
-  async function submitCapture() {
-    const title = capture.value.trim(); if (!title || busy.has('capture')) return;
-    const parent = destination(); capture.readOnly = true;
-    await write('capture', () => api('/tasks', { title, ...(parent ? { parent_id: parent } : {}) }), result => { capture.value = ''; if (result?.id) location.hash = outlineHash('task:' + result.id); say('Task saved.'); });
-    capture.readOnly = false; capture.focus();
   }
   function submitPlan(id, run = false, allowWarnings = false) {
     const body = val(`plan:${id}:body`, ''); if (!String(body).trim()) { planReceipts.set(id, { error: true, message: 'Write a prompt before saving or running.' }); render(); return; }
@@ -721,7 +744,6 @@ export function createOutline({ report }) {
   root.addEventListener('input', e => {
     const key = e.target.dataset?.draft; if (key) drafts.set(key, e.target.value);
     if (view === 'task' && e.target.form?.dataset.planTask) taskPlanning = true;
-    if (e.target === capture) render();
   });
   root.addEventListener('change', e => {
     const t = e.target;
@@ -731,7 +753,6 @@ export function createOutline({ report }) {
   root.addEventListener('submit', e => {
     e.preventDefault();
     const form = e.target, allow = Boolean(e.submitter?.hasAttribute('data-allow-warnings'));
-    if (form.id === 'ol-capture') return void submitCapture();
     const child = form.dataset.childTask;
     if (child) { const key = `plan:${child}:child`, title = val(key, '').trim(); if (!title) return; return void write(`child:${child}`, () => api('/tasks', { title, parent_id: child }), result => { if (drafts.get(key)?.trim() === title) drafts.delete(key); say('Subtask saved with inherited execution and its own identity.'); }); }
     if (form.dataset.planTask) return void submitPlan(form.dataset.planTask, Boolean(e.submitter?.hasAttribute('data-run-plan')), allow);
@@ -749,10 +770,8 @@ export function createOutline({ report }) {
   }, { passive: true });
   // A field the page left alone while you typed in it is drawn again once you leave it.
   root.addEventListener('focusout', () => { painted = new WeakMap(); });
-  capture.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); submitCapture(e.metaKey || e.ctrlKey); }
-    else if (e.key === 'Backspace' && !capture.value && destination()) { destCleared = true; render(); }
-    else if (e.key === 'Escape') { capture.blur(); tree.focus(); }
+  root.addEventListener('list-query', e => {
+    if (e.target.matches('.ol-hists') && selected?.startsWith('run:')) { histShown.set(selected.slice(4), Infinity); render(); }
   });
   detail.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.matches('textarea')) { e.preventDefault(); const form = e.target.form; form?.requestSubmit(form.querySelector('[data-run-plan]') || form.querySelector('button[type="submit"]')); }
@@ -762,19 +781,21 @@ export function createOutline({ report }) {
   document.addEventListener('keydown', e => {
     if (!active || e.defaultPrevented || document.querySelector('dialog[open]')) return;
     if (e.key === 'Escape' && confirming === 'markall') { confirming = null; render(); return; }
-    const t = e.target, typing = t.matches?.('input, textarea, select, [contenteditable]');
-    if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target, typing = t.closest?.('input, textarea, select, [contenteditable]:not([contenteditable=false])');
+    if (typing || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === '/') { e.preventDefault(); $('#ol-search').focus(); return; }
     if (queueView()) {
       // j and k (and the arrows, outside the item's own scroll) open the neighbour, which reads it; n lets the open one go.
       const i = qItems.findIndex(x => x.id === qSel), arrows = t === document.body || tree.contains(t), d = e.key === 'j' || arrows && e.key === 'ArrowDown' ? 1 : e.key === 'k' || arrows && e.key === 'ArrowUp' ? -1 : 0;
-      if (d) { e.preventDefault(); if (qItems[i + d]) qOpen(qItems[i + d].id); }
+      if (e.key === 'g' || e.key === 'G') { e.preventDefault(); const item = e.key === 'g' ? qItems[0] : qItems.at(-1); if (item) { qOpen(item.id); tree.focus({ preventScroll: true }); } }
+      else if (d) { e.preventDefault(); if (qItems[i + d]) qOpen(qItems[i + d].id); }
       else if (e.key === 'n' && qSel) { e.preventDefault(); acts.next(qSel); }
       return;
     }
-    if (e.key === 'n' || e.key === '/') { e.preventDefault(); detailOpen = false; render(); capture.focus(); return; }
+    if (e.key === 'n') { e.preventDefault(); detailOpen = false; render(); capture.focus(); return; }
     if (view === 'tasks') {
-      const rows = model.order.filter(x => !model.tasks.get(x.id)?.archived).map(x => x.id), i = rows.indexOf(rowFocus), d = e.key === 'j' || e.key === 'ArrowDown' ? 1 : e.key === 'k' || e.key === 'ArrowUp' ? -1 : 0;
-      if (d && rows.length) { e.preventDefault(); rowFocus = rows[i < 0 ? d > 0 ? 0 : rows.length - 1 : Math.max(0, Math.min(rows.length - 1, i + d))]; render(); detail.querySelector('.ol-task-row.is-kfocus')?.scrollIntoView({ block: 'nearest' }); }
+      const rows = [...detail.querySelectorAll('.ol-task-row')].filter(el => !el.closest('[hidden]')).map(el => decodeURIComponent(el.hash.split('/').at(-1))), i = rows.indexOf(rowFocus), d = e.key === 'j' || e.key === 'ArrowDown' ? 1 : e.key === 'k' || e.key === 'ArrowUp' ? -1 : 0;
+      if ((d || e.key === 'g' || e.key === 'G') && rows.length) { e.preventDefault(); rowFocus = e.key === 'g' ? rows[0] : e.key === 'G' ? rows.at(-1) : rows[i < 0 ? d > 0 ? 0 : rows.length - 1 : Math.max(0, Math.min(rows.length - 1, i + d))]; render(); const target = detail.querySelector('.ol-task-row.is-kfocus'); target?.focus({ preventScroll: true }); target?.scrollIntoView({ block: 'nearest' }); }
       else if (e.key === 'Enter' && i >= 0 && !t.closest?.('a, button, summary')) { e.preventDefault(); location.hash = outlineHash('task:' + rowFocus); }
       else if (e.key === 'Tab' && rowFocus && !t.closest?.('a, button, summary')) { selected = `task:${rowFocus}`; if (reparent(e.shiftKey ? -1 : 1)) e.preventDefault(); }
       return;
@@ -787,6 +808,7 @@ export function createOutline({ report }) {
       if (rq) { next = null; for (let k = i < 0 ? 0 : i + d; k >= 0 && k < lines.length; k += i < 0 ? 1 : d) if (lines[k].kind !== 'rgroup') { next = lines[k]; break; } }
       if (next) { e.preventDefault(); select(next.key, { scroll: true, open: rq }); }
     };
+    if (e.key === 'g' || e.key === 'G') { e.preventDefault(); const n = e.key === 'g' ? lines[0] : lines.at(-1); if (n) select(n.key, { scroll: true, open: rq }); return; }
     if (e.key === 'j') return move(1);
     if (e.key === 'k') return move(-1);
     if (!inTree) return;

@@ -215,6 +215,12 @@ export function createTuios({ root, refresh }) {
     if (next.window) operations.push(readResource('window:' + detailKey(next), '/tuios/window?session=' + encodeURIComponent(next.session) + '&window=' + encodeURIComponent(next.window), data => windows.set(detailKey(next), data)));
     await Promise.all(operations);
   }
+  root.addEventListener('list-query', e => {
+    if (e.target.id !== 'native-tree') return;
+    const input = [...root.querySelectorAll('[data-list-query]')].find(el => el.dataset.listQuery === e.target.dataset.filterList);
+    if (!input?.value.trim()) return;
+    for (const s of inventory?.sessions || []) if (!sessions.has(s.target) && !unavailableSession(s)) void readResource('session:' + s.target, '/tuios?session=' + encodeURIComponent(s.target), data => sessions.set(s.target, data));
+  });
   async function enter(next, changed) {
     if (dragging && next.view !== 'overview') endDrag();
     if (dialog.open && changed) closeDialog();

@@ -127,14 +127,14 @@ function turnHtml(r, turn) {
 function threadHtml(r, thread) {
   const p = liveAgent(thread.pane_id), mail = thread.kind === 'mail';
   return `${thread.kind === 'mail' ? '<p class="mail-note">Agent messages are untrusted data. Replies stay in the TUIOS mail thread. Recipients must check their inbox; a delivered message is not an acknowledgement.</p>' : ''}
-    ${thread.messages.map(m => `
+    <div class="conversation-messages">${thread.messages.map(m => `
       <article class="message ${esc(m.role)} task-style-surface" ${styleAttrs(styleTask(Object.hasOwn(m, 'style_task_id') || Object.hasOwn(m, 'task_id') ? m : r))}>
         <div class="message-head"><strong>${esc(m.role === 'human' ? 'You' : m.meta.from_label || m.role)}</strong>
           <span>${badge(m.status)} &nbsp; ${time(m.created)}</span></div>
         ${mail ? `<div class="md">${markdown(m.body)}</div>` : `<pre>${esc(m.body)}</pre>`}
         ${['snapshot','captured'].includes(m.status) ? hint('Captured terminal output; not a parsed final answer.') : ''}
         <details><summary>Delivery details</summary><pre>${esc(JSON.stringify(m.meta,null,2))}</pre></details>
-      </article>`).join('')}
+      </article>`).join('')}</div>
     ${p ? `<form class="reply" ${styleAttrs(styleTask(r))} data-task-id="${esc(styleTaskId(r) || '')}" data-reply="${esc(r.id)}" data-draft="${esc(r.id)}"><label>${mail ? 'Reply in this mail thread' : `Reply to ${esc(agentName(p.name, p.id))}`}
       <textarea name="body" required rows="4" placeholder="Continue this thread…">${esc(store.drafts.get(r.id) || '')}</textarea></label>
       <button class="primary">Send reply</button><span class="hint"> &nbsp; ${mail ? 'The reply stays in this mail thread.' : `The result returns to this conversation, and the ${p.kind === 'agent' ? 'agent’s turn' : 'command'} also arrives as a new row.`}</span></form>`

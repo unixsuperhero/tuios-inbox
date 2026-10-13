@@ -1,6 +1,7 @@
 // Live workbench navigation and keyed DOM updates; records and actions belong to pages/app.
 import { store, pages, esc, agentName, hostLabel, unfinished, taskTree, styleTask, styleTaskId } from '/pages.js';
 import { styleAttrs, taskMark, applyTaskStyles } from '/task-style-dom.js';
+import { prepareListFilters } from '/list-tools.js';
 
 const href = (kind, id) => `#${kind}/${encodeURIComponent(id)}`;
 const time = value => value ? new Date(value).toLocaleString() : '';
@@ -19,13 +20,14 @@ const nodeKey = node => node.nodeType === 1 ? node.id || node.dataset.wbKey || (
 // Morph in place: stable nodes keep selection, scroll, open details, and in-flight forms.
 export function patchHTML(parent, html) {
   const template = document.createElement('template'); template.innerHTML = html;
+  prepareListFilters(template.content, parent);
   const patch = (current, desired) => {
     if (current.nodeType !== 1) { if (current.nodeValue !== desired.nodeValue) current.nodeValue = desired.nodeValue; return; }
     const focused = current === document.activeElement;
     if (focused && current.matches('input,textarea,select')) return;
     const busy = current.closest('form[data-submitting]');
     for (const attr of [...current.attributes]) {
-      if (attr.name === 'open' && current.tagName === 'DETAILS' || attr.name === 'data-submitting' || attr.name === 'disabled' && busy) continue;
+      if (attr.name === 'open' && current.tagName === 'DETAILS' || attr.name === 'data-submitting' || attr.name === 'tabindex' && focused && current.tabIndex === -1 || attr.name === 'disabled' && busy) continue;
       if (!desired.hasAttribute(attr.name)) current.removeAttribute(attr.name);
     }
     for (const attr of desired.attributes) {
