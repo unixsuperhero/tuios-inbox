@@ -194,7 +194,9 @@ Body text inherits the base line height. Descriptions and hints loosen it, Markd
 
 ## Layout
 
-The desktop shell keeps a left navigation column and a scrolling work area. Tasks uses lightweight task/subtask links rather than collapsed planning forms. A selected task and Queue share the activity-list and result-reader layout. The task page provides **New prompt / settings** for composition, subtask creation, and management. Retained legacy Queues still has its task-bucket column and reading pane. Native hash links and browser history reveal the selected content.
+The shell fills the viewport; the document does not scroll. Desktop navigation and each work pane own their scroll ranges. The shell uses a shrinkable grid row so content cannot enlarge the work area beyond the viewport. Expanded navigation remains reachable by scrolling the rail body. Tasks uses lightweight task/subtask links rather than collapsed planning forms. A selected task and Queue share the activity-list and result-reader layout. The task page provides **New prompt / settings** for composition, subtask creation, and management. Retained legacy Queues still has its task-bucket column and reading pane. Native hash links and browser history reveal the selected content.
+
+TUIOS gives its session tree and inspector independent scroll areas; Overview scrolls within its content pane. Native controls and notices have a bounded, scrollable header so they cannot consume the entire pane in a short window. On narrow screens the session tree sits above the inspector, with both remaining scrollable. Table captions stay positioned inside the content pane rather than extending the document. The mobile Queue list is sized relative to its available pane, not the full viewport.
 
 The main pane retains Flight deck gutters and compact row geometry. Inline task settings use progressive disclosure, but effective directory, harness, model, and launch mode stay beside dispatch. Completed tasks are available under disclosure. Retained Inbox/index query controls and bulk operations remain available.
 

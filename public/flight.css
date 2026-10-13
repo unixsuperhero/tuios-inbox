@@ -28,7 +28,7 @@
 .rail .nav.active { color: #fff; background: #344656; border-color: #586d7d; font-weight: 700; }
 .rail-bottom { flex-direction: column; align-items: flex-start; gap: 12px; margin: auto 12px 0; padding-top: 40px; }
 .connection::before { background: #bbd5c5; }
-.workbench-app > .workbench-shell { grid-column: 2; grid-row: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0; }
+.workbench-app > .workbench-shell { grid-column: 2; grid-row: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 0; padding: 0; }
 .workbench-shell > .workbench-main { padding: 0 32px 40px; background: var(--paper); }
 .workbench-shell > :is(.task-rail, .review-queue) { display: none; width: 100%; padding: 27px 32px; border: 0; background: var(--paper); }
 .workbench-app[data-workbench-view=tasks] .workbench-shell > .task-rail,
