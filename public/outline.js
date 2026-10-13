@@ -10,7 +10,7 @@ import { styleAttrs, taskMark, applyTaskStyles } from '/task-style-dom.js';
 import { styleChoices, taskStyle } from '/task-style.js';
 const VIEWS = { queue: 'Queue', tasks: 'Tasks', open: 'Tasks', everything: 'Everything', 'needs-me': 'Needs me', running: 'Running', queued: 'Queued', 'no-task': 'No task', archive: 'Archive' };
 const TASK_FIELDS = [['harness', 'Harness', 'harness'], ['model', 'Model', 'text'], ['repo', 'Repository directory', 'dir'], ['worktree', 'Existing worktree directory', 'dir'], ['branch', 'Expected branch', 'text'], ['session', 'Native session', 'text'], ['workspace', 'Native workspace', 'text'], ['launch_mode', 'Launch mode', 'launch'], ['queue_mode', 'Queue mode', 'mode']];
-const RUN_CAP = 3, DONE_CAP = 3, CHUNK = 50, SHUT_KEY = 'tuios-inbox.rail.collapsed';
+const RUN_CAP = 3, DONE_CAP = 3, CHUNK = 50;
 const COLS = '<span></span><span>Queue</span><span>State</span><span>Unread</span><span>Branch</span><span>Pull request</span>', REVIEW_COLS = '<span></span><span>Pane</span><span>State</span><span>Unread</span><span>Waiting</span>';
 const when = value => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -66,9 +66,7 @@ export function createOutline({ report }) {
   let taskId = null, taskPlanning = false;
   const queueView = () => view === 'queue' || view === 'task';
   let qScope = { type: 'all' }, qSel = null, qRead = null, qItems = [], qShown = CHUNK, treeShown = CHUNK;
-  // Collapsed task branches are remembered; keyed painting keeps every open disclosure.
-  const railShut = new Set(), histShown = new Map(), memo = new Map();
-  try { for (const id of JSON.parse(localStorage.getItem(SHUT_KEY) || '[]')) railShut.add(String(id)); } catch {}
+  const histShown = new Map(), memo = new Map();
   // A part of the page is only touched when its markup changed since it was last drawn.
   let painted = new WeakMap();
   const paint = (el, html) => { if (painted.get(el) === html) return; painted.set(el, html); patchHTML(el, html); applyTaskStyles(el, data?.tasks || []); };
@@ -331,7 +329,7 @@ export function createOutline({ report }) {
 
   function taskDetail(n) {
     const id = n.rec.id, done = n.rec.status === 'done';
-    return inlinePlanning(n) + `<div class="ol-trow-acts">${button('task-done', id, done ? 'Reopen' : 'Done', 'subtle', ` data-arg="${done ? 'open' : 'done'}"`)}${button('ask-delete-task', id, 'Delete task', 'subtle')}${confirming === `deltask:${id}` ? `<span role="alert">Delete this task? Subtasks move up; prompts and runs stay under No task.</span>${button('delete-task', id, 'Confirm delete', 'danger')}${button('keep', id, 'Keep')}` : ''}</div>`;
+    return `<section class="ol-card-section"><h2>Agents for this task</h2>${taskAgents(id)}</section>` + inlinePlanning(n) + `<div class="ol-trow-acts">${button('task-done', id, done ? 'Reopen' : 'Done', 'subtle', ` data-arg="${done ? 'open' : 'done'}"`)}${button('ask-delete-task', id, 'Delete task', 'subtle')}${confirming === `deltask:${id}` ? `<span role="alert">Delete this task? Subtasks move up; prompts and runs stay under No task.</span>${button('delete-task', id, 'Confirm delete', 'danger')}${button('keep', id, 'Keep')}` : ''}</div>`;
   }
   function noneDetail(n) {
     const queue = n.children.filter(c => c.kind === 'prompt' && ['queued', 'blocked', 'running'].includes(c.rec.state)).map(c => c.rec);
@@ -404,23 +402,50 @@ export function createOutline({ report }) {
     const color = t.style_color || t.style?.color || '', automatic = taskStyle(t.style || { seed: t.style_seed });
     const luminance = hex => { const rgb = hex.match(/[a-f0-9]{2}/gi).map(v => parseInt(v, 16) / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4); return .2126 * rgb[0] + .7152 * rgb[1] + .0722 * rgb[2]; };
     const contrast = color ? (Math.max(luminance(color), luminance('#17212b')) + .05) / (Math.min(luminance(color), luminance('#17212b')) + .05) : Infinity;
-    return `<details class="ol-settings" data-wb-key="settings:${esc(id)}"><summary>Settings · inherited execution & task identity</summary><p class="ol-dim">Empty execution fields inherit from the parent or app defaults. Existing directories only; no worktrees are created.</p>${rows}<datalist id="olf-harness-choices-${esc(id)}">${(data.profiles || []).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</datalist><h2>Task identity</h2><p class="ol-dim">This task has its own automatic theme and icon. Overrides do not affect subtasks.</p>${contrast < 3 ? '<p class="ol-callout">This custom color has low contrast on the Flight deck background. You can keep it; the task label stays visible. Choose a lighter color for a clearer icon.</p>' : ''}<div class="ol-inline">${identity}<label>Custom color<input type="color" aria-label="Custom task color" data-save="task:${esc(id)}:style_color" value="${esc(color || automatic.color)}"></label>${button('clear-field', `task:${id}:style_color`, 'Reset color', 'subtle')}${button('reset-style', id, 'Reset identity', 'subtle')}</div><div class="ol-inline"><label>Status<select data-save="task:${esc(id)}:status">${options(['open', 'active', 'done'].map(s => [s, s]), t.status)}</select></label><label>Move under<select data-save="task:${esc(id)}:parent_id">${options([['', 'Top level'], ...taskOptions(subtreeIds(n))], t.parent_id || '')}</select></label>${button('archive-task', id, t.archived ? 'Unarchive' : 'Archive', 'subtle', ` data-arg="${t.archived ? '' : '1'}"`)}<a href="#task/${encodeURIComponent(id)}">Advanced task page</a></div></details>`;
+    return `<section class="ol-settings" data-wb-key="settings:${esc(id)}"><h2>Settings</h2><p class="ol-dim">Empty execution fields inherit from the parent or app defaults. Existing directories only; no worktrees are created.</p>${rows}<datalist id="olf-harness-choices-${esc(id)}">${(data.profiles || []).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</datalist><h2>Task identity</h2><p class="ol-dim">This task has its own automatic theme and icon. Overrides do not affect subtasks.</p>${contrast < 3 ? '<p class="ol-callout">This custom color has low contrast on the Flight deck background. You can keep it; the task label stays visible. Choose a lighter color for a clearer icon.</p>' : ''}<div class="ol-inline">${identity}<label>Custom color<input type="color" aria-label="Custom task color" data-save="task:${esc(id)}:style_color" value="${esc(color || automatic.color)}"></label>${button('clear-field', `task:${id}:style_color`, 'Reset color', 'subtle')}${button('reset-style', id, 'Reset identity', 'subtle')}</div><div class="ol-inline"><label>Status<select data-save="task:${esc(id)}:status">${options(['open', 'active', 'done'].map(s => [s, s]), t.status)}</select></label><label>Move under<select data-save="task:${esc(id)}:parent_id">${options([['', 'Top level'], ...taskOptions(subtreeIds(n))], t.parent_id || '')}</select></label>${button('archive-task', id, t.archived ? 'Unarchive' : 'Archive', 'subtle', ` data-arg="${t.archived ? '' : '1'}"`)}<a href="#task/${encodeURIComponent(id)}">Advanced task page</a></div></section>`;
   }
   const launchContext = (res = {}, target = '') => `<span class="ol-launch-context">${target ? `Continue in ${esc(paneLabel(target))}` : res.launch_mode?.value === 'reuse' ? 'Reuse compatible idle agent, otherwise fresh' : 'Fresh background agent'} · <span class="ol-mono">${esc(res.cwd?.value || res.repo?.value || 'home directory')} · ${esc(res.harness?.value || 'omp')} / ${esc(res.model?.value || 'harness default')}</span>${res.session?.value ? ` · session ${esc(res.session.value)}` : ''}${res.workspace?.value != null ? ` · workspace ${esc(res.workspace.value)}` : ''}</span>`;
-  function inlinePlanning(n) {
+  function inlinePlanning(n, card = false) {
     const t = n.rec, id = t.id, bodyKey = `plan:${id}:body`, childKey = `plan:${id}:child`, body = val(bodyKey, ''), receipt = planReceipts.get(id), warnings = receipt?.preflight;
-
-    return `<div class="ol-planning" data-wb-key="plan:${esc(id)}"><label class="ol-visually-hidden" for="title-${esc(id)}">Task title</label><input id="title-${esc(id)}" class="ol-title-input" data-draft="task:${esc(id)}:title" data-save="task:${esc(id)}:title" value="${esc(val(`task:${id}:title`, t.title))}"><form class="ol-next-step" data-child-task="${esc(id)}"><label for="child-${esc(id)}">Next step / subtask</label><div class="ol-field-edit"><input id="child-${esc(id)}" data-draft="${esc(childKey)}" value="${esc(val(childKey, ''))}" placeholder="Add the next step" required><button type="submit"${dis(`child:${id}`)}>Add subtask</button></div></form><form class="ol-prompt-compose" data-plan-task="${esc(id)}"><label for="plan-body-${esc(id)}">Prompt</label><textarea id="plan-body-${esc(id)}" data-draft="${esc(bodyKey)}" rows="5" placeholder="Describe the work for this task…">${esc(body)}</textarea>${transportWarning(body)}${receipt ? `<p class="ol-plan-receipt${receipt.error ? ' ol-error-text' : ''}" role="${receipt.error ? 'alert' : 'status'}">${esc(receipt.message)}${receipt.prompt ? ` <a href="${outlineHash(`prompt:${receipt.prompt.id}`)}">Open saved prompt</a>` : ''}</p>` : ''}${warnings ? warningList(warnings) : ''}<div class="ol-actions"><button type="submit" data-save-plan${dis(`plan:${id}`)}>Save prompt</button><button class="primary" type="submit" data-run-plan${dis(`plan:${id}`)}>Run</button>${warnings && warningCount(warnings) ? `<button class="primary" type="submit" data-run-plan data-allow-warnings${dis(`plan:${id}`)}>Proceed anyway</button>` : ''}${receipt?.prompt ? button('new-plan', id, 'New prompt', 'subtle') : ''}${launchContext(t.resolved)}</div></form>${taskSettings(n)}</div>`;
+    const execution = { ...t.resolved, launch_mode: { value: 'new' } };
+    return `<div class="ol-planning" data-wb-key="plan:${esc(id)}">${card ? '' : `<label class="ol-visually-hidden" for="title-${esc(id)}">Task title</label><input id="title-${esc(id)}" class="ol-title-input" data-draft="task:${esc(id)}:title" data-save="task:${esc(id)}:title" value="${esc(val(`task:${id}:title`, t.title))}">`}<form class="ol-next-step" data-child-task="${esc(id)}"><label for="child-${esc(id)}">Next step / subtask</label><div class="ol-field-edit"><input id="child-${esc(id)}" data-draft="${esc(childKey)}" value="${esc(val(childKey, ''))}" placeholder="Add the next step" required><button type="submit"${dis(`child:${id}`)}>Add subtask</button></div></form><form class="ol-prompt-compose" data-plan-task="${esc(id)}"><label for="plan-body-${esc(id)}">Prompt</label><textarea id="plan-body-${esc(id)}" data-draft="${esc(bodyKey)}" rows="5" placeholder="Describe the work for this task…">${esc(body)}</textarea>${transportWarning(body)}${receipt ? `<p class="ol-plan-receipt${receipt.error ? ' ol-error-text' : ''}" role="${receipt.error ? 'alert' : 'status'}">${esc(receipt.message)}${receipt.prompt ? ` <a href="${outlineHash(`prompt:${receipt.prompt.id}`)}">Open saved prompt</a>` : ''}</p>` : ''}${warnings ? warningList(warnings) : ''}<div class="ol-actions"><button type="submit" data-save-plan${dis(`plan:${id}`)}>Save prompt</button><button class="primary" type="submit" data-run-plan${dis(`plan:${id}`)}>${receipt?.prompt && !receipt.ran && model.prompts.get(receipt.prompt.id)?.target ? 'Continue agent' : 'Run fresh'}</button>${warnings && warningCount(warnings) ? `<button class="primary" type="submit" data-run-plan data-allow-warnings${dis(`plan:${id}`)}>Proceed anyway</button>` : ''}${receipt?.prompt ? button('new-plan', id, 'New prompt', 'subtle') : ''}${launchContext(receipt?.prompt && !receipt.ran ? model.prompts.get(receipt.prompt.id)?.resolved || execution : execution, receipt?.prompt && !receipt.ran ? model.prompts.get(receipt.prompt.id)?.target : '')}</div></form>${card ? '' : taskSettings(n)}</div>`;
   }
   function taskRow(n) {
     const t = n.rec, id = t.id, ti = taskInd().get(id), done = t.status === 'done';
-    return `<li class="ol-task-entry" data-wb-key="tr:${esc(id)}"><a class="task-style-surface ol-task-row${done ? ' is-done' : ''}${id === rowFocus ? ' is-kfocus' : ''}" href="${outlineHash(n.key)}" data-depth="${Math.min(n.depth, 8)}" ${styleAttrs(t)}><span class="ol-trow-title">${taskMark(t)}${esc(t.title)}</span><span class="ol-trow-facts">${strip(ti?.indicators)}${done ? state('done') : ''}</span></a></li>`;
+    return `<li class="ol-task-entry" data-wb-key="tr:${esc(id)}"><a class="task-style-surface ol-task-row${done ? ' is-done' : ''}${id === rowFocus ? ' is-kfocus' : ''}" href="${outlineHash(n.key)}" data-depth="${Math.min(n.depth, 8)}" ${styleAttrs(t)}><span class="ol-trow-title">${taskMark(t)}${esc(t.title)}</span><span class="ol-trow-facts">${strip(ti?.indicators)}${done ? state('done') : ''}</span></a>${taskAgents(id, false)}</li>`;
+  }
+  function taskAgents(id, showEmpty = true) {
+    const panes = once('assigned-agents', () => {
+      const groups = new Map();
+      for (const p of data.panes || []) {
+        if (!p.task_id || p.kind !== 'agent' || p.state === 'closed') continue;
+        if (!groups.has(p.task_id)) groups.set(p.task_id, []);
+        groups.get(p.task_id).push(p);
+      }
+      return groups;
+    }).get(id) || [];
+    return panes.length ? `<ul class="ol-card-agents">${panes.map(p => `<li data-wb-key="agent:${esc(p.id)}"><a href="${queueHash({ type: 'pane', id: p.id })}">${esc(agentName(p.name, p.id))}</a>${state(p.state)}<span>${esc(p.harness || 'agent')} · ${esc(p.host || 'not reported')}</span><a class="ol-agent-container" href="#tuios/${encodeURIComponent(p.session)}">Container: ${esc(p.session)}</a></li>`).join('')}</ul>` : showEmpty ? '<p class="ol-dim">No agents assigned to this task.</p>' : '';
+  }
+  function cardSubtasks(n) {
+    return n.children.filter(c => c.kind === 'task' && !c.rec.archived).map(c => taskRow(c) + cardSubtasks(c)).join('');
+  }
+  function taskCard(n) {
+    const t = n.rec, id = t.id, subtasks = cardSubtasks(n);
+    const prompts = n.children.filter(c => c.kind === 'prompt' && ['queued', 'blocked', 'errored'].includes(c.rec.state));
+    return `<li class="task-style-surface ol-task-card" data-wb-key="card:${esc(id)}" ${styleAttrs(t)}>
+      <header class="ol-card-head"><h2><a class="ol-task-row${id === rowFocus ? ' is-kfocus' : ''}" href="${outlineHash(n.key)}">${taskMark(t)}<span>${esc(t.title)}</span></a></h2><div class="ol-card-status">${strip(taskInd().get(id)?.indicators)}${state(t.status)}</div></header>
+      <section class="ol-card-section" aria-label="Agents for ${esc(t.title)}"><h3>Agents</h3>${taskAgents(id)}</section>
+      ${subtasks ? `<section class="ol-card-section"><h3>Subtasks</h3><ul class="ol-card-subtasks">${subtasks}</ul></section>` : ''}
+      ${prompts.length ? `<section class="ol-card-section"><h3>Saved prompts <span class="ol-count">${prompts.length}</span></h3><ul class="ol-card-prompts">${prompts.map(p => `<li><a href="${outlineHash(p.key)}">${esc(oneLine(p.rec.body) || 'Untitled prompt')}</a>${state(p.rec.state)}</li>`).join('')}</ul></section>` : ''}
+      ${inlinePlanning(n, true)}
+      <footer class="ol-card-footer"><a href="${outlineHash(n.key)}">Open task &amp; settings</a><span>Replies continue an existing agent.</span></footer>
+    </li>`;
   }
   function tasksHTML() {
     if (!data) return loadError ? `<div class="ol-empty"><p>The tasks could not be loaded: ${esc(loadError)}</p>${button('retry', '', 'Try again')}</div>` : '<p class="ol-empty" role="status">Loading the tasks…</p>';
-    const rows = model.order.map(t => node(`task:${t.id}`)).filter(n => !n.rec.archived), openRows = rows.filter(hasOpenTask), completed = rows.filter(n => !hasOpenTask(n));
-    if (!rows.length) return '<p class="ol-empty">Add a task above, then open it to see turns and write prompts.</p>';
-    return `<p class="ol-dim ol-tasks-note">${openRows.filter(n => n.rec.status !== 'done').length} open · open a task to see turns and plan <kbd>j</kbd><kbd>k</kbd> move <kbd>Enter</kbd> open</p><ul class="ol-tasks">${openRows.map(n => taskRow(n)).join('')}</ul>${completed.length ? `<details class="ol-completed" data-wb-key="completed"><summary>Completed (${completed.length})</summary><ul class="ol-tasks">${completed.map(n => taskRow(n)).join('')}</ul></details>` : ''}`;
+    const rows = model.roots.filter(n => n.kind === 'task' && !n.rec.archived), openRows = rows.filter(hasOpenTask), completed = rows.filter(n => !hasOpenTask(n));
+    if (!rows.length) return '<p class="ol-empty">Add a task above to start planning work.</p>';
+    return `<p class="ol-dim ol-tasks-note">${plural(openRows.length, 'open task')} · New prompts start fresh agents. Sessions are containers, not shared conversations.</p><ul class="ol-task-grid">${openRows.map(taskCard).join('')}</ul>${completed.length ? `<section class="ol-completed"><h2>Completed <span class="ol-count">${completed.length}</span></h2><ul class="ol-task-grid">${completed.map(taskCard).join('')}</ul></section>` : ''}`;
   }
   function detailHTML() {
     if (view === 'tasks') return tasksHTML();
@@ -436,8 +461,6 @@ export function createOutline({ report }) {
   }
 
   // ---- rail --------------------------------------------------------------------------------------------------
-  // The rail contains only tasks and subtasks; each task opens its own turn list.
-  // a collapsed task draws only its header and indicator strip.
   function railHTML(cur) {
     if (!data) return '<p class="rt-empty" role="status">Loading tasks…</p>';
     const tasks = new Map(data.tasks.map(t => [t.id, t])), children = new Map();
@@ -446,13 +469,13 @@ export function createOutline({ report }) {
     const visited = new Set();
     const row = (t, depth, completed = false) => {
       if (visited.has(t.id) || t.archived) return ''; visited.add(t.id);
-      const kids = (children.get(t.id) || []).filter(c => completed ? !open(c) : open(c)), shut = railShut.has(t.id), ti = taskInd().get(t.id);
-      return `<section class="task-style-surface rt-group" data-wb-key="t:${esc(t.id)}" ${styleAttrs(t)}><div class="rt-head">${kids.length ? `<button class="rt-twist" data-rail-act="task" data-id="${esc(t.id)}" aria-expanded="${!shut}" aria-label="${shut ? 'Expand' : 'Collapse'} ${esc(t.title)}">${icon('chev', '')}</button>` : '<span class="rt-twist rt-twist-gap"></span>'}<a class="${depth ? 'rt-subtask' : 'rt-task'}" href="${outlineHash(`task:${t.id}`)}"${cur === `task:${t.id}` ? ' aria-current="page"' : ''}>${taskMark(t)}<span class="rt-title">${esc(t.title)}</span></a>${ti?.waiting ? `<a class="rt-q" href="${queueHash({ type: 'task', id: t.id })}" aria-label="Review results for ${esc(t.title)}">${icon('queue', '')}${ti.waiting}</a>` : ''}${strip(ti?.indicators, ' rt-inds')}</div>${shut ? '' : kids.map(c => row(c, depth + 1, completed)).join('')}</section>`;
+      const kids = (children.get(t.id) || []).filter(c => completed ? !open(c) : open(c)), ti = taskInd().get(t.id);
+      return `<section class="task-style-surface rt-group" data-wb-key="t:${esc(t.id)}" ${styleAttrs(t)}><div class="rt-head"><a class="${depth ? 'rt-subtask' : 'rt-task'}" href="${outlineHash(`task:${t.id}`)}"${cur === `task:${t.id}` ? ' aria-current="page"' : ''}>${taskMark(t)}<span class="rt-title">${esc(t.title)}</span></a>${ti?.waiting ? `<a class="rt-q" href="${queueHash({ type: 'task', id: t.id })}" aria-label="Review results for ${esc(t.title)}">${icon('queue', '')}${ti.waiting}</a>` : ''}${strip(ti?.indicators, ' rt-inds')}</div>${kids.map(c => row(c, depth + 1, completed)).join('')}</section>`;
     };
     const roots = [...tasks.values()].filter(t => !tasks.has(t.parent_id));
     const activeHTML = roots.filter(t => open(t)).map(t => row(t, 0)).join('');
     const completed = [...tasks.values()].filter(t => !t.archived && !open(t) && (!tasks.has(t.parent_id) || open(tasks.get(t.parent_id))));
-    return (activeHTML || '<p class="rt-empty">No open tasks.</p>') + (completed.length ? `<details class="rt-completed" data-wb-key="rail-completed"><summary>Completed</summary>${completed.map(t => row(t, 0, true)).join('')}</details>` : '');
+    return (activeHTML || '<p class="rt-empty">No open tasks.</p>') + (completed.length ? `<section class="rt-completed" data-wb-key="rail-completed"><h3>Completed</h3>${completed.map(t => row(t, 0, true)).join('')}</section>` : '');
   }
   function renderRail() {
     if (!railEl) return;
@@ -464,17 +487,9 @@ export function createOutline({ report }) {
     if (on) railHeading.setAttribute('aria-current', 'page'); else railHeading.removeAttribute('aria-current');
     if (onQueue) railQueue.setAttribute('aria-current', 'page'); else railQueue.removeAttribute('aria-current');
     if (!active) for (const link of document.querySelectorAll('[data-outline-view].active')) { link.classList.remove('active'); link.removeAttribute('aria-current'); }
-    // Opening a line scrolls its row into view, once. A refresh never repeats it, and nothing is expanded or collapsed for you.
     if (!cur || view !== 'open') railShown = null;
     else if (cur !== railShown && data) { railShown = cur; railEl.querySelector('[aria-current]')?.scrollIntoView({ block: 'nearest' }); }
   }
-  railEl?.addEventListener('click', e => {
-    const b = e.target.closest('[data-rail-act]'); if (!b) return;
-    const set = railShut, id = b.dataset.id;
-    if (!set.delete(id)) set.add(id);
-    if (set === railShut) { try { localStorage.setItem(SHUT_KEY, JSON.stringify([...railShut])); } catch {} }
-    renderRail();
-  });
 
   // ---- render ------------------------------------------------------------------------------------------------
   function render() {
@@ -493,7 +508,7 @@ export function createOutline({ report }) {
     review = rq || !data ? buildReview(full) : { lines: [], index: new Map(), items: [], total: 0 };
     if (view !== 'open' && selected && !full.index.has(selected) && !review.index.has(selected)) { selected = null; detailOpen = false; }
     model.lines = focus() || qv ? [] : rq ? review.lines : flatten(full.roots.map(n => prune(n)).filter(Boolean));
-    root.classList.toggle('is-focus', focus()); root.classList.toggle('is-open', view === 'open');
+    root.classList.toggle('is-focus', focus()); root.classList.toggle('is-open', view === 'open'); root.classList.toggle('is-tasks', view === 'tasks');
     root.classList.toggle('is-review', rq); root.classList.toggle('is-queue', qv);
     paint(colsEl, rq ? REVIEW_COLS : COLS);
     paint(keysEl, qv ? '<kbd>j</kbd><kbd>k</kbd> move <kbd>n</kbd> next' : '<kbd>n</kbd> new line <kbd>j</kbd><kbd>k</kbd> move <kbd>Tab</kbd> indent task <kbd>Enter</kbd> open');
@@ -618,11 +633,14 @@ export function createOutline({ report }) {
   }
   function submitPlan(id, run = false, allowWarnings = false) {
     const body = val(`plan:${id}:body`, ''); if (!String(body).trim()) { planReceipts.set(id, { error: true, message: 'Write a prompt before saving or running.' }); render(); return; }
-    const existing = planReceipts.get(id)?.prompt;
+    const receipt = planReceipts.get(id), existing = receipt?.ran ? null : receipt?.prompt;
     write(`plan:${id}`, async () => {
-      if (existing) { await api(`/prompts/${encodeURIComponent(existing.id)}`, { body }, 'PATCH'); return run ? { ...(await api(`/prompts/${encodeURIComponent(existing.id)}/run`, { allow_warnings: allowWarnings })), prompt: { ...existing, body }, ran: true } : { prompt: { ...existing, body }, ran: false }; }
-      return api('/prompts', { body, task_id: id, run, allow_warnings: allowWarnings });
-    }, result => { planReceipts.set(id, { prompt: result.prompt, preflight: run && !result.ran ? result.preflight : null, error: run && !result.ran, message: run ? result.ran ? 'Prompt dispatched. Review its result in Queue.' : result.error ? `Prompt saved. Native execution failed: ${result.error}. Adjust settings or choose another target, then retry.` : 'Prompt saved; review the warnings below and Proceed anyway, or adjust settings.' : 'Prompt saved. Text stays here for editing or running.' }); }, error => { planReceipts.set(id, { prompt: existing, preflight: error.data?.preflight || model.index.get(`prompt:${existing?.id}`)?.rec.preflight, error: true, message: error.message }); });
+      if (existing) { await api(`/prompts/${encodeURIComponent(existing.id)}`, { body }, 'PATCH'); return run ? { ...(await api(`/prompts/${encodeURIComponent(existing.id)}/run`, { allow_warnings: allowWarnings })) } : { prompt: { ...existing, body }, ran: false }; }
+      return api('/prompts', { body, task_id: id, launch_mode: 'new', run, allow_warnings: allowWarnings });
+    }, result => {
+      if (result.ran && drafts.get(`plan:${id}:body`) === body) drafts.delete(`plan:${id}:body`);
+      planReceipts.set(id, { ran: result.ran, prompt: result.prompt, preflight: run && !result.ran ? result.preflight : null, error: run && !result.ran, message: run ? result.ran ? 'Prompt dispatched. Review its result in Queue.' : result.error ? `Prompt saved. Native execution failed: ${result.error}. Adjust settings or choose another target, then retry.` : 'Prompt saved; review the warnings below and Proceed anyway, or adjust settings.' : 'Prompt saved. Text stays here for editing or running.' });
+    }, error => { planReceipts.set(id, { prompt: error.data?.prompt || existing, preflight: error.data?.preflight || model.index.get(`prompt:${existing?.id}`)?.rec.preflight, error: true, message: error.message }); });
   }
   function submitReply(id, allowWarnings = false) {
     const n = node(`run:${id}`), run = n?.rec, body = val(`reply:${id}`, ''); if (!run || !body.trim()) return;
@@ -738,7 +756,7 @@ export function createOutline({ report }) {
   });
   detail.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.matches('textarea')) { e.preventDefault(); const form = e.target.form; form?.requestSubmit(form.querySelector('[data-run-plan]') || form.querySelector('button[type="submit"]')); }
-    else if (e.key === 'Enter' && e.target.matches('input')) { e.preventDefault(); e.target.blur(); }
+    else if (e.key === 'Enter' && e.target.matches('input')) { e.preventDefault(); if (e.target.form?.dataset.childTask) e.target.form.requestSubmit(); else e.target.blur(); }
     else if (e.key === 'Escape') { e.target.blur?.(); if (queueView()) return; detailOpen = false; render(); tree.focus(); }
   });
   document.addEventListener('keydown', e => {

@@ -484,4 +484,36 @@ ol.ol-list > li::before { counter-increment: q; content: counter(q); flex: none;
   .ol-launch-context { flex-basis: 100%; }
   .ol-settings > summary, .ol-completed > summary, .rt-completed > summary, .rail-activity > summary { min-height: 44px; }
 }
+#outline-root.is-tasks .ol-detail { container-type: inline-size; }
+#outline-root.is-tasks .ol-detail > * { max-width: none; }
+.ol-task-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+@container (min-width: 660px) { .ol-task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (min-width: 1020px) { .ol-task-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.ol-task-card { min-width: 0; border: 1px solid var(--task-border); border-radius: 4px; overflow: hidden; }
+.ol-card-head { padding: 16px; border-bottom: 1px solid var(--task-border); }
+#outline-root .ol-card-head h2 { font-size: 18px; line-height: 1.4; }
+.ol-card-head .ol-task-row { align-items: start; min-height: 0; padding: 0; margin: 0; border: 0; gap: 6px; overflow-wrap: anywhere; }
+.ol-card-head .task-mark { margin-top: 3px; }
+.ol-card-status { display: flex; align-items: center; gap: 12px; margin-top: 10px; font-size: 12px; }
+.ol-card-section { padding: 14px 16px 0; font-size: 13px; }
+#outline-root .ol-card-section h3 { margin-bottom: 8px; font-size: 13px; color: var(--ink); }
+.ol-card-agents > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; padding-block: 6px; }
+.ol-card-agents > li > a:first-child { font-weight: 600; }
+.ol-card-agents > li > :is(span:not(.ol-state), .ol-agent-container) { grid-column: 1 / -1; color: var(--ol-dim); }
+.ol-card-agents a { overflow-wrap: anywhere; }
+.ol-card-subtasks .ol-task-row { margin-left: calc(max(0, var(--d, 1) - 1) * 12px); padding: 8px; gap: 6px; }
+.ol-card-subtasks .ol-trow-title { font-size: 13px; }
+.ol-card-subtasks .ol-trow-facts { flex: none; }
+.ol-card-prompts li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding-block: 6px; border-bottom: 1px solid var(--line); }
+.ol-card-prompts a { min-width: 0; overflow-wrap: anywhere; }
+.ol-task-card .ol-planning { padding: 0 16px 16px; }
+.ol-task-card .ol-field-edit { flex-wrap: wrap; }
+.ol-task-card .ol-field-edit input { flex: 1 1 140px; min-width: 0; }
+.ol-task-card .ol-prompt-compose textarea { min-height: 100px; }
+.ol-task-card .ol-actions { gap: 8px; }
+.ol-task-card .ol-launch-context { flex-basis: 100%; margin-top: 4px; }
+.ol-card-footer { display: grid; gap: 6px; padding: 12px 16px; border-top: 1px solid var(--task-border); font-size: 12px; }
+.ol-card-footer span { color: var(--ol-dim); }
+#outline-root .ol-completed > h2 { margin-bottom: 16px; font-size: 18px; }
+@media (max-width: 760px) { .ol-task-card :is(button, .ol-card-footer a) { min-height: 44px; } }
 

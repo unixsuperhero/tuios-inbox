@@ -154,7 +154,7 @@ components:
 
 ## Overview
 
-Tasks is the default index, backed by production APIs and SQLite records. Its index and navigation contain tasks and subtasks. Opening a task shows the Queue list-and-reader layout scoped to that exact task ID, excluding child-task turns. Running turns and starting prompts appear first, queued prompts follow, and completed turns remain after reading. Active turns replace duplicate running-prompt rows. Queue remains the cross-task attention workspace. Advanced activity and native views remain available.
+Tasks is the default index, backed by production APIs and SQLite records. Top-level tasks are themed cards in a responsive one-, two-, or three-column grid. Each card contains linked subtasks, saved prompts, assigned agents, and inline subtask/prompt forms. Task and subtask links open the Queue list-and-reader layout scoped to that exact task ID, excluding child-task turns. Running turns and starting prompts appear first, queued prompts follow, and completed turns remain after reading. Active turns replace duplicate running-prompt rows. Queue remains the cross-task attention workspace.
 
 Dark blue surfaces, condensed FlightCondensed headings, and amber actions follow the Flight deck direction. Agent rows retain explicit Working, Needs input, Stopped, Idle, and Offline treatments without shadows. Selection uses a separate outline. Execution state does not determine review state.
 
@@ -194,11 +194,11 @@ Body text inherits the base line height. Descriptions and hints loosen it, Markd
 
 ## Layout
 
-The shell fills the viewport; the document does not scroll. Desktop navigation and each work pane own their scroll ranges. The shell uses a shrinkable grid row so content cannot enlarge the work area beyond the viewport. Expanded navigation remains reachable by scrolling the rail body. Tasks uses lightweight task/subtask links rather than collapsed planning forms. A selected task and Queue share the activity-list and result-reader layout. The task page provides **New prompt / settings** for composition, subtask creation, and management. Retained legacy Queues still has its task-bucket column and reading pane. Native hash links and browser history reveal the selected content.
+The shell fills the viewport; the document does not scroll. Desktop navigation and each work pane own their scroll ranges. The shell uses a shrinkable grid row so content cannot enlarge the work area beyond the viewport. Task navigation stays expanded and scrolls independently. Task cards fill the available main pane width, with two columns above 660px of content width and three above 1020px. A selected task and Queue share the activity-list and result-reader layout. Native hash links and browser history reveal the selected content.
 
 TUIOS gives its session tree and inspector independent scroll areas; Overview scrolls within its content pane. Native controls and notices have a bounded, scrollable header so they cannot consume the entire pane in a short window. On narrow screens the session tree sits above the inspector, with both remaining scrollable. Table captions stay positioned inside the content pane rather than extending the document. The mobile Queue list is sized relative to its available pane, not the full viewport.
 
-The main pane retains Flight deck gutters and compact row geometry. Inline task settings use progressive disclosure, but effective directory, harness, model, and launch mode stay beside dispatch. Completed tasks are available under disclosure. Retained Inbox/index query controls and bulk operations remain available.
+The main pane retains Flight deck gutters, colors, typography, and amber actions. Cards use each task's existing identity marks, tint, and thin border. No task or completed-task accordion hides work. Execution settings remain on the task page, while effective directory, harness, model, and fresh-versus-existing agent context stay beside dispatch. New inline prompts explicitly launch fresh agents. Agent membership uses task IDs, never session co-location; session links are labeled as containers. Existing SSE updates preserve card drafts, focus, selection, and scrolling.
 
 Record summaries use six aligned fields when space permits. A main-pane container width of 760px or less switches to labeled mobile fields, independently of viewport width.
 
