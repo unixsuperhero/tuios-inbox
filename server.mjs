@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { mkdir, readdir, unlink, stat, chmod } from 'node:fs/promises';
 import { join, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { captureTurn } from './scripts/turn.mjs';
 import { createHistory } from './scripts/history.mjs';
 import { pullCollectors } from './scripts/pull-collectors.mjs';
@@ -244,7 +244,7 @@ async function nativeSessions() {
     if (host) host.error = local.reason.message;
     else hosts.push({ host: 'local', status: 'down', error: local.reason.message });
   }
-  return { sessions, hosts: hosts.map(({ sessions, ...h }) => h) };
+  return { sessions, hosts: hosts.map(({ sessions, ...h }) => h.host === 'local' ? { ...h, hostname: hostname() } : h) };
 }
 async function nativeSession(target, mutate = false) {
   required(target, 'Session', 240);

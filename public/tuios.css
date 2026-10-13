@@ -84,9 +84,7 @@
 .native-overview-filter[open] > summary { border-color: var(--accent); }
 .native-overview-controls .native-overview-filter .native-filters { margin-top: 12px; padding: 12px; border: 1px solid var(--line); background: var(--surface-raised); }
 .native-overview > #native-overview-instructions { margin: 0 0 18px; }
-.native-overview-controls .native-confirm { display: flex; flex-direction: row; align-items: center; gap: 8px; min-height: 36px; font-size: 13px; font-weight: 400; cursor: pointer; }
 .native-overview-controls .native-filters { flex: 1; min-width: 0; padding: 0; border: 0; }
-.native-overview-controls input[type=checkbox] { width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--accent); flex: none; }
 .native-overview-controls .hint { margin: 0; }
 .native-overview-session { min-width: 0; margin-bottom: 32px; }
 .native-overview-session-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--control-line); }
@@ -96,7 +94,13 @@
 .native-overview-session-heading h3 a:hover { color: var(--accent); text-decoration: underline; }
 .native-overview-session-heading :is(small, .hint) { margin: 0; font-size: 12px; color: var(--muted); }
 .native-overview-session-heading .native-row-actions { flex-direction: row; }
-.native-overview-workspaces { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.native-workspace-tabs { display: flex; gap: 4px; overflow-x: auto; padding: 4px 2px 8px; scrollbar-width: thin; }
+.native-workspace-tabs [role=tab] { flex: none; display: flex; gap: 8px; align-items: center; min-height: 42px; border: 1px solid var(--control-line); border-bottom: 3px solid transparent; font-size: 13px; }
+.native-workspace-tabs [aria-selected=true] { background: #344656; color: var(--ink); border-bottom-color: var(--accent); }
+.native-workspace-tabs [role=tab] :is(span, small) { color: var(--muted); font-size: 11px; }
+.native-workspace-tabs .is-drop-target { outline: 2px solid var(--accent); outline-offset: -2px; background: #3e3527; }
+.native-overview-workspaces { min-width: 0; }
+.native-overview-workspace[hidden] { display: none; }
 .native-overview-workspace { min-width: 0; border: 1px solid var(--control-line); background: #101922; container-type: inline-size; }
 .native-overview-workspace-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 10px 12px; border-bottom: 1px solid var(--control-line); background: var(--surface-raised); }
 .native-overview-workspace-heading > div { min-width: 0; }
@@ -108,7 +112,10 @@
 .native-overview-workspace-heading :is(small, .hint, .badge) { font-size: 11px; color: var(--muted); }
 .native-overview-workspace.is-current .native-overview-workspace-heading { background: #2b3d4c; }
 .native-overview-panes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; background: var(--line); }
-.native-overview-pane { display: flex; flex-direction: column; min-width: 0; padding: 10px; background: #1b2833; }
+.native-overview-pane { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 20px; min-width: 0; padding: 14px; background: #1b2833; }
+.native-overview-pane-kind { grid-column: 1; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
+.native-overview-pane > :is(.native-overview-pane-title, .native-overview-pane-meta, .native-agent-message) { grid-column: 1; }
+.native-agent-message { margin: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .native-overview-pane:only-child, .native-overview-panes > .native-empty { grid-column: 1 / -1; }
 .native-overview-pane[draggable=true] { cursor: grab; }
 .native-overview-pane[draggable=true]:active, .native-overview-pane.is-dragging { cursor: grabbing; }
@@ -118,7 +125,7 @@
 .native-overview-pane-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; min-width: 0; margin: 6px 0 10px; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .native-overview-pane-meta :is(small, .badge) { font-size: 11px; }
 .native-overview-pane-meta > * { min-width: 0; max-width: 100%; }
-.native-overview-pane-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-top: auto; }
+.native-overview-pane-actions { grid-column: 2; grid-row: 1 / 5; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
 .native-overview-pane-actions :is(a, button) { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 6px 8px; border: 1px solid var(--control-line); border-radius: 2px; background: var(--paper); font-size: 11px; line-height: 1.4; text-decoration: none; }
 .native-overview-pane-actions :is(a, button):hover { color: var(--accent); border-color: var(--accent); background: #243442; }
 .native-overview-pane.is-minimized { background: #17212b; border-top: 1px dashed var(--control-line); }
@@ -134,19 +141,10 @@
 .native-overview-workspace.is-drop-target { border-color: var(--accent); border-style: solid; outline: 2px solid var(--accent); outline-offset: 3px; }
 .native-overview-workspace.is-drop-target .native-overview-workspace-heading { background: #3e3527; }
 .native-overview :is(.native-notice, .native-host-error) { margin-bottom: 16px; }
-@container (min-width: 340px) {
-  .native-overview-panes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@container (max-width: 1000px) {
-  .native-overview-workspaces { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@container (max-width: 640px) {
-  .native-overview-workspaces { grid-template-columns: minmax(0, 1fr); }
-}
 @media (max-width: 760px) {
-  .native-overview-workspaces { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .native-overview-panes { grid-template-columns: minmax(0, 1fr); }
   .native-overview-session-heading { align-items: flex-start; }
+  .native-overview-pane { display: flex; flex-direction: column; }
+  .native-overview-pane-actions { margin-top: 8px; justify-content: flex-start; }
   .native-overview-pane-actions :is(a, button) { min-height: 40px; }
   .native-overview-controls { align-items: flex-start; gap: 8px; margin-bottom: 12px; }
   .native-browser:has(.native-overview) { grid-template-columns: minmax(0, 1fr); gap: 10px; }

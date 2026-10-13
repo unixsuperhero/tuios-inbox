@@ -20,8 +20,8 @@ const direct = new Set(['select-workspace', 'focus-window', 'minimize-window', '
 export function createTuios({ root, refresh }) {
   let route, inventory, dialogContext, notice = '', readAt = '', mutation = false;
   const sessions = new Map(), windows = new Map(), errors = new Map(), reading = new Map(), filters = new Map(), drafts = new Map(), launches = new Map(), expanded = new Map();
-  let treeScroll = 0, showEmptyWorkspaces = false, dragging = null, deferredRead = false;
-  try { showEmptyWorkspaces = sessionStorage.getItem('native-overview.empty-workspaces') === '1'; } catch {}
+  let treeScroll = 0, dragging = null, deferredRead = false, workspaceSelections = new Map();
+  try { workspaceSelections = new Map(JSON.parse(sessionStorage.getItem('native-overview.workspaces') || '[]')); } catch {}
   const supports = r => r?.kind === 'tuios' || r?.kind === 'index' && r.page === 'tuios';
   const scope = r => r?.view === 'overview' ? 'overview' : `${r?.session || ''}/${r?.workspace ?? ''}`;
   const detailKey = r => `${r.session}/${r.window}`;
@@ -116,7 +116,7 @@ export function createTuios({ root, refresh }) {
     const task = store.state.tasks.find(t => t.id === managed?.task_id);
     const taskLabel = task ? task.title : managed?.task_id ? 'Assigned task unavailable' : 'No task assigned';
     const host = w.host || s.host || 'local', state = stateName(w), harness = w.harness_id || w.agent_harness || '';
-    return `<article class="native-overview-pane${w.focused ? ' is-focused' : ''}${w.minimized ? ' is-minimized' : ''}" data-wb-key="overview-pane:${esc(s.target)}:${esc(id)}" data-native-pane data-session="${esc(s.target)}" data-window="${esc(id)}" data-workspace="${esc(w.workspace)}" data-status="${esc(state)}" draggable="${!mutation}" aria-describedby="native-overview-instructions"><a class="native-overview-pane-title" href="${href(s.target, w.workspace, id)}" title="${esc(paneName(w))}">${esc(paneName(w))}</a><div class="native-overview-pane-meta"><span class="badge">${esc(state)}</span><span>${esc(harness || 'No agent harness')}</span><span>${esc(host)}</span>${w.focused ? '<span>Terminal focus</span>' : ''}${w.minimized ? '<span>Minimized</span>' : ''}${w.needs_you ? '<span>Needs you</span>' : ''}<span>${task ? `<a href="#task/${encodeURIComponent(task.id)}">${esc(taskLabel)}</a>` : esc(taskLabel)}</span><small title="Native UUID">${esc(id)}</small></div><div class="native-overview-pane-actions"><a href="${href(s.target, w.workspace, id)}">Inspect</a>${actionButton('move-window', context)}${actionButton('assign-task', context)}</div></article>`;
+    return `<article class="native-overview-pane${w.focused ? ' is-focused' : ''}${w.minimized ? ' is-minimized' : ''}" data-wb-key="overview-pane:${esc(s.target)}:${esc(id)}" data-native-pane data-session="${esc(s.target)}" data-window="${esc(id)}" data-workspace="${esc(w.workspace)}" data-status="${esc(state)}" draggable="${!mutation}" aria-describedby="native-overview-instructions"><div class="native-overview-pane-kind">${harness ? 'Agent' : 'Pane'}</div><a class="native-overview-pane-title" href="${href(s.target, w.workspace, id)}" title="${esc(paneName(w))}">${esc(paneName(w))}</a><div class="native-overview-pane-meta"><span class="badge">${esc(state)}</span><span>${esc(harness || 'Terminal')}</span><span>Host: ${esc(host)}</span>${w.focused ? '<span>Terminal focus</span>' : ''}${w.minimized ? '<span>Minimized</span>' : ''}${w.needs_you ? '<span>Needs you</span>' : ''}<span>${task ? `<a href="#task/${encodeURIComponent(task.id)}">${esc(taskLabel)}</a>` : esc(taskLabel)}</span><small title="Native UUID">${esc(id)}</small></div>${harness && (w.agent_message || w.message) ? `<p class="native-agent-message">${esc(w.agent_message || w.message)}</p>` : ''}<div class="native-overview-pane-actions"><a href="${href(s.target, w.workspace, id)}">Inspect</a>${actionButton('move-window', context)}${actionButton('assign-task', context)}</div></article>`;
   }
   function overview() {
     const all = inventory?.sessions || [];
@@ -127,13 +127,24 @@ export function createTuios({ root, refresh }) {
       const panes = found.filter(w => w.overviewSession === s.target), nativePanes = data?.windows || [];
       if (activeFilters && !panes.length && (nativePanes.length && !unavailable && !failure || !filtered([s], x => x.host || 'local', sessionState).length)) return '';
       const blocked = unavailable || failure || (!data ? 'Reading this session…' : '');
-      const cards = !blocked ? data.workspaces.filter(w => showEmptyWorkspaces || panes.some(p => Number(p.workspace) === workspaceId(w)) || !nativePanes.length && workspaceId(w) === Number(data.info.current_workspace)).map(w => {
+      const workspaces = blocked ? [] : data.workspaces;
+      let selected = workspaceSelections.get(s.target);
+      if (!workspaces.some(w => workspaceId(w) === selected)) {
+        selected = workspaceId(workspaces.find(w => workspaceId(w) === Number(data.info.current_workspace)) || workspaces[0] || {});
+        if (workspaces.length) workspaceSelections.set(s.target, selected);
+      }
+      const tabId = ws => `native-workspace-${encodeURIComponent(s.target)}-${ws}`;
+      const tabs = workspaces.map(w => {
+        const ws = workspaceId(w), count = panes.filter(p => Number(p.workspace) === ws).length;
+        return `<button type="button" role="tab" id="${tabId(ws)}" aria-controls="${tabId(ws)}-panel" aria-selected="${ws === selected}" tabindex="${ws === selected ? 0 : -1}" data-wb-key="workspace-tab:${ws}" data-native-tab data-native-workspace data-session="${esc(s.target)}" data-workspace="${ws}">${esc(workspaceLabel(w))}<span>${count}</span>${ws === Number(data.info.current_workspace) ? '<small>Terminal</small>' : ''}</button>`;
+      }).join('');
+      const cards = workspaces.map(w => {
         const ws = workspaceId(w), current = ws === Number(data.info.current_workspace), inWorkspace = panes.filter(p => Number(p.workspace) === ws), occupied = nativePanes.some(p => Number(p.workspace) === ws), context = { session: s.target, workspace: ws };
-        return `<section class="native-overview-workspace${occupied ? '' : ' is-empty'}${current ? ' is-current' : ''}" data-wb-key="overview-workspace:${esc(s.target)}:${ws}" data-native-workspace data-session="${esc(s.target)}" data-workspace="${ws}" aria-label="${esc(sessionLabel(s))}, ${esc(workspaceLabel(w))}"><div class="native-overview-workspace-heading"><div><h4><a href="${href(s.target, ws)}">${esc(workspaceLabel(w))}</a></h4><small>${inWorkspace.length} matching pane${inWorkspace.length === 1 ? '' : 's'}${current ? ' · terminal workspace' : ''}</small></div><div class="native-row-actions">${actionButton('create-window', context)}${actionButton('create-agent', context)}</div></div><div class="native-overview-panes">${inWorkspace.map(p => overviewPane(s, p)).join('') || empty(occupied ? 'No panes match these filters. Drop a pane here to move it.' : 'Empty workspace. Drop a pane from this session here.')}</div></section>`;
-      }).join('') : '';
-      return `<section class="native-overview-session" data-wb-key="overview-session:${esc(s.target)}" data-session="${esc(s.target)}"><div class="native-overview-session-heading"><div><h3><a href="${href(s.target)}">${esc(sessionLabel(s))}</a></h3><p class="hint">${esc(s.target)} · ${esc(s.host || 'local')} · ${esc(sessionState(s))}${!blocked ? ' · ' + nativePanes.length + ' panes' : ''}${reading.has('session:' + s.target) && data ? ' · reading, showing previous read' : data && !blocked ? ' · read ' + esc(data.overviewReadAt) : ''}</p></div><div class="native-row-actions"><a href="${href(s.target)}">Inspect session</a>${actionButton('create-window', { session: s.target }, blocked)}${actionButton('create-agent', { session: s.target }, blocked)}</div></div>${blocked ? `<p class="${failure ? 'form-error danger' : 'native-empty'}"${failure ? ' role="alert"' : ''}>${esc(blocked)}${failure ? ' · Use Read again to retry. No live pane data shown.' : ''}</p>` : `<div class="native-overview-workspaces">${cards || empty(activeFilters ? 'No panes match these filters.' : 'No native workspaces reported.')}</div>`}</section>`;
+        return `<section class="native-overview-workspace${occupied ? '' : ' is-empty'}${current ? ' is-current' : ''}" data-wb-key="overview-workspace:${esc(s.target)}:${ws}" role="tabpanel" id="${tabId(ws)}-panel" aria-labelledby="${tabId(ws)}" tabindex="0"${ws === selected ? '' : ' hidden'} data-native-workspace data-session="${esc(s.target)}" data-workspace="${ws}" aria-label="${esc(sessionLabel(s))}, ${esc(workspaceLabel(w))}"><div class="native-overview-workspace-heading"><div><h4><a href="${href(s.target, ws)}">${esc(workspaceLabel(w))}</a></h4><small>${inWorkspace.length} matching pane${inWorkspace.length === 1 ? '' : 's'}${current ? ' · terminal workspace' : ''}</small></div><div class="native-row-actions">${actionButton('create-window', context)}${actionButton('create-agent', context)}</div></div><div class="native-overview-panes">${inWorkspace.map(p => overviewPane(s, p)).join('') || empty(occupied ? 'No panes match these filters. Drop a pane here to move it.' : 'Empty workspace. Drop a pane from this session here.')}</div></section>`;
+      }).join('');
+      return `<section class="native-overview-session" data-wb-key="overview-session:${esc(s.target)}" data-session="${esc(s.target)}"><div class="native-overview-session-heading"><div><h3><a href="${href(s.target)}">${esc(sessionLabel(s))}</a></h3><p class="hint">${esc(s.target)} · Host: ${esc(s.host || 'local')}${inventory.hosts.find(h => h.host === s.host)?.hostname ? ' · ' + esc(inventory.hosts.find(h => h.host === s.host).hostname) : ''} · ${esc(sessionState(s))}${!blocked ? ' · ' + nativePanes.length + ' panes' : ''}${reading.has('session:' + s.target) && data ? ' · reading, showing previous read' : data && !blocked ? ' · read ' + esc(data.overviewReadAt) : ''}</p></div><div class="native-row-actions"><a href="${href(s.target)}">Inspect session</a>${actionButton('create-window', { session: s.target }, blocked)}${actionButton('create-agent', { session: s.target }, blocked)}</div></div>${blocked ? `<p class="${failure ? 'form-error danger' : 'native-empty'}"${failure ? ' role="alert"' : ''}>${esc(blocked)}${failure ? ' · Use Read again to retry. No live pane data shown.' : ''}</p>` : `<div class="native-workspace-tabs" role="tablist" aria-label="${esc(sessionLabel(s))} workspaces">${tabs}</div><div class="native-overview-workspaces">${cards || empty(activeFilters ? 'No panes match these filters.' : 'No native workspaces reported.')}</div>`}</section>`;
     }).join('');
-    return `<section class="native-overview"><div class="native-section-heading"><h2>Overview <span>${all.length} sessions</span></h2>${actionButton('create-session')}</div><div class="native-overview-controls"><details class="native-overview-filter" data-wb-key="overview-filters"><summary>Filter panes</summary>${filterBar(rows, w => w.host, stateName)}</details><label class="native-confirm"><input id="native-overview-empty" type="checkbox" data-native-empty-workspaces${showEmptyWorkspaces ? ' checked' : ''}>Show empty workspaces</label></div><p id="native-overview-instructions" class="hint">One tile per native pane. Drag between workspaces in the same session, or use Move pane. Inspect does not change terminal focus.</p>${groups || empty(inventory ? activeFilters ? 'No sessions or panes match these filters.' : 'No native sessions. Create a session to open a pane.' : 'Reading native sessions…')}</section>`;
+    return `<section class="native-overview"><div class="native-section-heading"><h2>Sessions <span>${all.length} sessions</span></h2>${actionButton('create-session')}</div><div class="native-overview-controls"><details class="native-overview-filter" data-wb-key="overview-filters"><summary>Filter panes</summary>${filterBar(rows, w => w.host, stateName)}</details></div><p id="native-overview-instructions" class="hint">Each agent occupies one pane. Drag a row onto a workspace tab, or use Move pane. TUIOS does not support cross-session moves. Browsing tabs does not change terminal focus.</p>${groups || empty(inventory ? activeFilters ? 'No sessions or panes match these filters.' : 'No native sessions. Create a session to open a pane.' : 'Reading native sessions…')}</section>`;
   }
   function paneList(data) {
     const rows = paneRows(data).filter(w => route.workspace == null || Number(w.workspace) === route.workspace);
@@ -321,11 +332,6 @@ export function createTuios({ root, refresh }) {
   });
   root.addEventListener('change', e => {
     if (e.target.dataset.nativeFilter) { filter()[e.target.dataset.nativeFilter] = e.target.value; render(); }
-    if (e.target.hasAttribute('data-native-empty-workspaces')) {
-      showEmptyWorkspaces = e.target.checked;
-      try { sessionStorage.setItem('native-overview.empty-workspaces', showEmptyWorkspaces ? '1' : '0'); } catch {}
-      render();
-    }
   });
   function announce(text) {
     if (notice === text) return;
@@ -390,8 +396,21 @@ export function createTuios({ root, refresh }) {
   root.addEventListener('dragend', () => { if (dragging && !notice.startsWith('Cannot move panes between sessions.')) announce('Move canceled.'); endDrag(); render(); flushDragRead(); });
   root.addEventListener('scroll', e => { if (e.target.id === 'native-tree') treeScroll = e.target.scrollTop; }, true);
   root.addEventListener('toggle', e => { if (e.target.dataset.nativeTree) expanded.set(e.target.dataset.nativeTree, e.target.open); }, true);
+  function selectWorkspace(tab) {
+    workspaceSelections.set(tab.dataset.session, Number(tab.dataset.workspace));
+    try { sessionStorage.setItem('native-overview.workspaces', JSON.stringify([...workspaceSelections])); } catch {}
+    render();
+  }
+  root.addEventListener('keydown', e => {
+    const tab = e.target.closest('[data-native-tab]');
+    if (!tab || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    const tabs = [...tab.closest('[role=tablist]').querySelectorAll('[role=tab]')], index = tabs.indexOf(tab);
+    const next = e.key === 'Home' ? tabs[0] : e.key === 'End' ? tabs.at(-1) : tabs[(index + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+    e.preventDefault(); selectWorkspace(next); next.focus({ preventScroll: true });
+  });
   root.addEventListener('click', async e => {
     const button = e.target.closest('button'); if (!button || !supports(route)) return;
+    if (button.hasAttribute('data-native-tab')) { selectWorkspace(button); return; }
     if (button.hasAttribute('data-native-read')) return read();
     if (button.hasAttribute('data-native-clear')) { filters.set(scope(route), { search: '', host: '', status: '' }); render(); return; }
     const action = button.dataset.nativeAction; if (!action || mutation) return;
