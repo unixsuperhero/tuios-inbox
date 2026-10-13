@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask, indicators, sumIndicators, itemKind, queueItems, queueCounts, markable, paneTask, taskIndicators } from './public/outline-model.js';
+import { resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask, indicators, sumIndicators, itemKind, queueItems, taskItems, queueCounts, markable, paneTask, taskIndicators } from './public/outline-model.js';
 
 const tasks = {
   root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2 },
@@ -509,4 +509,42 @@ test('queue counts are the length of the list each scope shows, and Mark all rea
   // The open item, kept in the list once read, is not counted again.
   data.runs[0].unread = false;
   expect(markable(queueItems(data, { type: 'task', id: 'a' }, new Set(['run:turn:i1'])))).toEqual([]);
+});
+
+test('task activity shows running and read turns, excluding other tasks, subtasks and archived turns', () => {
+  const data = {
+    tasks: [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }, { id: 'child', title: 'Child', parent_id: 'a' }],
+    prompts: [{ id: 'assigned', task_id: 'b', state: 'done' }],
+    runs: [
+      { id: 'turn:old', task_id: 'a', state: 'done', unread: false, started: '2026-10-01' },
+      { id: 'turn:new', task_id: 'a', state: 'done', unread: false, started: '2026-10-02' },
+      { id: 'turn:working', task_id: 'a', state: 'working', unread: false, started: '2026-09-30' },
+      { id: 'turn:child', task_id: 'child', state: 'working', unread: true },
+      { id: 'turn:other', task_id: 'b', state: 'working', unread: true },
+      { id: 'turn:moved', task_id: 'a', prompt_id: 'assigned', state: 'done', unread: true },
+      { id: 'turn:archived', task_id: 'a', state: 'working', archived: true },
+      { id: 'turn:inherited', inherits: 'a', state: 'done', started: '2026-10-03' },
+    ],
+  };
+  expect(taskItems(data, 'a').map(i => i.id)).toEqual(['run:turn:working', 'run:turn:inherited', 'run:turn:new', 'run:turn:old']);
+  expect(taskItems(data, 'b').map(i => i.id)).toEqual(['run:turn:other', 'run:turn:moved']);
+  expect(taskItems(data, 'missing')).toEqual([]);
+});
+
+test('task activity keeps queued retries and running prompts visible without duplicating an active turn', () => {
+  const data = {
+    tasks: [{ id: 'a', title: 'A' }],
+    prompts: [
+      { id: 'running', task_id: 'a', state: 'running', body: 'Run now' },
+      { id: 'starting', task_id: 'a', state: 'running', body: 'Starting' },
+      { id: 'retry', task_id: 'a', state: 'queued', position: 2, body: 'Try again' },
+      { id: 'first', task_id: 'a', state: 'queued', position: 1, body: 'First' },
+    ],
+    runs: [
+      { id: 'turn:live', prompt_id: 'running', state: 'working', started: '2026-10-03' },
+      { id: 'turn:previous', prompt_id: 'retry', state: 'done', started: '2026-10-01' },
+    ],
+  };
+  expect(taskItems(data, 'a').map(i => i.id)).toEqual(['run:turn:live', 'prompt:starting', 'prompt:first', 'prompt:retry', 'run:turn:previous']);
+  expect(taskItems(data, 'a').find(i => i.id === 'prompt:starting')).toMatchObject({ ind: 'working', summary: 'Starting', task_id: 'a' });
 });

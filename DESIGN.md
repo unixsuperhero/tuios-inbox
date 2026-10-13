@@ -154,7 +154,7 @@ components:
 
 ## Overview
 
-Tasks is the default planning page, backed by production APIs and SQLite records. Its main outline and task navigation contain tasks and subtasks only. Expand a task inline to add a next step or subtask, compose a multiline prompt, or open settings. Queue is the separate aftermath workspace for results, questions, failures, documents, provenance, and continuation. Advanced activity and native views remain available.
+Tasks is the default index, backed by production APIs and SQLite records. Its index and navigation contain tasks and subtasks. Opening a task shows the Queue list-and-reader layout scoped to that exact task ID, excluding child-task turns. Running turns and starting prompts appear first, queued prompts follow, and completed turns remain after reading. Active turns replace duplicate running-prompt rows. Queue remains the cross-task attention workspace. Advanced activity and native views remain available.
 
 Dark blue surfaces, condensed FlightCondensed headings, and amber actions follow the Flight deck direction. Agent rows retain explicit Working, Needs input, Stopped, Idle, and Offline treatments without shadows. Selection uses a separate outline. Execution state does not determine review state.
 
@@ -194,7 +194,7 @@ Body text inherits the base line height. Descriptions and hints loosen it, Markd
 
 ## Layout
 
-The desktop shell keeps a left navigation column and a scrolling work area. Tasks uses a task/subtask-only planning outline with inline expansion rather than requiring a separate selected-detail pane for creation. Queue separates its attention list from the result reader. Retained legacy Queues still has its task-bucket column and reading pane. Native hash links and browser history reveal the selected content.
+The desktop shell keeps a left navigation column and a scrolling work area. Tasks uses lightweight task/subtask links rather than collapsed planning forms. A selected task and Queue share the activity-list and result-reader layout. The task page provides **New prompt / settings** for composition, subtask creation, and management. Retained legacy Queues still has its task-bucket column and reading pane. Native hash links and browser history reveal the selected content.
 
 The main pane retains Flight deck gutters and compact row geometry. Inline task settings use progressive disclosure, but effective directory, harness, model, and launch mode stay beside dispatch. Completed tasks are available under disclosure. Retained Inbox/index query controls and bulk operations remain available.
 
@@ -202,7 +202,7 @@ Record summaries use six aligned fields when space permits. A main-pane containe
 
 On narrow screens, task planning and settings stack without forcing horizontal overflow; Queue keeps review and continuation accessible. Controls retain 44px mobile minimum heights, paths wrap, and dialogs have bounded scrolling. Retained activity work areas keep their mobile navigation controls.
 
-**The Scoped Inbox Rule.** Task and Agent pages place metadata above work and constrain the query by Task ID or native Agent/pane ID. Scope is intrinsic to the route, not a removable chip or a display-name match.
+**The Scoped Inbox Rule.** Task pages foreground their turns and constrain membership to the exact task ID, including running and already-read turns. Scope is intrinsic to the route, not a removable chip or a display-name match. Agent pages retain their native Agent/pane ID scope.
 
 ## Elevation & Depth
 
@@ -258,7 +258,7 @@ The Task groups work area includes hierarchy explanations, Manage tasks and Mana
 
 ### Metadata and composer
 
-The Tasks outline exposes next-step/subtask creation and multiline prompt composition inline, with separate save and run actions and no required `>` prefix. Execution settings inherit through the task hierarchy unless overridden; appearance never does. Show effective directory, harness, model, and launch mode next to dispatch. Resolve cwd from the nearest task with a project or worktree, preferring that record's worktree. Resolve native session and workspace independently. Untargeted prompts default to a fresh background agent; reuse must be explicit and compatible.
+The task page opens next-step/subtask creation and multiline prompt composition through **New prompt / settings**, with separate save and run actions and no required `>` prefix. Saved prompts appear in the activity list, never behind a saved-prompt disclosure. Execution settings inherit through the task hierarchy unless overridden; appearance never does. Show effective directory, harness, model, and launch mode next to dispatch. Resolve cwd from the nearest task with a project or worktree, preferring that record's worktree. Resolve native session and workspace independently. Untargeted prompts default to a fresh background agent; reuse must be explicit and compatible.
 
 Retained task detail pages keep section-level Edit, Save, and Cancel controls for factual metadata. Created time and Task ID stay immutable. Notes keep independent Markdown add/edit/delete controls and Include in prompts. Marked notes reach agent prompts; shell commands, mail, and approval answers stay unchanged. Drafts survive live updates and edits during an in-flight save.
 

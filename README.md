@@ -31,15 +31,15 @@ are changed, and no login service or automatic restart is installed. Logs append
 to `~/.local/state/h-tuios/server-PORT.log`. These commands require Bun, `lsof`,
 and `ps`. The former harness-status command is now `h tuios setup-status [HARNESS...]`.
 
-## Plan in Tasks, review in Queue
+## Tasks and Queue
 
-Tasks is the default page, backed by real SQLite/TUIOS records. The planning outline and its navigation show tasks and subtasks, not panes, prompts, or response trees. Expand a task to write a next step, create a subtask, or compose a multiline prompt inline. Saving and running are separate actions; the editor needs no special `>` prefix. Completed tasks remain available under a disclosure.
+Tasks is the default index, backed by real SQLite/TUIOS records. Open a task to see a Queue-style list and reader scoped to that exact task. Running turns and starting prompts appear first, queued prompts follow, and completed turns remain available even after they are read. Subtask turns stay on their own task page. No saved-prompt accordion hides active work.
 
-Tasks uses `#outline/tasks`; bare `#outline` also opens Tasks. Use **Add subtask** inside an expanded task, then **Save prompt** or **Run** in its prompt editor. `j`/`k` move through the outline, Enter expands a task, `n` starts a new task, and Cmd/Ctrl+Enter runs a prompt or sends a reply. Completed ancestors remain visible when they contain open descendants.
+Tasks uses `#outline/tasks`; bare `#outline` also opens Tasks. Each task opens at `#outline/task/<id>`. **New prompt / settings** opens its composer, subtask form, and execution settings. Saving and running are separate actions. `j`/`k` move through tasks or task activity, Enter opens a task, `n` starts a new task on the index or advances the reader, and Cmd/Ctrl+Enter runs a prompt or sends a reply. Completed tasks remain under a disclosure; completed ancestors remain visible when they contain open descendants.
 
-Saved or dispatched prompt text stays in its inline receipt until you choose **New prompt** to start another draft. Native errors remain visible with retry/settings controls. The advanced **Everything** view is `#outline/everything` under **Activity**.
+Saved or dispatched prompt text stays in its receipt until you choose **New prompt** to start another draft. Queued prompts appear directly in the task activity list; a running prompt with an active turn is represented by that turn rather than a duplicate row. Native errors remain visible with retry/settings controls. The advanced **Everything** view is `#outline/everything` under **Activity**.
 
-Queue is the aftermath workspace for results, questions, failures, documents, and continued replies. Its reader retains the full prompt, captured response, and provenance. Task creation stays in Tasks rather than occupying the review layout. Advanced activity, history, and native TUIOS views remain reachable.
+Queue remains the cross-task workspace for results, questions, failures, documents, and continued replies. Task pages reuse its list and full capture reader without its unread-only membership rule or removable scope chips. Task editors render only when opened, not inside every collapsed index row. Advanced activity, history, and native TUIOS views remain reachable.
 
 The Flight deck shell retains dark blue surfaces, condensed headings, and amber actions. Each task and subtask has an independent persistent identity, carried to its prompts and responses. Task colors use saturated automatic and named palettes. Queue rows and task navigation have stronger tinted backgrounds and one-pixel task-colored borders; read queue rows use a quieter tint, and the selected row has a bright outline. Task labels and icons remain visible. Status, amber actions, and keyboard focus remain separate from task identity. Existing keyed SSE updates preserve drafts, focus, scrolling, and disclosures.
 
@@ -116,12 +116,12 @@ Working-directory **Browse** opens the backend host’s native directory chooser
 
 ## Working with a task
 
-1. Create a task in Tasks, then expand it to add next steps and subtasks inline. A task can be saved before you configure execution.
+1. Create a task in Tasks. Its task-scoped activity page opens immediately. Use **New prompt / settings** to add subtasks or compose work. A task can be saved before you configure execution.
 2. Set an existing project directory or optional existing worktree through settings. **Browse** opens the backend host's actual OS directory picker; manual entry remains available. The app never creates or switches branches or worktrees.
 3. Check the effective directory, harness, model, and launch mode beside dispatch. Subtasks inherit execution settings unless overridden. The nearest task with a project or worktree determines cwd, preferring that record's worktree. A child's own project does not inherit an unrelated ancestor worktree. Session and workspace resolve independently.
 4. Write a multiline prompt inline. Save it for later or run it explicitly. Untargeted prompts default to a new background agent. Reuse is an explicit option that reuses only a compatible known idle app-launched agent, otherwise it launches fresh. A targeted reply continues in its existing pane.
 5. Review warnings before dispatch. Use **Proceed anyway** to explicitly attempt the action, or **Queue anyway** for a busy pane or one answering its own question. Queuing uses the native queue rather than typing an accidental approval. Failed or unconfirmed dispatch preserves the prompt.
-6. Close the page or switch tasks while work runs, then read the aftermath in Queue. Replies keep the original task and execution address, including intentional No task ownership. Read/archive decisions remain independent of TUIOS's ephemeral read state.
+6. Close the page or switch tasks while work runs, then return to the task's turn list or review unread results in Queue. Replies keep the original task and execution address, including intentional No task ownership. Read/archive decisions remain independent of TUIOS's ephemeral read state.
 7. Use native Inspect for a terminal snapshot or full interactive access. Changing a task's future launch home does not move existing panes or rewrite history.
 
 ### Appearance and execution warnings

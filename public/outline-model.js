@@ -268,6 +268,20 @@ export function queueItems(data = {}, scope = { type: 'all' }, keep = new Set())
     pane: paneById.get(i.pane_id)?.name || i.pane_name || '', docs: i.kind === 'run' ? i.rec.docs?.length || 0 : 0 }));
 }
 
+/** A task owns its exact turns, including read history, and prompts still waiting to run. */
+export function taskItems(data = {}, taskId) {
+  const prompts = new Map((data.prompts || []).map(p => [p.id, p]));
+  const runs = (data.runs || []).filter(r => !r.archived && runTask(r, prompts) === taskId);
+  const running = new Set(runs.filter(r => ['working', 'needs_input'].includes(r.state)).map(r => r.prompt_id));
+  const keep = new Set(runs.map(r => 'run:' + r.id));
+  for (const p of prompts.values()) {
+    if (p.task_id === taskId && ['queued', 'blocked', 'errored', 'running'].includes(p.state) && !(p.state === 'running' && running.has(p.id))) keep.add('prompt:' + p.id);
+  }
+  const rank = i => ['working', 'needs_input', 'running'].includes(i.rec.state) ? 0 : i.kind === 'prompt' ? 1 : 2;
+  return queueItems(data, { type: 'task', id: taskId }, keep).filter(i => i.task_id === taskId && keep.has(i.id))
+    .sort((a, b) => rank(a) - rank(b) || (rank(a) === 1 ? (a.rec.position ?? 0) - (b.rec.position ?? 0) || a.at - b.at : b.at - a.at) || a.id.localeCompare(b.id));
+}
+
 // Every scope an item is listed in, as keys; the Queue page and every count beside a queue link read the same ones.
 const scopeKey = scope => !scope?.type || scope.type === 'all' ? 'all' : `${scope.type}:${scope.id ?? ''}`;
 const scopesOf = i => ['all', `pane:${i.pane_id}`, `session:${i.session}`, ...(i.path.length ? i.path.map(t => `task:${t.id}`) : ['task:none'])];

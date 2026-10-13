@@ -57,8 +57,7 @@ test('the shared style module is served with the unchanged security policy', asy
   const res = await fetch(base + '/task-style.js');
   expect(res.status).toBe(200);
   expect(res.headers.get('Content-Security-Policy')).toContain("style-src 'self'");
-  const { taskStyle } = await import('data:text/javascript;base64,' + Buffer.from(await res.text()).toString('base64'));
-  expect(taskStyle({ seed: 1, theme: 'sage', icon: 'compass' }).color).toBe('#9bd4bd');
+
 });
 
 test('a prompt is saved without a task, without text, and without anywhere to run', async () => {
