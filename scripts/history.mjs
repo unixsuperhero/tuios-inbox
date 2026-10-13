@@ -148,8 +148,13 @@ ${select} ON CONFLICT(source_id, record_id) DO UPDATE SET host=excluded.host, se
   const taskExpr = hasAgents ? `COALESCE(r.task_id, (SELECT a.task_id FROM agents a WHERE a.id=r.pane_id AND r.pane_id<>'' AND (a.host='' OR a.host=r.host)))` : 'r.task_id';
   const agentName = hasAgents ? `(SELECT a.name FROM agents a WHERE a.id=r.pane_id AND r.pane_id<>'' AND (a.host='' OR a.host=r.host))` : "''";
   const taskTitle = hasTasks ? `(SELECT title FROM tasks WHERE id=${taskExpr})` : 'NULL';
+  const hasPrompts = has('prompts') && turnCols.has('prompt_id');
+  const promptOwner = hasPrompts ? `(SELECT p.task_id FROM turns t JOIN prompts p ON p.id=t.prompt_id WHERE r.origin='legacy' AND r.record_id='turn:'||t.id)` : 'NULL';
+  const hasPromptOwner = hasPrompts ? `EXISTS(SELECT 1 FROM turns t JOIN prompts p ON p.id=t.prompt_id WHERE r.origin='legacy' AND r.record_id='turn:'||t.id)` : '0';
+  const sessionOwner = hasTasks && columns('tasks').has('session') ? `(SELECT CASE WHEN COUNT(*)=1 THEN id END FROM tasks WHERE session=r.session AND instr(session,':')=0 AND r.origin='legacy')` : 'NULL';
+  const styleTaskExpr = `CASE WHEN ${hasPromptOwner} THEN ${promptOwner} ELSE COALESCE(${taskExpr},${sessionOwner}) END`;
   const outCols = `r.id, r.record_id, r.source_id, r.host, r.boot_id, r.seq, r.session, r.pane_id, r.conversation_id, r.harness, r.kind, r.created, r.source, r.origin, r.imported, r.meta,
-    ${taskExpr} AS task_id, ${agentName} AS agent_name, ${taskTitle} AS task_title`;
+    ${taskExpr} AS task_id, ${styleTaskExpr} AS style_task_id, ${agentName} AS agent_name, ${taskTitle} AS task_title`;
   const shape = row => ({ ...row, meta: JSON.parse(row.meta || '{}'), agent_name: row.agent_name ?? '' });
 
   function search(input = {}) {

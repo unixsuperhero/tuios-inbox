@@ -154,13 +154,13 @@ components:
 
 ## Overview
 
-The default live UI is the Flight deck inbox, backed by the production APIs and SQLite records. The left rail provides Inbox, Queues, Prompts, Tasks, Agents, Archive, and Agent profiles. Task groups, Work, and Review select the main work area. Task and agent histories, prompts, responses, and reply forms remain real native-session workflows.
+Tasks is the default planning page, backed by production APIs and SQLite records. Its main outline and task navigation contain tasks and subtasks only. Expand a task inline to add a next step or subtask, compose a multiline prompt, or open settings. Queue is the separate aftermath workspace for results, questions, failures, documents, provenance, and continuation. Advanced activity and native views remain available.
 
 Dark blue surfaces, condensed FlightCondensed headings, and amber actions follow the Flight deck direction. Agent rows retain explicit Working, Needs input, Stopped, Idle, and Offline treatments without shadows. Selection uses a separate outline. Execution state does not determine review state.
 
-Opening a response marks it read; **Mark as unread** restores the unread flag, and a successful reply also clears it. Failed replies retain their drafts and pending status. Shell command output is bucketed apart from other unread work and hidden from the review queue and the Queues page until the reader asks for it. Native hash links change main-pane content, and Back/Forward restores prior views without rolling back writes. Live updates morph stable DOM nodes instead of replacing focused forms or reading panes.
+Opening a response marks it read; **Mark as unread** restores the unread flag, and a successful reply clears it. Failed replies retain their drafts. Execution state is separate from review state. Retained activity and legacy Queues keep their shell-command filtering. Native hash links and Back/Forward restore content without rolling back writes. Existing SSE updates morph stable DOM nodes while preserving focus, drafts, scrolling, and disclosures. No refresh timer is added.
 
-The effective visual layer is [flight.css](public/flight.css), applied after [style.css](public/style.css), [list.css](public/list.css), and [queues.css](public/queues.css). The frontmatter describes shared tokens and base components; Flight deck overrides determine the current shell and record treatment. Historical comparison assets under `.impeccable/` are not served by the application.
+[flight.css](public/flight.css) preserves the shared shell and record treatment after the base styles. [task-style.css](public/task-style.css) loads after Flight deck styles and adds only shared task identity. The frontmatter still describes the common palette and components. Historical comparison assets under `.impeccable/` are not served by the application.
 
 ## Colors
 
@@ -174,6 +174,16 @@ The effective visual layer is [flight.css](public/flight.css), applied after [st
 
 Text selection uses the accent background with paper-colored text. Form carets and native checkbox accents use the accent. Scrollbar thumbs use control-line against paper through `scrollbar-color`.
 
+### Task identity is a narrow palette exception
+
+Each task and subtask owns an immutable unique numeric seed, an automatic muted color, and an authored icon. Appearance never inherits. Theme, icon, and custom hex color overrides are independent; a native color input provides direct color selection. Empty overrides restore automatic choices, and reset clears all appearance overrides without changing the seed. Restart, rename, reparent, completion, and repeated import preserve identity, including archived and OMP-imported tasks. Deleted seeds are not recycled.
+
+Warn when a custom color has less than 3:1 contrast against the Flight deck background, without blocking the user's choice. Visible labels and unchanged status/focus treatments remain necessary.
+
+Unique seeds do not guarantee unlimited perceptual uniqueness. Icons repeat, nearby colors can look similar, and users can intentionally choose duplicate styles. Pair the mark with a visible task label; use neutral treatment for unknown or unassigned tasks.
+
+Apply identity consistently to task navigation, inline planning, prompts, replies, responses, Queue, and retained activity/history. A nested subtask or result sets its own identity rather than taking the parent's color. Prompt-first ownership preserves explicit No task. Confine task color to the mark, subdued wash, and one-pixel rule. Do not recolor actions, focus outlines, selected controls, read/unread states, or status text. Shared helpers use authored SVG and validated CSS variables without loosening CSP or accepting user markup.
+
 ## Typography
 
 Use FlightCondensed for the brand and page headings, platform sans-serif for labels and prose, and system monospace for identifiers, times, metadata values, and captured terminal output. The bundled Barlow Condensed font retains its OFL license.
@@ -184,13 +194,13 @@ Body text inherits the base line height. Descriptions and hints loosen it, Markd
 
 ## Layout
 
-The desktop shell fills the viewport with a 208px left navigation column and one scrolling work area. Task groups and Review are separate selectable work areas, not permanently visible sidebars. Queues adds a 240px task-bucket column beside its queue and reading pane. Native hash links and browser history reveal the selected content area.
+The desktop shell keeps a left navigation column and a scrolling work area. Tasks uses a task/subtask-only planning outline with inline expansion rather than requiring a separate selected-detail pane for creation. Queue separates its attention list from the result reader. Retained legacy Queues still has its task-bucket column and reading pane. Native hash links and browser history reveal the selected content.
 
-The main pane has 32px gutters, reduced to 20px below 1050px and 16px below 760px. Task/Agent metadata, scoped composition, history links, and full record detail remain available. Inbox and the other indexes share query controls and bulk operations. Opening a work record navigates to its detail rather than leaving its output inline.
+The main pane retains Flight deck gutters and compact row geometry. Inline task settings use progressive disclosure, but effective directory, harness, model, and launch mode stay beside dispatch. Completed tasks are available under disclosure. Retained Inbox/index query controls and bulk operations remain available.
 
 Record summaries use six aligned fields when space permits. A main-pane container width of 760px or less switches to labeled mobile fields, independently of viewport width.
 
-Below 760px, global navigation becomes a horizontally scrolling link row and Task groups, Work, and Review become bottom buttons. Queues uses Task groups and Work because it has its own reading pane. Controls retain 44px mobile minimum heights; metadata and composer fields stack, paths wrap, and dialogs retain bounded scrolling.
+On narrow screens, task planning and settings stack without forcing horizontal overflow; Queue keeps review and continuation accessible. Controls retain 44px mobile minimum heights, paths wrap, and dialogs have bounded scrolling. Retained activity work areas keep their mobile navigation controls.
 
 **The Scoped Inbox Rule.** Task and Agent pages place metadata above work and constrain the query by Task ID or native Agent/pane ID. Scope is intrinsic to the route, not a removable chip or a display-name match.
 
@@ -204,7 +214,7 @@ Selection and focus outlines remain independent of execution state. No gradient 
 
 ## Shapes
 
-Controls and chips share the control radius. Dialogs use the slightly larger dialog radius; aligned records and navigation remain square. Status marks are small circles made in CSS, always accompanied by words. Borders distinguish interactive controls from flat content. The close control belongs to the native dialog, not a decorative icon vocabulary.
+Controls and chips share the control radius. Dialogs use the slightly larger radius; aligned records and navigation remain square. Status marks are small CSS circles accompanied by words. Task identity marks use authored SVG icons with visible task labels, not status symbols. Borders distinguish interactive controls from flat content. The close control stays part of the native dialog.
 
 ## Components
 
@@ -248,7 +258,13 @@ The Task groups work area includes hierarchy explanations, Manage tasks and Mana
 
 ### Metadata and composer
 
-Task metadata is read-first. Title/status, directories, parent, and launch home show plain facts with section-level Edit, Save, and Cancel controls. Created time and Task ID remain immutable. Notes render as Markdown, with independent add/edit/delete actions and an Include in prompts checkbox. Marked notes reach agent prompts; shell commands, mail, and approval answers stay unchanged. Drafts survive live updates and edits made while a save is in flight.
+The Tasks outline exposes next-step/subtask creation and multiline prompt composition inline, with separate save and run actions and no required `>` prefix. Execution settings inherit through the task hierarchy unless overridden; appearance never does. Show effective directory, harness, model, and launch mode next to dispatch. Resolve cwd from the nearest task with a project or worktree, preferring that record's worktree. Resolve native session and workspace independently. Untargeted prompts default to a fresh background agent; reuse must be explicit and compatible.
+
+Retained task detail pages keep section-level Edit, Save, and Cancel controls for factual metadata. Created time and Task ID stay immutable. Notes keep independent Markdown add/edit/delete controls and Include in prompts. Marked notes reach agent prompts; shell commands, mail, and approval answers stay unchanged. Drafts survive live updates and edits during an in-flight save.
+
+Advisory preflight findings are warnings with explicit Proceed anyway, or Queue anyway for busy/question targets. `allow_warnings` acknowledges advice, never native permission. Missing cwd/profile warnings explain their fallback before the attempt. Use the native queue rather than typing accidental approvals. Actual native refusals, gone panes, missing executables, and failed launches remain errors with preserved text and recovery controls. Format errors retain drafts for correction.
+
+Do not impose arbitrary title or prompt length caps. Warn about the native queue-message limit and allow saving and explicit attempts. Never truncate or split prompts silently. Automatic queues do not silently acknowledge warnings or human approvals.
 
 Agent metadata describes the native recipient and task assignment. The inline composer lives in a Send work to an agent or pane disclosure; live updates preserve its draft and expanded state. It lists each Agent once and only agentless Panes separately, deduplicated by native ID. Sending accepts real native work, not a completion claim. Task composition remains task-scoped.
 
@@ -260,9 +276,9 @@ New Agent and New Pane dialogs include a Host selector populated from registered
 
 ### Dialogs and filesystem selection
 
-Creation, task composition, profile editing, mail, and terminal inspection use native HTML dialogs with bounded width and scrollable height. Errors remain in the active form. The terminal inspector is a wider snapshot dialog, not a browser terminal or canonical answer stream. Project and existing-worktree Browse controls open the backend host's native directory chooser. Executable Browse opens its native file chooser, and typing a PATH command remains valid. Canceling a picker leaves the existing input unchanged. These dialogs select the backend filesystem, not the browser device's filesystem.
+Primary task, subtask, and prompt creation stays inline. Retained advanced creation flows, profile editing, mail, and terminal inspection use native HTML dialogs with bounded width and scrollable height. Errors remain in the active form. The terminal inspector is a snapshot, not a browser terminal or canonical answer stream. Project and existing-worktree Browse controls retain the backend host's native directory chooser. Executable Browse retains its native file chooser, and typed PATH commands remain valid. Cancel leaves the current input unchanged. Pickers select the backend filesystem, not the browser device's filesystem.
 
-Native TUIOS approvals remain in an attached client, including ACP approvals. Tailnet access and browser human-approval transport are not shipped. This document records visible focus treatment, not a full keyboard or screen-reader audit.
+Browser questions and grant-permitted answers retain their existing handling. Held approvals, risk-matched approvals, and other human-only operations still require an attached TUIOS client. Warning overrides and queued prompts cannot bypass those rules. Tailnet access and complete browser human-approval authorization are not shipped by this redesign. This document does not claim a full keyboard or screen-reader audit.
 
 ## Do's and Don'ts
 
@@ -279,11 +295,11 @@ Native TUIOS approvals remain in an attached client, including ACP approvals. Ta
 ### Don't
 
 - Alternate row backgrounds or replace unread state with selection color.
-- Turn Task or Agent links into inline work accordions.
+- Mix panes, prompts, responses, or documents into the primary task/subtask planning tree.
 - Invent ornamental cards, imagery, gradients, textures, or display typography.
-- Add extra palette tokens from the derived preview ramps.
+- Recolor Flight deck controls or read/status treatments with task colors. Task identity is the narrow mark/wash/rule exception, not a new shell palette.
 - Present accepted work as completed work or failed startup as ready.
-- Describe native approvals, tailnet access, or browser-device filesystem picking as shipped.
+- Treat warning overrides as native authorization or claim complete browser approvals, tailnet access, or browser-device filesystem picking are shipped.
 
 The terminal inspector retains its existing uppercase eyebrow. It is not a reusable heading rule.
 

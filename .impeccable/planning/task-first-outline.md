@@ -1,162 +1,75 @@
-# Task-first outline: design brief
+# Task-focused outline design brief
 
-Mode: Operate. Scope: the whole tuios inbox app. Status: brief awaiting confirmation. No production code is changed by this document. The visual world stays Flight deck as recorded in [DESIGN.md](../../DESIGN.md); the structure underneath it is replaced.
+Mode: Operate. The user approved inline task planning on 2026-10-12. This brief replaces the earlier mixed task/prompt/run outline proposal and its synthetic-mock scope. [task-focus-api.md](task-focus-api.md) is the authoritative implementation contract. Preserve the Flight deck design recorded in [DESIGN.md](../../DESIGN.md).
 
-Decisions already made by the user (2026-10-11): layout is **One outline**; each queue chooses manual or automatic, manual by default; a task owns a branch plus its pull request and checks; omp is the main harness and default executor, runs non-Anthropic models, and its sessions and todos feed tasks; this pass ends in a clickable mock with synthetic data.
+## Job and audience
 
-## 1. Job and audience
+The owner plans coding work across native TUIOS sessions, mainly from a desktop browser and sometimes from a phone. Tasks answers "what do I do next?" Queue answers "what finished or needs my attention?" The two jobs remain equally important without sharing a mixed navigation tree.
 
-The owner, steering many coding agents across TUIOS sessions, mostly from a desktop browser and sometimes from a phone on the tailnet. They arrive with a thought ("do this", "ask that") or with a question ("what finished, what needs me"). Both must be answerable from one screen without choosing a page first.
+## Tasks is the planning page
 
-## 2. Outcome and proof
+Tasks is the default page. Its main outline and task navigation contain tasks and subtasks, not agents, terminal panes, prompts, responses, or documents as peer tree nodes. Keep completed tasks available under a disclosure rather than filling the initial view.
 
-- Writing down a task or a prompt takes one line and one key. It never fails and never asks for anything.
-- Almost everything on screen sits under a task. What does not sits in a visible **No task** group, not in a hidden corner.
-- Running is the only moment the app is strict. Missing facts are named there, next to the Run control, with the fix in place.
-- A task shows the truth from four systems side by side: its prompts and queue (this app), its panes and agent state (TUIOS), its executor and todos (omp, or Claude Code), and its branch, pull request and checks (git).
+Expand a task inline to write a next step, add a subtask, compose a multiline prompt, or adjust settings. Prompt creation does not require a special `>` prefix or a creation dialog. Saving a prompt and running it are distinct actions. Preserve saved text, unsuccessful dispatch text, and edits made during an in-flight request.
 
-## 3. The model
+Tasks uses `#outline/tasks`; bare `#outline` resolves to Tasks. Inline controls distinguish Add subtask, Save prompt, and Run. Existing `j`/`k` navigation, Enter expansion, `n` task creation, and Cmd/Ctrl+Enter dispatch/reply remain available. Completed ancestors with open descendants stay visible.
 
-Four records. Only `id` and the text are ever required.
+Saved or dispatched text stays visible in its inline receipt until an explicit New prompt action starts the next draft. Native errors stay in the receipt with retry/settings controls. The advanced Everything view is `#outline/everything` under Activity.
 
-```js
-task   = { id, title, parent_id?, repo?, branch?, home?, harness?, model?, queue_mode? }
-prompt = { id, body, task_id?, target?, harness?, model?, position, state }
-run    = { id, prompt_id, pane_id, host, harness, state, started, finished?,
-           response, source, head_before?, head_after?, commits: [] }
-pane   = { id /* tuios window uuid */, session, host, harness, state, task_id? }
+Settings use progressive disclosure. Show the effective working directory, harness, model, and launch mode beside dispatch so the user can see what will run. Task status, hierarchy, reparenting, deletion, notes, archive behavior, and explicit native inspection remain available.
 
-prompt.state: 'saved' | 'queued' | 'running' | 'blocked' | 'done'
-run.state:    'working' | 'needs_input' | 'done' | 'errored' | 'unknown'
-```
+## Queue is the aftermath page
 
-Today's `turn` becomes `run`. Today's Queues page (unread output waiting for review) becomes the **Needs me** view; the word **queue** now means prompts waiting to run.
+Queue leads with results, questions, failures, and work awaiting review. Task creation does not occupy its primary layout. The reader retains the full prompt, captured response, documents, provenance, capture uncertainty, question and approval handling, and replies that continue in the original pane.
 
-### Inheritance
+A result grouped under a parent still uses its actual leaf task's identity. A reply preserves the original prompt's ownership, including an intentional No task assignment. Do not infer task ownership from display names or recolor historical results as the selected parent.
 
-A missing field is looked up through its parents. Nothing is copied, so changing a parent changes every child that did not override it.
+Advanced activity and native views stay reachable. Existing captures are not dropped or silently renamed to fit the new planning layout.
 
-```js
-// lookup order for repo, branch, home, harness, model, queue_mode
-run -> prompt -> task -> parent task -> ... -> app default   // default harness: omp
+## Execution inheritance
 
-// where a new thing gets its task without anyone choosing one
-prompt typed under a task line        -> that task
-prompt typed into a pane              -> pane.task_id
-reply to a run                        -> the run's prompt's task, same pane
-pane launched from a task             -> that task
-subtask                               -> parent's repo, branch, home, harness
-omp todo item in a pane               -> subtask of that pane's task
-commit made during a run              -> that run's task
-branch or pull request                -> the task whose branch matches
-```
+An unset execution field resolves through the task hierarchy. Children inherit directory configuration, branch, harness, model, queue mode, launch mode, and native session/workspace unless they override those fields. Show the value's source where available; do not copy inherited values into children.
 
-An inherited value is shown dimmed with its source, for example `fix-parser (from Fix parser)`. A value set on the record itself is shown plain. With no parent to inherit from, the record is an orphan and lands under **No task**.
+The effective working directory comes from the nearest task record that sets either a project directory or an existing worktree. Prefer the worktree on that same record. A child with its own project must not run in an unrelated ancestor's worktree. Session and workspace resolve independently, so a child's workspace override remains effective when its session comes from an ancestor.
 
-### Example
+Untargeted prompts default to a new background agent. Reuse is an explicit inheritable option and uses only a known compatible idle app-launched agent with matching directory, profile, and model. If none exists, launch a new agent. An explicit pane target means continuation, not a new launch. Changing a task's future launch home never relocates existing panes or rewrites their execution address.
 
-```js
-{ title: 'Fix parser', repo: '~/proj/tuios-inbox', branch: 'fix-parser',
-  pr: { number: 42, state: 'open', checks: 'failing' }, queue_mode: 'auto',
-  children: [
-    { title: 'Tokenizer edge cases',            // inherits repo, branch, harness
-      prompts: [
-        { body: 'Add tests for nested quotes', state: 'done',
-          runs: [{ harness: 'omp', state: 'done', commits: ['d4e5f6 Add nested quote tests'] }] },
-        { body: 'Now make them pass', state: 'queued' } ] },
-    { title: 'Update README', harness: 'claude-code' }   // overrides one field
-  ] }
-// No task
-{ body: 'what does settle_seconds default to?', state: 'saved' }   // orphan prompt, kept
-```
+The app uses existing directories and worktrees. It does not create or switch branches or worktrees. Git and pull-request facts describe the effective directory; they are not permission to change it.
 
-## 4. Saving and running
+## Independent task identity
 
-Saving a prompt has two outcomes and one key each.
+Each task and subtask receives its own immutable, server-assigned positive unique seed, including archived tasks and imported OMP subtasks. Appearance is never inherited. Restart, rename, reparent, completion, repeated import, and reset preserve the seed. Deleting a task does not make its seed available to a later task.
 
-| Key | Outcome | Checks |
-|---|---|---|
-| Enter | Saved to the queue of its task, or to the No task queue | None |
-| Cmd+Enter | Run now | Preflight |
+Automatic identity combines a muted generated color with an authored icon. The user can override the named theme, icon, or custom hex color independently, including through a native color input. Missing patch fields preserve existing choices; empty strings clear individual overrides. Reset clears all appearance overrides and restores the original automatic assignment. Matching overrides are allowed.
 
-Preflight resolves every field through inheritance, then sorts what it finds.
+Unique numeric seeds do not promise unlimited perceptual uniqueness. Icons repeat and nearby colors can look similar; the visible task label remains necessary. Unknown and unassigned tasks render neutrally.
 
-```js
-preflight(prompt) = {
-  blocks: [                       // Run is disabled until each is fixed
-    'no text',
-    'nowhere to run: no pane at rest and no repo directory to launch in',
-    'target pane is waiting on its own question',   // never type over a prompt
-    'target pane is gone',
-    'no harness available on this host'
-  ],
-  warns: [                        // Run stays enabled
-    'repo is on main, task expects fix-parser',
-    'working tree has uncommitted changes',
-    'pull request checks are failing'
-  ]
-}
-```
+The same identity appears on task navigation, inline planning, prompts, replies, responses, Queue, and retained history/activity views. Task colors are a narrow exception to Flight deck's shared palette, confined to the task mark, subdued wash, and one-pixel identity rule. They do not replace amber actions, keyboard focus, read/unread treatment, selection, or status text.
 
-- Each block is a row beside the Run control with its fix in place: a pane selector, a directory field with the OS directory picker, a harness selector.
-- A blocked prompt is never lost. **Save to queue instead** is always offered next to the blocks.
-- A manual queue runs only when the user presses Run on a prompt or **Run next** on the queue.
-- An automatic queue runs its next prompt when the executor comes to rest. A prompt that fails preflight becomes `blocked`, the queue holds at that prompt, and the item appears in Needs me. It holds instead of skipping because later prompts usually depend on earlier ones.
-- Queue mode inherits like any other field. The No task queue is always manual.
+## Warnings preserve user control
 
-## 5. The screen
+Advisory execution checks name the concern and offer an explicit Proceed anyway action. They must not permanently disable dispatch for missing defaults, unfamiliar harness/model names, dirty work, branch mismatch, or busy/unknown/mismatched pane state. The API override is `allow_warnings: true`.
 
-One outline fills the work area. A rail of saved views sits left; the selected line opens on the right.
+Without a configured directory, explain the home-directory fallback before the user proceeds. Without a saved harness profile, explain that proceeding runs the chosen executable without extra profile arguments. Format errors remain errors and retain the user's edits for correction.
 
-```
-+------+----------------------------------------+---------------------------+
-| rail | capture line                           | detail of selected line   |
-|      +----------------------------------------+                           |
-|      | v Fix parser        2 queued  fix-parser  PR 42 failing            |
-|      |   v Tokenizer edge cases                |  facts (plain or inherited)|
-|      |     > Add tests for nested quotes  done |  queue + mode + Run next  |
-|      |       omp  done  1 commit      UNREAD   |  or prompt + preflight    |
-|      |     > Now make them pass       queued   |  or run output + reply    |
-|      |   > Update README                       |                           |
-|      | v No task                               |                           |
-|      |   > what does settle_seconds default to |                           |
-+------+----------------------------------------+---------------------------+
-```
+A busy pane or a pane answering its own question uses TUIOS's native queue through Queue anyway. Queuing waits rather than typing an accidental approval. Never send raw keys or treat a queued prompt as trusted-human approval. Native authorization remains authoritative.
 
-**Lines.** Three kinds, told apart by a leading mark and a word, never by colour alone: task, prompt (`>`), run. Runs nest under their prompt, prompts under their task, subtasks under their parent. Each line carries right-aligned facts in fixed columns: queued count, running state, unread, branch, pull request and checks. Unread keeps the existing read-state treatment.
+Report missing executables, gone targets, permission refusals, and failed launches as actual execution errors, with recovery or another-target controls. An accepted or queued request is not completed work. An interrupted dispatch is uncertain and is not automatically replayed after restart.
 
-**Capture line.** Always at the top, focused with one key from anywhere. Plain text makes a task; text starting with `>` makes a prompt. The new line goes under the selected task, or top level and No task when nothing is selected. A chip in the capture line names where it will land and can be cleared with Backspace.
+There are no arbitrary task-title or prompt-editor length caps. Warn about native transport limits, including TUIOS's documented 16 KiB queue-message ceiling, while allowing the user to save and explicitly attempt the prompt. Report any actual native refusal. Never silently truncate or split the prompt.
 
-**Outline editing.** Enter on a line opens a new sibling below it. Tab and Shift+Tab re-parent, which changes what the line inherits. A move control gives the same re-parenting to touch and keyboard users without dragging.
+Manual queues run through explicit actions. Automatic queues retain ordering and stop for findings that need user confirmation or actual dispatch failure rather than silently approving warnings or skipping dependent work. No task remains manual.
 
-**Detail.** For a task: facts with their sources, the queue with its mode switch and Run next, panes, notes, commits, pull request and checks. For a prompt: full text, target, preflight, Run now and Save to queue, and its runs. For a run: the response as Markdown, provenance and capture certainty, commits made, and a reply box. A reply is a new prompt that inherits the task and targets the same pane.
+## Interaction and preservation
 
-**Rail.** Saved views replace the Inbox, Queues, Prompts and Tasks pages; each is the same outline filtered: Everything, Needs me, Running, Queued, No task, Archive. TUIOS, Agent profiles, History and Collectors stay as secondary destinations.
+Use existing keyed DOM updates and SSE notifications. Preserve input focus, drafts, scrolling, open disclosures, and selection across updates; add no refresh timer. Retain compatible keyboard shortcuts, visible labels, native controls, and mobile touch targets.
 
-**Phone.** The outline takes the full width. Opening a line pushes the detail as its own page. The capture line is fixed at the bottom above the keyboard. Fact columns fold into a second labelled row per line.
+Every local path input retains the actual OS Browse picker alongside manual entry. Project and existing-worktree inputs open a directory picker; executable inputs open a file picker. Cancel preserves the input. These pickers select the backend host's filesystem, not the browser device's filesystem.
 
-## 6. States and ranges
+Capture provenance and uncertainty remain visible. Partial, truncated, summary-only, and missing responses are not presented as complete answers. Native execution survives browser closure independently of app records.
 
-- Realistic size: 5 to 40 open tasks, up to 4 levels deep, 0 to 30 prompts per task, dozens of runs per day. The outline must stay scannable at 300 visible lines; closed tasks collapse to one line with counts.
-- First run: an empty outline, the capture line, and two example lines showing what a task and a prompt look like when typed.
-- Orphans: the No task group is always present, shows its count, and offers bulk move into a task.
-- Git absent or partial: no repo, a directory that is not a repository, no pull request for the branch, or the pull request service unreachable. Each shows as a plain fact, not an error.
-- Capture uncertainty: partial, truncated or summary-only responses keep their source label on the run line.
-- Live updates never move, collapse or re-render a line that is being edited, and never steal focus from the capture line or a reply box.
+## Verification boundary
 
-## 7. Boundaries and anti-goals
+This brief records accepted behavior, not a successful test run. The parent owns final integrated native and desktop/mobile verification. Fixtures must use isolated app storage and native sessions, never the user's live task data. Do not restart the native daemon, use worktrees for this implementation, or run repeated screenshot-polish loops.
 
-- A task is never required. No dialog, selector or validation may stand between the user and a saved line.
-- No creation dialogs. Creation is typing a line.
-- The app does not create worktrees. Whether it may create or switch branches is open below.
-- Any directory field uses the OS directory picker, with typing allowed beside it.
-- Human approvals keep their existing authority rules. A queued prompt never answers a pane's question.
-- The Flight deck palette, type and control shapes are unchanged.
-
-## 8. Open decisions
-
-1. May the app create or check out a task's branch at run time, or does it only report a mismatch?
-2. Are omp todos imported one way into subtasks, or kept in sync both ways?
-3. Where pull request and check data comes from, and when it refreshes. The assumed answer is the `gh` command line on entry and on explicit refresh, with no polling timer.
-4. Whether a blocked prompt in an automatic queue should hold the queue, as written here, or be skipped.
-5. How this model lands in the Portfolio merge, which already settled on one task table.
+Tailnet access and complete browser human-approval authorization remain the product gaps recorded in [PRODUCT.md](../../PRODUCT.md). This planning change does not claim to resolve them.

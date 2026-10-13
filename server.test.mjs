@@ -591,3 +591,163 @@ test('execution host survives host-less sightings and restart; unknown is not lo
   expect(snapshot.agents.find(a => a.id === 'hosted-pane').host).toBe('build');
   expect(snapshot.agents.find(a => a.id === 'unknown-host-pane').host).toBe('');
 });
+
+test('task identity is atomic, immutable, persistent and never recycled after deletion', async () => {
+  const original = await (await call('/tasks', { title: 'Identity', style_theme: 'sage', style_icon: 'compass', style_color: '#9BD4BD', launch_mode: 'reuse' })).json();
+  expect(original.style).toEqual({ seed: original.style_seed, theme: 'sage', icon: 'compass', color: '#9bd4bd' });
+  expect(Number.isSafeInteger(original.style_seed) && original.style_seed > 0).toBe(true);
+  expect((await call(`/tasks/${original.id}`, { title: 'Must not change', style_theme: 'bad' }, 'PATCH')).status).toBe(400);
+  expect((await call(`/tasks/${original.id}`, { style_seed: 1000000 }, 'PATCH')).status).toBe(400);
+  expect((await state()).tasks.find(t => t.id === original.id)).toMatchObject({ title: 'Identity', style_theme: 'sage', style_color: '#9bd4bd', launch_mode: 'reuse' });
+  const independent = await (await call(`/tasks/${original.id}`, { style_icon: '' }, 'PATCH')).json();
+  expect(independent.style).toEqual({ seed: original.style_seed, theme: 'sage', icon: null, color: '#9bd4bd' });
+  const reset = await (await call(`/tasks/${original.id}`, { title: 'Renamed', style_theme: '', style_color: '', status: 'done' }, 'PATCH')).json();
+  expect(reset.style).toEqual({ seed: original.style_seed, theme: null, icon: null, color: null });
+  await call('/tasks/update', { ids: [original.id], set: { archived: true } });
+  await stop(); await start();
+  expect((await state()).tasks.find(t => t.id === original.id)).toMatchObject({ title: 'Renamed', style_seed: original.style_seed, archived: 1 });
+  expect((await (await call('/outline')).json()).tasks.find(t => t.id === original.id).style).toEqual(reset.style);
+  const high = Math.max(...(await state()).tasks.map(t => t.style_seed));
+  await call(`/tasks/${original.id}`, {}, 'DELETE');
+  const next = await newTask('Never recycled');
+  expect(next.style_seed).toBe(high + 1);
+});
+
+test('long task titles and prompt text save completely, while malformed launch modes remain format errors', async () => {
+  const title = 'title '.repeat(12000), body = 'prompt\n'.repeat(12000);
+  const t = await (await call('/tasks', { title })).json();
+  expect(t.title).toBe(title.trim());
+  const made = await (await call('/prompts', { body, task_id: t.id, launch_mode: 'reuse' })).json();
+  expect(made.prompt.body).toBe(body);
+  expect(made.prompt.launch_mode).toBe('reuse');
+  expect(made.preflight.warns.map(w => w.code)).toContain('native_message_limit');
+  expect((await call(`/prompts/${made.prompt.id}`, { launch_mode: 'sometimes', body: 'must not replace' }, 'PATCH')).status).toBe(400);
+  expect((await (await call('/outline')).json()).prompts.find(p => p.id === made.prompt.id).body).toBe(body);
+});
+
+test('malformed JSON objects and warning overrides are format errors rather than saved prompts', async () => {
+  const before = (await (await call('/outline')).json()).prompts.map(p => p.id);
+  expect((await call('/prompts', { body: 'keep unsubmitted', allow_warnings: 'yes' })).status).toBe(400);
+  expect((await call('/prompts', [])).status).toBe(400);
+  expect((await fetch(base + '/api/prompts', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: '{' })).status).toBe(400);
+  expect((await (await call('/outline')).json()).prompts.map(p => p.id)).toEqual(before);
+});
+
+
+
+test('launches honor independent child workspace and effective cwd, default fresh, compatible reuse and truthful queue refusals', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'task-launch-')), fake = join(dir, 'tuios'), log = join(dir, 'calls'), at = '2026-01-01T00:00:00Z';
+  const database = new Database(join(dir, 'inbox.sqlite'), { create: true });
+  database.exec("CREATE TABLE tasks (id TEXT PRIMARY KEY,title TEXT NOT NULL,path TEXT NOT NULL,worktree TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'open',session TEXT NOT NULL,created TEXT NOT NULL,archived INTEGER NOT NULL DEFAULT 0)");
+  database.run('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?)', ['old', 'Archived old task', '', '', 'done', 'old-session', at, 1]); database.close();
+  await Bun.write(fake, `#!/bin/sh
+printf '%s\\0' "$@" "$(printf '\\001')" >> '${log}'
+case "$1" in
+ls) echo '{"sessions":[{"name":"native-home"}]}';;
+list-workspaces) echo '{"workspaces":[{"workspace":2},{"workspace":3}]}';;
+list-agents) echo '{"agents":[{"window_id":"native-2","agent_session_id":"sid-import","harness_id":"omp","state":"idle"}]}';;
+start-agent) n=$(cat '${dir}/count' 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > '${dir}/count'; printf '{"window_id":"native-%s","ready":false}' "$n";;
+queue) for x in "$@"; do if [ "$x" = 'denied payload' ]; then echo 'native queue permission refused' >&2; exit 1; fi; done; echo '{}';;
+*) echo '{}';;
+esac
+`);
+  await chmod(fake, 0o755);
+  const port = await freePort(), proc = await launch(dir, port, { TUIOS_BIN: fake, TUIOS_INBOX_GH: '/nonexistent/gh', TUIOS_INBOX_COLLECTORS: join(dir, 'none.json'), PI_CODING_AGENT_DIR: join(dir, 'omp') });
+  const request = (path, body, method = 'POST') => fetch(`http://127.0.0.1:${port}/api${path}`, body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) });
+  const json = async (...args) => (await request(...args)).json();
+  const calls = async () => (await Bun.file(log).text()).split('\x01').filter(Boolean).map(l => l.split('\0').filter(Boolean));
+  const untilPane = async promptId => { let prompt; for (let i = 0; i < 80; i++) { prompt = (await json('/outline')).prompts.find(p => p.id === promptId); if (prompt.pane_id && prompt.state !== 'blocked' && (await calls()).some(c => c[0] === 'queue' && c.includes(prompt.pane_id) && c.at(-1) === prompt.body)) return prompt; await Bun.sleep(25); } throw new Error('Launch did not complete: ' + JSON.stringify(prompt)); };
+  try {
+    expect((await json('/state')).tasks.find(t => t.id === 'old')).toMatchObject({ style_seed: 1, archived: 1, style: { seed: 1, theme: null, icon: null, color: null } });
+    const parent = await json('/tasks', { title: 'Native parent', repo: dir, worktree: home, session: 'native-home', workspace: 2, model: 'test-model' });
+    const child = await json('/tasks', { title: 'Own project', parent_id: parent.id, repo: dir, workspace: 3 });
+    const resolved = (await json('/outline')).tasks.find(t => t.id === child.id);
+    expect(resolved.own).toMatchObject({ session: '', workspace: 3, worktree: '' });
+    expect(resolved.resolved.cwd).toEqual({ value: dir, from: 'self' });
+    expect(resolved.resolved.session.value).toBe('native-home');
+    const made = await json('/prompts', { body: 'first payload', task_id: child.id, run: true, allow_warnings: true });
+    const first = await untilPane(made.prompt.id);
+    expect(first).toMatchObject({ pane_id: 'native-1', state: 'running' });
+    const start = (await calls()).find(c => c[0] === 'start-agent');
+    expect(start.slice(start.indexOf('--cwd'), start.indexOf('--cwd') + 2)).toEqual(['--cwd', dir]);
+    expect(start.slice(start.indexOf('--workspace'), start.indexOf('--workspace') + 2)).toEqual(['--workspace', '3']);
+    expect(start.slice(-3)).toEqual(['--', '--model', 'test-model']);
+    expect((await calls()).find(c => c[0] === 'queue').at(-1)).toBe('first payload');
+    const db = new Database(join(dir, 'inbox.sqlite'));
+    db.run("UPDATE prompts SET state='done' WHERE id=?", [made.prompt.id]); db.run("UPDATE agents SET state='idle' WHERE id='native-1'");
+    await json('/tasks/' + child.id, { title: 'Own project renamed' }, 'PATCH');
+    const next = await json('/prompts', { body: 'second payload', task_id: child.id, run: true, allow_warnings: true });
+    expect(await untilPane(next.prompt.id)).toMatchObject({ pane_id: 'native-2', state: 'running' });
+    db.run("UPDATE prompts SET state='done' WHERE id=?", [next.prompt.id]); db.run("UPDATE agents SET state='idle' WHERE id='native-2'");
+    db.run("UPDATE agents SET state='working' WHERE id='native-1'");
+    await json('/tasks/' + child.id, { launch_mode: 'reuse' }, 'PATCH');
+    const reused = await json('/prompts', { body: 'reuse payload', task_id: child.id, run: true, allow_warnings: true });
+    expect(reused.prompt).toMatchObject({ pane_id: 'native-2', state: 'running' });
+    expect((await calls()).filter(c => c[0] === 'start-agent')).toHaveLength(2);
+    const refused = await json('/prompts', { body: 'denied payload', task_id: child.id, target: 'native-2', run: true, allow_warnings: true });
+    expect(refused).toMatchObject({ ran: false, error: 'native queue permission refused', prompt: { state: 'errored', body: 'denied payload' } });
+    const noTask = await json('/prompts', { body: 'No task continuation', task_id: null, target: 'native-2' });
+    db.run("INSERT INTO turns(id,session,pane_id,pane_name,harness,prompt,response,source,state,started,task_id,prompt_id) VALUES ('projection','native-home','native-2','leaf','omp','ask','reply','pane','done',?,?,?)", [at, child.id, noTask.prompt.id]);
+    await json('/tasks/' + child.id, { style_color: '#123456' }, 'PATCH');
+    expect((await json('/state')).items.find(i => i.id === 'turn:projection')).toMatchObject({ task_id: child.id, style_task_id: null });
+    expect((await json('/history')).records.find(r => r.id === 'legacy:turn:projection')).toMatchObject({ task_id: child.id, style_task_id: null });
+    await json('/tasks/' + child.id, { workspace: 2 }, 'PATCH');
+    expect((await json('/outline')).tasks.find(t => t.id === child.id)).toMatchObject({ own: { session: '', workspace: 2 }, resolved: { session: { value: 'native-home' }, workspace: { value: 2 } } });
+    const orphan = await json('/prompts', { body: 'fallback payload', harness: 'custom-agent' });
+    expect(orphan.preflight.warns.map(w => w.code)).toEqual(['nowhere', 'no_harness']);
+    expect((await request('/prompts/' + orphan.prompt.id + '/run', { allow_warnings: true })).status).toBe(202);
+    expect(await untilPane(orphan.prompt.id)).toMatchObject({ state: 'running', pane_id: 'native-3' });
+    const fallback = (await calls()).filter(c => c[0] === 'start-agent').at(-1);
+    expect(fallback.slice(fallback.indexOf('--cwd'), fallback.indexOf('--cwd') + 2)).toEqual(['--cwd', (await import('node:os')).homedir()]);
+    expect(fallback.slice(-3)).toEqual(['custom-agent', '--json', '--']);
+    const codex = await json('/prompts', { body: 'codex payload', task_id: child.id, harness: 'codex', run: true, allow_warnings: true });
+    expect(await untilPane(codex.prompt.id)).toMatchObject({ pane_id: 'native-4', state: 'running' });
+    expect((await calls()).filter(c => c[0] === 'start-agent').at(-1).slice(-3)).toEqual(['--', '-c', 'model="test-model"']);
+    const longTodo = 'Imported next step '.repeat(30);
+    await Bun.write(join(dir, 'omp/sessions/project/x_sid-import.jsonl'), JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: 'todo', arguments: { op: 'init', items: [longTodo] } }] } }) + '\n');
+    const completed = name => hook(name, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_AGENT_HARNESS: 'omp', TUIOS_WINDOW_ID: 'native-2', TUIOS_SESSION_ID: 'native-home' }, { turn: { session: 'native-home', pane: 'native-2', name: 'leaf', harness: 'omp', state: 'done', at: new Date().toISOString(), prompt: name, response: 'Imported plan', source: 'pane' } }, { dir, request });
+    await completed('import-first');
+    let imported;
+    for (let i = 0; i < 60 && !imported; i++) { imported = (await json('/state')).tasks.find(t => t.source === 'omp-todo'); if (!imported) await Bun.sleep(25); }
+    expect(imported).toMatchObject({ title: longTodo.trim(), parent_id: child.id, style: { theme: null, icon: null, color: null } });
+    expect(imported.style_seed > child.style_seed).toBe(true);
+    await json('/tasks/update', { ids: [imported.id], set: { archived: true } });
+    await completed('import-repeat');
+    expect((await json('/state')).tasks.filter(t => t.source === 'omp-todo')).toMatchObject([{ id: imported.id, style_seed: imported.style_seed, archived: 1 }]);
+    db.run("INSERT INTO agents(id,session,name,harness,kind,state,seen) VALUES ('unfamiliar','native-home','Unfamiliar terminal','','shell','idle',?)", [at]);
+    const unfamiliar = await json('/prompts', { body: 'unfamiliar payload', target: 'unfamiliar', run: true });
+    expect(unfamiliar).toMatchObject({ ran: false, prompt: { state: 'blocked' } });
+    expect(unfamiliar.preflight.warns.map(w => w.code)).toContain('pane_unknown');
+    expect((await request('/prompts/' + unfamiliar.prompt.id + '/run', { allow_warnings: true })).status).toBe(202);
+    expect((await calls()).filter(c => c[0] === 'queue' && c.includes('unfamiliar')).map(c => c.at(-1))).toEqual(['unfamiliar payload']);
+    expect((await calls()).filter(c => ['run', 'send-text', 'send-keys', 'respond'].includes(c[0]) && c.includes('unfamiliar'))).toEqual([]);
+    db.close();
+  } finally { proc.kill(); await proc.exited; await rm(dir, { recursive: true, force: true }); }
+});
+
+
+test('empty startup sightings cannot claim dispatched prompts or hide their later completed capture', async () => {
+  const task = await newTask('Dispatch boundary');
+  const db = new Database(join(home, 'inbox.sqlite'));
+  const cases = [];
+  for (const preclaimed of [false, true]) {
+    const pane = 'startup-' + preclaimed, body = 'actual work ' + preclaimed;
+    const made = await (await call('/prompts', { task_id: task.id, body })).json();
+    const prompt = made.prompt;
+    const ran = '2026-01-01T00:00:01.000Z', startup = '2026-01-01T00:00:02.000Z', started = '2026-01-01T00:00:03.000Z';
+    db.run("UPDATE prompts SET state='running',pane_id=?,ran=? WHERE id=?", [pane, ran, prompt.id]);
+    db.run("INSERT INTO turns(id,session,pane_id,pane_name,harness,prompt,response,source,state,started,finished,prompt_id,archived) VALUES (?,'s',?,?,'omp','','','','idle',?,?,?,1)", ['empty-' + pane, pane, pane, startup, startup, preclaimed ? prompt.id : null]);
+    db.run("INSERT INTO turns(id,session,pane_id,pane_name,harness,prompt,response,source,state,started,finished) VALUES (?,'s',?,?,'omp',?,'actual answer','transcript','done',?,?)", ['work-' + pane, pane, pane, body, started, started]);
+    cases.push({ pane, prompt: prompt.id, body });
+  }
+  await call('/reconcile', {});
+  let outline;
+  for (let i = 0; i < 60; i++) { outline = await (await call('/outline')).json(); if (cases.every(c => outline.prompts.find(p => p.id === c.prompt)?.state === 'done')) break; await Bun.sleep(25); }
+  for (const c of cases) {
+    expect(outline.prompts.find(p => p.id === c.prompt)).toMatchObject({ state: 'done', error: '', body: c.body });
+    expect(outline.runs.find(r => r.id === 'turn:work-' + c.pane)).toMatchObject({ prompt_id: c.prompt, state: 'done', response_captured: true });
+    expect(outline.runs.find(r => r.id === 'turn:empty-' + c.pane)).toMatchObject({ prompt_id: null, state: 'idle', response_captured: false, archived: true });
+  }
+  db.close();
+});
+

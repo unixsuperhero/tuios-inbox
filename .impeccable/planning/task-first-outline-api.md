@@ -1,84 +1,77 @@
-# Task-first outline: build contract
+# Task-first outline API reference
 
-Companion to [task-first-outline.md](task-first-outline.md) (the design brief). This file is the interface both builders code against. Prototype quality: speed over perfection.
+This reference covers the retained task, prompt, and run model. [task-focus-api.md](task-focus-api.md) is the authoritative contract for the 2026-10-12 task-focused redesign, warning overrides, identity, and ownership. It supersedes this file's earlier prototype-only scope, mixed navigation, hard preflight blocks, and idle-pane reuse default. See [task-first-outline.md](task-first-outline.md) for the accepted planning and review behavior.
 
-## Ownership (two agents share one working tree; do not edit the other's files; do NOT git commit, stash, reset or checkout)
+## Persistence
 
-| Owner | Files |
+Use the existing SQLite additive-migration convention. Tasks retain project `path` with `repo` as its API alias, optional existing `worktree`, `parent_id`, status, archive state, notes, native home, branch, harness, model, and queue mode. Empty execution overrides inherit.
+
+Tasks add `launch_mode`, immutable server-owned `style_seed`, and independent `style_theme`, `style_icon`, and `style_color` overrides. A task's `style` projection is `{ seed, theme, icon, color }`; automatic override values are `null`. Clients cannot assign seeds. Seeds are assigned and backfilled transactionally, including archived and imported tasks, with a settings highwater that prevents reuse after deletion.
+
+Prompts retain `id`, `body`, `task_id`, optional pane `target`, harness/model overrides, queue position, state, error, and timestamps. They add inheritable `launch_mode`. Prompt states are `queued`, `running`, `blocked`, `done`, and `errored`. A blocked or errored prompt retains its full body.
+
+Turns retain `prompt_id`, capture provenance, full captured prompt/response, execution pane/session, read/archive state, and before/after commit metadata. A turn is presented as a run without replacing native capture semantics.
+
+## Pure execution model
+
+`public/outline-model.js` has no DOM, fetch, or Node imports. The default harness is `omp`, the default queue mode is `manual`, and the default launch mode is `new`.
+
+`resolve(record, tasksById)` returns values and sources through the prompt/task/parent chain. Execution fields include project, branch, harness, model, queue mode, launch mode, session, and workspace. Tasks expose their own worktree setting and a derived `resolved.cwd`.
+
+Resolve cwd from the nearest task record with a project or worktree, preferring that record's worktree. Do not combine a child's project with an ancestor's unrelated worktree. Resolve session and workspace independently. Use effective cwd for launch, preflight, git/commit facts, and launch-context labels.
+
+`preflight` retains named findings and correction hints. Execution configuration and pane-state findings appear in `warns` with a correction hint and require a reachable explicit override, not a permanent user-facing veto. Empty prompt text remains the `no_text` block because there is no message to send. Protocol format errors and actual native authorization/execution failures remain errors. Native queue-size warnings count UTF-8 bytes, not characters, and preserve the full text.
+
+`nextInQueue(prompts, taskId)` selects the lowest-position queued prompt in that task. A null task means No task. The No task queue remains manual.
+
+## HTTP requests and projections
+
+Existing origin, Host, same-origin JSON header, and native authorization requirements remain unchanged. Writes require `x-inbox-request: 1`.
+
+`GET /api/outline` retains `defaults`, `tasks`, `prompts`, `runs`, `panes`, and `profiles`. Task records include own/resolved execution settings, style, git facts, and notes. Prompt records include full stored body, resolved settings, state, error, and preflight findings. Run summaries retain capture/read/archive state and ownership; full captured content comes from `GET /api/turns/:id`.
+
+| Method and path | Request additions and behavior |
 |---|---|
-| backend | `server.mjs`, `public/outline-model.js` (pure, shared by server and browser), `outline-model.test.mjs`, `outline.test.mjs` |
-| frontend | `public/outline.js`, `public/outline.css`, `public/index.html`, `public/app.js`, `public/pages.js` (minimal hooks only) |
+| `POST /api/tasks` | Retains title, parent, project, worktree, branch, harness, model, queue mode, and home settings. Accepts launch mode and theme/icon/color overrides, never a client seed. |
+| `PATCH /api/tasks/:id` | Missing fields preserve values. Empty appearance strings clear each override independently. Empty execution overrides inherit. `parent_id: null` removes the parent. Validate supplied appearance values before writing any part of a combined patch. |
+| `POST /api/prompts` | Retains body, task ownership, pane target, harness/model, and `run`. Accepts launch mode and `allow_warnings`. Saving does not require complete launch configuration. An absent task can inherit the target pane's task; explicit `task_id: null` preserves No task. With `run: true` and unacknowledged warnings, returns 201 with `ran: false`, `preflight`, and the saved prompt in `blocked` state. |
+| `PATCH /api/prompts/:id` | Retains body, ownership, target, harness/model, and requeue updates. Accepts launch mode. |
+| `DELETE /api/prompts/:id` | Removes the saved prompt through the existing route. |
+| `POST /api/prompts/:id/run` | Returns 409 with `warnings: true`, `preflight`, and the preserved prompt until `allow_warnings: true` explicitly acknowledges advice. A successfully accepted attempt returns 202; native failures remain errors, not acceptance or completion. |
+| `POST /api/prompts/:id/move` | Retains explicit task assignment and relative queue ordering. |
+| `POST /api/tasks/:id/run-next` | Runs the next saved prompt in the task's queue through the same execution rules. Unacknowledged warnings return 409 with `warnings: true`, `preflight`, and `prompt`; explicit `allow_warnings: true` permits an attempt, and native acceptance returns 202. `none` addresses No task. |
+| `POST /api/git/refresh` | Returns facts for the task's effective cwd without creating or checking out branches or worktrees. |
 
-Backend adds `/outline.js`, `/outline.css`, `/outline-model.js` to the static file map in `server.mjs`.
-Another unrelated agent session edits docs/reports in this repo. Leave files you do not own alone.
+No task-title or prompt-body business-policy length cap is imposed by the editor. Saving and explicit attempts retain the whole text. A native queue-message limit can produce a real native refusal; never silently truncate or split text to conceal it.
 
-## Storage (additive migrations only, same style as existing `ALTER TABLE` guards)
+The existing `/api/state` and history projections add `style_task_id` where needed without changing assignment/filter fields or host-aware provenance. Consumers test property presence, not nullish fallback, because explicit null means No task.
 
-```js
-tasks  += { branch TEXT '', harness TEXT '', model TEXT '', queue_mode TEXT '' /* '' = inherit */, source TEXT '' /* 'omp-todo' */ }
-// tasks.path is the repo; tasks.session/workspace is the home. '' means "not set, inherit".
-prompts = { id, body, task_id NULL, target '' /* pane uuid */, harness '', model '', position REAL,
-            state 'queued'|'running'|'blocked'|'done'|'errored', error '', created, updated }
-turns  += { prompt_id NULL, head_before '', head_after '' }   // a turn is a "run"
-```
+Existing capture, SSE, directory/file picker, question, and answer endpoints remain. SSE causes existing reads rather than a new polling timer.
 
-## Pure module `public/outline-model.js` (no DOM, no fetch, no node imports)
+## Dispatch and native boundaries
 
-```js
-export const DEFAULTS = { harness: 'omp', queue_mode: 'manual' };
-export const FIELDS = ['repo', 'branch', 'harness', 'model', 'queue_mode', 'session', 'workspace'];
-// resolve(record, tasksById) -> { repo: {value, from}, ... } ; from = 'self' | <task id> | 'default' | 'none'
-// record is a task or a prompt; lookup: record -> its task -> parent task -> ... -> DEFAULTS
-export function resolve(record, tasksById) {}
-// preflight({prompt, resolved, panes, git, profiles}) -> { blocks: [{code, message, fix}], warns: [{code, message}] }
-// block codes: 'no_text' | 'nowhere' | 'pane_blocked' | 'pane_gone' | 'no_harness'   fix: 'body'|'target'|'repo'|'harness'
-// warn codes:  'branch_mismatch' | 'dirty' | 'checks_failing'
-export function preflight(input) {}
-// nextInQueue(prompts, taskId) -> the lowest-position prompt in state 'queued' for that task (null task = No task queue)
-export function nextInQueue(prompts, taskId) {}
-```
+Untargeted prompts default to a fresh background agent. Reuse mode can select only a known compatible idle app-launched agent with matching effective cwd, profile, and model; otherwise it launches fresh. Persist launch compatibility metadata. An explicit target continues in that pane's existing execution session.
 
-## HTTP (all JSON; writes need the existing `x-inbox-request: 1` header; errors are `{error}` with 4xx)
+Missing cwd warns about the home-directory fallback. An unfamiliar harness without a saved profile warns that proceeding runs the user-chosen executable without extra profile arguments. Unfamiliar model names, missing defaults, branch mismatch, dirty work, and unknown/mismatched pane state must not become permanent advisory vetoes.
 
-`GET /api/outline` →
+Busy panes and panes waiting on their own question use the native queue after explicit Queue anyway. Never type raw keys at a question, bypass a held approval, or impersonate a trusted human. `allow_warnings` acknowledges app advice only; it does not grant native permission.
 
-```js
-{
-  defaults: { harness: 'omp', queue_mode: 'manual' },
-  tasks: [{ id, title, parent_id, status, archived, created, source,
-            own: { repo, branch, harness, model, queue_mode, session, workspace },      // '' / null when not set
-            resolved: { repo: { value, from }, branch: {...}, harness: {...}, model: {...}, queue_mode: {...}, session: {...}, workspace: {...} },
-            git: { state: 'none'|'not_a_repo'|'ok', head, dirty, commits: [{ sha, subject, at }],
-                   pr: null | { number, state, url, checks: 'passing'|'failing'|'pending'|'none' },
-                   pr_state: 'ok'|'none'|'unavailable', fetched },
-            notes: [...] }],
-  prompts: [{ id, body, task_id, target, harness, model, position, state, error, created, updated,
-              resolved: {...same shape...}, preflight: { blocks: [...], warns: [...] } }],
-  runs: [{ id /* 'turn:<id>' */, prompt_id, task_id, pane_id, pane_name, harness, host, state, unread, archived,
-           started, finished, prompt /* first 400 chars */, response_captured, source, commits: [{ sha, subject }] }],
-  panes: [{ id, name, session, host, harness, kind, state, task_id, ready /* bool: at rest, may be typed at */ }],
-  profiles: [...]
-}
-```
+Missing executables, gone panes, native permission refusals, and launch/queue failures remain truthful errors with the prompt preserved. Do not report acceptance as completion or blocked startup as readiness. Native queue acceptance can leave work waiting rather than immediately running.
 
-| Method and path | Body | Result |
-|---|---|---|
-| `POST /api/tasks` (exists) | `{ title, parent_id?, repo?, branch?, harness?, model?, queue_mode? }`. Only `title` required. `repo` is an alias of the existing `path`. | 201 task |
-| `PATCH /api/tasks/:id` (exists) | Any of the same fields; `''`/`null` clears a field back to inherit. `parent_id: null` un-parents. | task |
-| `POST /api/prompts` | `{ body, task_id?, target?, harness?, model?, run?: boolean }`. Never fails for missing data. If `target` is a pane with a task and `task_id` is absent, inherit the pane's task. | 201 `{ prompt, ran: boolean, preflight }`. With `run: true` and blocks: prompt is saved with state `blocked`, `ran: false`. |
-| `PATCH /api/prompts/:id` | `{ body?, task_id?, target?, harness?, model?, state?: 'queued' }` | prompt |
-| `DELETE /api/prompts/:id` | | `{ ok: true }` |
-| `POST /api/prompts/:id/run` | | 202 `{ prompt }`, or 409 `{ error, preflight }` and the prompt becomes `blocked` |
-| `POST /api/prompts/:id/move` | `{ task_id?: id or null, before?: prompt id or null }` | prompt |
-| `POST /api/tasks/:id/run-next` (`:id` may be `none` for the No task queue) | | 202 `{ prompt }` or 409 |
-| `POST /api/git/refresh` | `{ task_id }` | the task's fresh `git` object |
+Replies create a prompt with the original owner and the run's pane target. Preserve intentional No task ownership. Parent-grouped results and older embedded runs resolve their own task rather than the selected parent's task.
 
-Existing endpoints stay: `GET /api/turns/:id` (full prompt and response of a run), `PATCH /api/turns/:id` (unread, archived, task_id), `GET /api/events` (SSE; on any message refetch `/api/outline`), `POST /api/pick-directory`, `GET /api/agents/:id/question`, `POST /api/agents/:id/answer`.
+Automatic queues retain ordering. They do not automatically acknowledge warnings, answer questions, or skip dependent prompts after failure. Completion links captured turns to prompts through the existing prompt/run association and preserves capture provenance and uncertainty.
 
-## Behaviour
+Prompt/run association records the actual send timestamp. An empty native startup-idle capture must not claim a newly launched saved prompt before dispatch. Reconciliation ignores or repairs those empty startup associations and links the actual captured run, including after restart.
 
-- Running: resolve fields, run preflight. With a ready `target` pane, send through the existing `promptAgent` path. With no target but a resolved repo and harness, launch a new agent pane for the task through the existing profile-launch path, then send. Record `head_before`. Link the next turn captured on that pane to the prompt (`turns.prompt_id`); when that turn finishes set prompt `done` (or `errored`), record `head_after` and the commits between.
-- A reply to a run is `POST /api/prompts` with `{ body, task_id, target: <run pane>, run: true }`.
-- Auto queues: when a pane comes to rest and the task whose queue it serves resolves `queue_mode: 'auto'`, run `nextInQueue`. A prompt that fails preflight becomes `blocked` and the queue holds. The No task queue is always manual. Never type at a pane on `needs_input`.
-- Git facts are read with `git -C <repo>` and `gh pr view <branch> --json number,state,url,statusCheckRollup`, cached per task, refreshed on first read and on `POST /api/git/refresh`. No new polling timer. `gh` missing or failing gives `pr_state: 'unavailable'`, never an error.
-- Turns with no `prompt_id` (typed straight into a pane) still appear in `runs` with `prompt_id: null`; the UI shows them under their task or under No task.
+Git and pull-request facts are read-only, cached, and refreshed through existing reads and explicit refresh. Missing `gh` or failed pull-request lookup means unavailable facts, not fabricated passing checks.
+
+## Shared task identity
+
+`public/task-style.js` exports authored choices, appearance parsing, and a deterministic resolver. Automatic icons use a frozen order. Theme overrides include `sage`; icon overrides include `compass`. Custom color overrides use a validated hex value. Empty values restore automatic choices.
+
+`public/task-style-dom.js` supplies safe task attributes, accessible icon markup, and post-paint CSS-variable application. `public/task-style.css` supplies the shared mark, subdued wash, and one-pixel rule. It is loaded after Flight deck styles. SVG geometry is authored code, never user markup. Preserve CSP and safe rendering.
+
+Task appearance never inherits, changes ownership, or gets copied into prompt records or browser localStorage. Each prompt/response resolves its owning task's current appearance. Rename, reparent, restart, completion, import, and reset preserve the seed. Unique seeds do not guarantee unlimited visually distinct colors/icons; labels remain visible and matching user overrides are allowed.
+
+This reference describes the contract, not verification results. Final integrated checks belong to the parent and must use isolated data/native fixtures.

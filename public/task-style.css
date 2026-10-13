@@ -1,0 +1,37 @@
+/* Identity stays separate from status, unread state, focus and amber actions. */
+[data-task-style] {
+  --task-color: var(--muted);
+  --task-surface: transparent;
+  --task-border: var(--line);
+}
+
+.task-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-inline-end: 6px;
+  color: var(--task-color);
+  vertical-align: -3px;
+}
+.task-mark svg { display: block; width: 16px; height: 16px; }
+
+.task-style-surface,
+:is(.record-summary, .wb-record, .wb-task, .wb-agent-row, .entity-metadata, .qb-bucket, .qb-queue-head, .history-records tr, .history-body)[data-task-style] {
+  border-inline-start: 1px solid var(--task-border);
+  background-image: linear-gradient(var(--task-surface), var(--task-surface));
+}
+:is(.record-summary, .entity-metadata)[data-task-style] { padding-inline-start: 8px; }
+.history-records tr[data-task-style] > td:first-child { border-inline-start: 1px solid var(--task-border); }
+.task-label { display: inline-flex; align-items: center; gap: 0; }
+
+@media (forced-colors: active) {
+  .task-mark { color: CanvasText; }
+  .task-style-surface,
+  :is(.record-summary, .wb-record, .wb-task, .wb-agent-row, .entity-metadata, .qb-bucket, .qb-queue-head, .history-records tr, .history-body)[data-task-style] {
+    border-inline-start-color: CanvasText;
+    background-image: none;
+  }
+}

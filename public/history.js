@@ -1,7 +1,8 @@
 // History and Collectors pages: full-text search over the append-only archive, one record in full
 // with its provenance, and the health of every collector. Nothing here is polled; reads happen when
 // a page opens, on a search, and at most every few seconds when the server announces a change.
-import { store, api, esc } from '/pages.js';
+import { store, api, esc, styleTask, styleTaskId } from '/pages.js';
+import { styleAttrs, taskMark } from '/task-style-dom.js';
 import { patchHTML } from '/workbench.js';
 
 const LIMIT = 50, STALE_MS = 5000;
@@ -82,10 +83,10 @@ export function createHistory({ root, report }) {
   function rows(records) {
     return `<div class="native-table-scroll"><table class="native-table history-table history-records"><caption class="sr-only">History records</caption>
       <thead><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Where</th><th scope="col">Text</th><th scope="col">Task</th></tr></thead>
-      <tbody>${records.map(r => `<tr data-wb-key="rec:${esc(r.id)}"><td><time datetime="${esc(r.created)}">${esc(time(r.created))}</time></td><td><span class="badge">${esc(r.kind)}</span></td>
+      <tbody>${records.map(r => `<tr ${styleAttrs(styleTask(r))} data-wb-key="rec:${esc(r.id)}"><td><time datetime="${esc(r.created)}">${esc(time(r.created))}</time></td><td><span class="badge">${esc(r.kind)}</span></td>
         <td><b>${esc(r.host)}</b><small>${esc([r.harness, r.session].filter(Boolean).join(' · '))}</small><small>${esc(r.source)} · ${esc(r.origin)}</small></td>
         <td class="history-text"><a href="${href(r.id)}">${esc(excerpt(r)) || '(empty)'}</a></td>
-        <td>${r.task_id ? `<a href="#task/${encodeURIComponent(r.task_id)}">Task</a>` : '<small>Not linked</small>'}</td></tr>`).join('')}</tbody></table></div>`;
+        <td><span class="task-label">${taskMark(styleTask(r))}${styleTask(r) ? `<a href="#task/${encodeURIComponent(styleTaskId(r))}">${esc(styleTask(r).title)}</a>` : '<small>Not linked</small>'}</span></td></tr>`).join('')}</tbody></table></div>`;
   }
   function pager() {
     const total = result.total, first = total ? result.offset + 1 : 0, last = result.offset + result.records.length;
@@ -109,11 +110,12 @@ export function createHistory({ root, report }) {
     if (entry?.error) return `<section id="history-page" class="history"><p class="history-error" role="alert">${esc(entry.error)}</p><p class="hint"><a href="#history">Back to history</a></p></section>`;
     if (!r) return `<section id="history-page" class="history" aria-busy="true"><p class="hint" role="status">Reading record…</p></section>`;
     const links = [r.task_id && `<a href="#task/${encodeURIComponent(r.task_id)}">Open linked task</a>`, r.pane_id && store.state.agents.some(a => a.id === r.pane_id) && `<a href="#agent/${encodeURIComponent(r.pane_id)}">Open linked agent</a>`].filter(Boolean);
-    return `<section id="history-page" class="history">
+    return `<section id="history-page" class="history" ${styleAttrs(styleTask(r))}>
       <h2 class="history-title"><span class="badge">${esc(r.kind)}</span> ${esc(time(r.created))}</h2>
-      <pre class="history-body" tabindex="0" aria-label="Complete record text">${esc(r.body)}</pre>
-      ${r.prompt && r.prompt !== r.body ? `<details data-wb-key="prompt"><summary>Prompt</summary><pre class="history-body">${esc(r.prompt)}</pre></details>` : ''}
-      ${r.response && r.response !== r.body ? `<details data-wb-key="response"><summary>Response</summary><pre class="history-body">${esc(r.response)}</pre></details>` : ''}
+      <p class="task-label">${taskMark(styleTask(r))}${esc(styleTask(r)?.title || 'No task')}</p>
+      <pre class="history-body" ${styleAttrs(styleTask(r))} tabindex="0" aria-label="Complete record text">${esc(r.body)}</pre>
+      ${r.prompt && r.prompt !== r.body ? `<details data-wb-key="prompt"><summary>Prompt</summary><pre class="history-body" ${styleAttrs(styleTask(r))}>${esc(r.prompt)}</pre></details>` : ''}
+      ${r.response && r.response !== r.body ? `<details data-wb-key="response"><summary>Response</summary><pre class="history-body" ${styleAttrs(styleTask(r))}>${esc(r.response)}</pre></details>` : ''}
       <h3>Provenance</h3>
       <dl class="native-facts">${fact('Host', r.host)}${fact('Source', r.source)}${fact('Harness', r.harness)}${fact('Session', r.session)}${fact('Pane', r.pane_id)}${fact('Conversation', r.conversation_id)}${fact('Task', r.task_id, r.task_id && `#task/${encodeURIComponent(r.task_id)}`)}${fact('Collector', r.source_id)}${fact('Source record', r.record_id)}${fact('Archive ID', r.id)}${fact('Daemon boot', r.boot_id)}${fact('Sequence', r.seq)}</dl>
       ${links.length ? `<p class="history-links">${links.join(' · ')}</p>` : ''}

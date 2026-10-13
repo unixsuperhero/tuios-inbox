@@ -1,5 +1,6 @@
 // Live workbench navigation and keyed DOM updates; records and actions belong to pages/app.
-import { store, pages, esc, agentName, hostLabel, unfinished, taskTree } from '/pages.js';
+import { store, pages, esc, agentName, hostLabel, unfinished, taskTree, styleTask, styleTaskId } from '/pages.js';
+import { styleAttrs, taskMark, applyTaskStyles } from '/task-style-dom.js';
 
 const href = (kind, id) => `#${kind}/${encodeURIComponent(id)}`;
 const time = value => value ? new Date(value).toLocaleString() : '';
@@ -53,6 +54,8 @@ export function patchHTML(parent, html) {
     for (const node of old) if (!used.has(node)) node.remove();
   };
   children(parent, template.content);
+  applyTaskStyles(parent, store.state.tasks);
+  for (const node of parent.querySelectorAll('[data-task-depth]')) node.style.setProperty('--depth', node.dataset.taskDepth);
 }
 
 export function createWorkbench({ root, navigate, load, review, refresh, report }) {
@@ -99,14 +102,14 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
   function renderRail() {
     const rail = document.querySelector('#task-rail'); if (!rail) return;
     const item = selected(), activeAgent = route?.kind === 'agent' ? route.id : item?.agent_id;
-    const activeTask = route?.kind === 'task' ? route.id : item?.task_id || store.state.agents.find(a => a.id === activeAgent)?.task_id;
+    const activeTask = route?.kind === 'task' ? route.id : item ? styleTaskId(item) : styleTaskId(store.state.agents.find(a => a.id === activeAgent) || {});
     const agents = rowsFor('agents'), tasks = rowsFor('tasks');
-    const agentHTML = a => `<div class="wb-agent-row${selections.agents.has(a.id) ? ' is-picked' : ''}" data-wb-key="agent:${esc(a.id)}">${checkbox('agents', a.id, agentName(a.name, a.id))}<a class="wb-agent state-${stateClass(a.state)}" href="${href('agent', a.id)}"${a.id === activeAgent ? ' aria-current="page"' : ''}><span class="wb-agent-name">${esc(agentName(a.name, a.id))}</span><small>${esc(a.kind || 'agent')} · ${esc(a.state || 'unknown')}</small><span class="host-label">Host: ${esc(hostLabel(a.id))}</span></a></div>`;
-    const group = (task, members) => `<section class="wb-task" data-wb-key="task:${esc(task?.id || 'unassigned')}" style="--depth:${task?.depth || 0}">${task ? `<div class="wb-task-row${selections.tasks.has(task.id) ? ' is-picked' : ''}">${checkbox('tasks', task.id, task.title)}<a class="wb-task-title" href="${href('task', task.id)}"${task.id === activeTask ? ' aria-current="page"' : ''}>${esc(task.title)}</a></div>` : '<h3 class="wb-task-title">Not assigned to a task</h3><p class="hint">These agents and panes have no visible task group.</p>'}<p class="wb-members-label">Agents & panes · ${members.length}</p><div class="wb-agents">${members.map(agentHTML).join('') || '<p class="hint">No agents assigned</p>'}</div></section>`;
+    const agentHTML = a => `<div class="wb-agent-row${selections.agents.has(a.id) ? ' is-picked' : ''}" ${styleAttrs(styleTask(a))} data-wb-key="agent:${esc(a.id)}">${checkbox('agents', a.id, agentName(a.name, a.id))}<a class="wb-agent state-${stateClass(a.state)}" href="${href('agent', a.id)}"${a.id === activeAgent ? ' aria-current="page"' : ''}><span class="wb-agent-name">${taskMark(styleTask(a))}${esc(agentName(a.name, a.id))}</span><small>${esc(a.kind || 'agent')} · ${esc(a.state || 'unknown')}</small><span class="host-label">Host: ${esc(hostLabel(a.id))}</span></a></div>`;
+    const group = (task, members) => `<section class="wb-task" data-wb-key="task:${esc(task?.id || 'unassigned')}" ${styleAttrs(task)} data-task-depth="${task?.depth || 0}">${task ? `<div class="wb-task-row${selections.tasks.has(task.id) ? ' is-picked' : ''}">${checkbox('tasks', task.id, task.title)}<a class="wb-task-title" href="${href('task', task.id)}"${task.id === activeTask ? ' aria-current="page"' : ''}>${taskMark(task)}${esc(task.title)}</a></div>` : '<h3 class="wb-task-title">Not assigned to a task</h3><p class="hint">These agents and panes have no visible task group.</p>'}<p class="wb-members-label">Agents & panes · ${members.length}</p><div class="wb-agents">${members.map(agentHTML).join('') || '<p class="hint">No agents assigned</p>'}</div></section>`;
     patchHTML(rail, `<div class="wb-rail-heading"><h2>Task groups</h2><p class="hint">Tasks group related work. The agents and shell panes assigned to each task appear below it.</p><div class="wb-rail-links"><a href="#tasks">Manage tasks</a><a href="#agents">Manage agents</a></div></div>${toolbar('tasks', tasks, 'tasks')}${toolbar('agents', agents, 'agents')}<p class="hint">Archiving hides a task or agent here. It does not stop its panes or archive its work.</p>${taskTree(tasks).map(t => group(t, agents.filter(a => a.task_id === t.id))).join('')}${group(null, agents.filter(a => !tasks.some(t => t.id === a.task_id)))}`);
   }
   function itemLink(row, key) {
-    return `<div class="wb-record ${row.unread ? 'is-unread' : 'is-read'}${selections[key].has(row.id) ? ' is-picked' : ''}" data-wb-key="${esc(row.id)}" data-item-id="${esc(row.id)}">${checkbox(key, row.id, row.title || 'Untitled work')}<a class="wb-record-link" href="${href('item', row.id)}"${selected()?.id === row.id ? ' aria-current="page"' : ''}><strong>${esc(row.title || 'Prompt not captured')}</strong><span>${esc(row.type)} · ${esc(row.agent_name || row.agent_id || 'No agent')}</span>${row.agent_id ? `<span class="host-label">Host: ${esc(hostLabel(row.agent_id))}</span>` : ''}<small>${esc(row.status)} · ${esc(time(row.updated))}</small><span class="wb-read-state">${row.unread ? 'Unread' : 'Read'}</span></a></div>`;
+    return `<div class="wb-record ${row.unread ? 'is-unread' : 'is-read'}${selections[key].has(row.id) ? ' is-picked' : ''}" ${styleAttrs(styleTask(row))} data-wb-key="${esc(row.id)}" data-item-id="${esc(row.id)}">${checkbox(key, row.id, row.title || 'Untitled work')}<a class="wb-record-link" href="${href('item', row.id)}"${selected()?.id === row.id ? ' aria-current="page"' : ''}><strong>${esc(row.title || 'Prompt not captured')}</strong><span class="task-label">${taskMark(styleTask(row))}${esc(styleTask(row)?.title || 'No task')}</span><span>${esc(row.type)} · ${esc(row.agent_name || row.agent_id || 'No agent')}</span>${row.agent_id ? `<span class="host-label">Host: ${esc(hostLabel(row.agent_id))}</span>` : ''}<small>${esc(row.status)} · ${esc(time(row.updated))}</small><span class="wb-read-state">${row.unread ? 'Unread' : 'Read'}</span></a></div>`;
   }
   function renderQueue() {
     const el = document.querySelector('#review-queue'); if (!el) return;
@@ -119,13 +122,13 @@ export function createWorkbench({ root, navigate, load, review, refresh, report 
     const item = selected();
     if (route.kind === 'item') {
       if (!item) { patchHTML(root, '<p class="list-empty">This record is no longer available.</p>'); return; }
-      patchHTML(root, `<article class="wb-content wb-item ${item.unread ? 'is-unread' : 'is-read'}" data-wb-key="opened:${esc(item.id)}"><div class="wb-summary">${pages.inbox.list.summary(item)}</div><div class="wb-review-actions"><button data-workbench-review="${esc(item.id)}"${reviewing ? ' disabled' : ''}>${item.unread ? 'Mark as read' : 'Mark as unread'}</button>${item.task_id ? `<a href="${href('task', item.task_id)}">Task history</a>` : ''}${item.agent_id ? `<a href="${href('agent', item.agent_id)}">Agent history</a>` : ''}</div><div class="wb-item-detail">${pages.inbox.list.detail(item)}</div></article>`);
+      patchHTML(root, `<article class="wb-content wb-item ${item.unread ? 'is-unread' : 'is-read'}" ${styleAttrs(styleTask(item))} data-wb-key="opened:${esc(item.id)}"><div class="wb-summary">${pages.inbox.list.summary(item)}</div><div class="wb-review-actions"><button data-workbench-review="${esc(item.id)}"${reviewing ? ' disabled' : ''}>${item.unread ? 'Mark as read' : 'Mark as unread'}</button>${item.task_id ? `<a href="${href('task', item.task_id)}">Task history</a>` : ''}${item.agent_id ? `<a href="${href('agent', item.agent_id)}">Agent history</a>` : ''}</div><div class="wb-item-detail">${pages.inbox.list.detail(item)}</div></article>`);
       load(item.id, false).catch(report); return;
     }
     const rows = history();
     const agent = route.kind === 'agent' && store.state.agents.find(a => a.id === route.id);
     const taskId = route.kind === 'task' ? route.id : agent?.task_id;
-    patchHTML(root, `<section class="wb-content"><div class="wb-history-heading"><h2>${route.kind === 'index' ? 'Recent work' : 'History'} <span>${rows.length}</span></h2>${taskId ? `<button data-do="compose" data-id="${esc(taskId)}"${agent ? ` data-agent-id="${esc(agent.id)}"` : ''}>New thread</button>` : ''}</div><p class="wb-list-hint">Check records to act on several at once. Opening a record marks it read.</p>${toolbar('history', rows)}<div class="wb-history">${rows.map(r => itemLink(r, 'history')).join('') || '<p class="list-empty">No work in this scope yet.</p>'}</div></section>`);
+    patchHTML(root, `<section class="wb-content" ${styleAttrs(store.state.tasks.find(t => t.id === taskId) || null)}><div class="wb-history-heading"><h2>${route.kind === 'index' ? 'Recent work' : 'History'} <span>${rows.length}</span></h2>${taskId ? `<button data-do="compose" data-id="${esc(taskId)}"${agent ? ` data-agent-id="${esc(agent.id)}"` : ''}>New thread</button>` : ''}</div><p class="wb-list-hint">Check records to act on several at once. Opening a record marks it read.</p>${toolbar('history', rows)}<div class="wb-history">${rows.map(r => itemLink(r, 'history')).join('') || '<p class="list-empty">No work in this scope yet.</p>'}</div></section>`);
   }
   function render(next) {
     if (route && (next.kind !== route.kind || next.id !== route.id || next.page !== route.page)) for (const key of ['history', 'members']) { selections[key] = new Set(); notices.delete(key); }

@@ -14,16 +14,16 @@ The primary user is the owner, managing coding agents and shell work on their ow
 
 ## Product purpose
 
-Give the user one browser workspace for asynchronous agent work. Two jobs are equally important:
+Give the user one browser workspace for asynchronous agent work. Tasks is the default planning page; Queue is the aftermath and result-review page. Both jobs are core workflows.
 
-- Review agent turns across TUIOS sessions without visiting each terminal pane.
-- Dispatch project-scoped work, leave while it runs, then review results and continue the conversation.
+- Write tasks, subtasks, next steps, and prompts inline without navigating a pane/turn/document tree.
+- Review captured results, questions, failures, documents, and continued replies without visiting each terminal pane.
 
-Success means the user can understand completed work, respond to questions, handle human approvals, and continue work from the browser. Routine operation must not require switching to a terminal.
+Success means the user can plan work, dispatch it, return to review results, respond to questions, handle human approvals, and continue work from the browser. Routine operation must not require switching to a terminal.
 
 ## Positioning
 
-TUIOS owns persistent execution in terminal panes. tuios inbox presents that work as a cross-session Turns feed and project-scoped tasks with threaded correspondence. SQLite stores the app's task and conversation records independently of the browser lifecycle. An optional standalone terminal task workspace (`tuios-inbox-tui`) uses the same HTTP API and records; it supplements the browser and is not required for routine work.
+TUIOS owns persistent execution in terminal panes. tuios inbox presents task-focused planning and a separate Queue for review and correspondence. SQLite stores task and conversation records independently of the browser lifecycle. An optional standalone terminal task workspace (`tuios-inbox-tui`) uses the same HTTP API and records; it supplements the browser and is not required for routine work.
 
 ## Operating context
 
@@ -38,7 +38,13 @@ TUIOS owns persistent execution in terminal panes. tuios inbox presents that wor
 ### Required product behavior
 
 - Keep the product name **tuios inbox**.
-- Treat cross-session Turns review and task-centered dispatch and correspondence as equal core workflows.
+- Treat inline Tasks planning and Queue review/continuation as equal core workflows. Keep advanced activity and native views reachable.
+- Let tasks and subtasks inherit execution settings while keeping each task's persistent theme/icon/custom-color identity independent. Carry that identity to every owned prompt and response without using color as the only label.
+- Keep the server-assigned task seed stable across restart, rename, reparent, completion, and reset. Theme, icon, and custom-color overrides reset independently without changing the seed. Unique numeric seeds do not promise unlimited perceptual uniqueness, and matching user overrides are allowed.
+- Default untargeted prompts to fresh background execution. Resolve cwd from the nearest task with a project or existing worktree, preferring that record's worktree; do not borrow an unrelated ancestor worktree.
+- Warn about advisory execution concerns and offer explicit Proceed anyway. Use native Queue anyway for busy/question targets, never raw-key approval injection. `allow_warnings` does not bypass native authorization.
+- Preserve full task titles and prompts without artificial editor caps. Warn about native transport limits and report actual refusals rather than silently truncating or splitting text.
+- Preserve drafts, focus, scrolling, and disclosures across existing SSE updates.
 - Support browser access across the user's Tailscale tailnet.
 - Put routine operations and human approvals in the browser. Require terminal access only when it is absolutely unavoidable.
 - Every UI input for a local filesystem path must provide a real OS file or directory picker. Match the picker to files or folders and support single or multiple selection as required. Use a save dialog for a new output file. Manual path entry may accompany the picker, never replace it.
@@ -69,7 +75,7 @@ These remaining gaps are not resolved by the current UI changes.
 
 ## Brand commitments
 
-The confirmed name is **tuios inbox**, now shown in the interface and README. No visual direction was chosen during initialization. The subsequent Packet capture workbench implementation is recorded in [DESIGN.md](DESIGN.md).
+The confirmed name is **tuios inbox**. The incumbent Flight deck shell is recorded in [DESIGN.md](DESIGN.md). The task-focused redesign preserves its palette, typography, and controls, with a narrow task-identity color exception for marks, subdued washes, and rules. Task identity never replaces status, unread state, selection, or amber actions.
 
 ## Evidence on hand
 
@@ -82,6 +88,7 @@ The confirmed name is **tuios inbox**, now shown in the interface and README. No
 
 - Make the browser sufficient for everyday work, including human approvals. Terminal access is an exception.
 - Support the user's actual access context, including their Tailscale tailnet, without treating network reachability as human authorization.
-- Give Turns review and task dispatch equal importance. The user should not need to monitor every live terminal session.
+- Give Tasks planning and Queue aftermath equal importance. The user should not need to monitor every live terminal session.
+- Leave execution decisions with the user through explicit advisory overrides while reporting native failures truthfully.
 - Preserve work and conversation state while the user leaves and returns. Show capture uncertainty honestly.
 - Use OS file and folder selection wherever the user must supply a local path.

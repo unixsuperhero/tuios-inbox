@@ -7,6 +7,7 @@ import { createHistory } from '/history.js';
 import { setupLaunchHost } from '/launch-host.js';
 import { createOutline, outlineHash, queueHash } from '/outline.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, apiCached, NOT_MODIFIED, esc, taskTree, editKey } from '/pages.js';
+import { applyTaskStyles } from '/task-style-dom.js';
 const $ = s => document.querySelector(s);
 const root = $('#list'), metadata = $('#page-metadata'), loading = new Set(), asking = new Set();
 const previousValues = new WeakMap(), creations = new Map(), draftRevisions = new Map(), submissions = new WeakMap();
@@ -75,7 +76,7 @@ function parseRoute(hash) {
   const waiting = /^queue(?:\/(task|session|pane)\/([^/]+))?$/.exec(path);
   if (waiting) { try { return { kind: 'outline', view: 'queue', scope: waiting[1] ? { type: waiting[1], id: decodeURIComponent(waiting[2]) } : { type: 'all' } }; } catch {} }
   const outlineView = /^(?:outline(?:\/([\w-]+)(?:\/([^/]+))?)?)?$/.exec(path);
-  if (outlineView && (!outlineView[2] || outlineView[1] === 'needs-me')) { try { return { kind: 'outline', view: outlineView[1] || 'everything', ...(outlineView[2] ? { task: decodeURIComponent(outlineView[2]) } : {}) }; } catch {} }
+  if (outlineView && (!outlineView[2] || outlineView[1] === 'needs-me')) { try { return { kind: 'outline', view: outlineView[1] || 'tasks', ...(outlineView[2] ? { task: decodeURIComponent(outlineView[2]) } : {}) }; } catch {} }
   if (path === 'tuios-overview') return { kind: 'tuios', view: 'overview' };
   const native = /^tuios(?:\/([^/]+)(?:\/(\d+)(?:\/([^/]+))?)?)?$/.exec(path);
   if (native) { try { return { kind: 'tuios', session: native[1] ? decodeURIComponent(native[1]) : undefined, workspace: native[2] ? Number(native[2]) : undefined, window: native[3] ? decodeURIComponent(native[3]) : undefined }; } catch {} }
@@ -137,6 +138,7 @@ function render() {
   if (!route) return;
   const nextPage = routePage(route);
   if (nextPage && ['task', 'agent'].includes(route.kind)) patchHTML(metadata, metadataForRoute(route));
+  applyTaskStyles(metadata, store.state.tasks);
   workbench.render(route);
   if (!nextPage) {
     list?.destroy(); list = null; page = null; metadata.hidden = true;
@@ -157,6 +159,7 @@ function render() {
   document.title = `tuios inbox · ${page.title}`;
   if (workbench.supports(route)) return;
   list.setRows(page.rows());
+  applyTaskStyles(root, store.state.tasks);
   if (page.items) for (const el of root.querySelectorAll('.list-rows > .item[open]')) load(el.dataset.id).catch(error);
 }
 // `live` is a refresh nobody asked for (a change event): when the server still holds what the page has, nothing is parsed, rebuilt or drawn.
@@ -541,7 +544,8 @@ document.addEventListener('submit', e => {
     if (key || agent) {
       const source = store.state.items.find(i => i.id === form.dataset.draft);
       const shouldReview = source && terminalResponse(source) && source.unread;
-      await api(key ? `/threads/${encodeURIComponent(key.slice(key.indexOf(':') + 1))}/reply` : `/agents/${encodeURIComponent(agent)}/prompt`, data);
+      const ownership = Object.hasOwn(form.dataset, 'taskId') ? { task_id: form.dataset.taskId || null } : {};
+      await api(key ? `/threads/${encodeURIComponent(key.slice(key.indexOf(':') + 1))}/reply` : `/agents/${encodeURIComponent(agent)}/prompt`, { ...data, ...ownership });
       if (draftRevisions.get(form.dataset.draft) === revision) {
         store.drafts.delete(form.dataset.draft); if (form.elements.body.value === body) form.elements.body.value = '';
       }

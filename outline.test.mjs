@@ -22,7 +22,13 @@ async function hook(key, values, rest = {}) {
 // A finished turn on a pane, as capture-hook.mjs reports it. It also makes the pane known and at rest.
 const turnDone = (key, pane, prompt, state = 'done') => hook(key, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: state, TUIOS_WINDOW_ID: pane, TUIOS_SESSION_ID: 's' },
   { turn: { session: 's', pane, name: pane, harness: 'omp', state, at: stamp(), prompt, response: `reply to ${prompt}`, source: 'pane' } });
-async function pane(name, taskId) { await turnDone('seed-' + name, name, 'earlier'); await call('/agents/update', { ids: [name], set: { task_id: taskId } }); await Bun.sleep(5); return name; }
+async function pane(name, taskId) {
+  await turnDone('seed-' + name, name, 'earlier'); await call('/agents/update', { ids: [name], set: { task_id: taskId } });
+  const resolved = (await outline()).tasks.find(t => t.id === taskId)?.resolved;
+  const db = new (await import('bun:sqlite')).Database(join(home, 'inbox.sqlite'));
+  db.run('UPDATE agents SET launch_cwd=?,launch_profile=?,launch_model=? WHERE id=?', [resolved?.cwd.value || (await import('node:os')).homedir(), 'omp', resolved?.model.value || '', name]); db.close();
+  await Bun.sleep(5); return name;
+}
 const promptOf = async key => (await outline()).prompts.find(p => p.id === key);
 
 beforeAll(async () => {
@@ -47,10 +53,12 @@ beforeAll(async () => {
 });
 afterAll(async () => { if (child) { child.kill(); await child.exited; } if (home) await rm(home, { recursive: true, force: true }); });
 
-test('the outline modules are served', async () => {
-  const res = await fetch(base + '/outline-model.js');
+test('the shared style module is served with the unchanged security policy', async () => {
+  const res = await fetch(base + '/task-style.js');
   expect(res.status).toBe(200);
-  expect(await res.text()).toContain('export function resolve');
+  expect(res.headers.get('Content-Security-Policy')).toContain("style-src 'self'");
+  const { taskStyle } = await import('data:text/javascript;base64,' + Buffer.from(await res.text()).toString('base64'));
+  expect(taskStyle({ seed: 1, theme: 'sage', icon: 'compass' }).color).toBe('#9bd4bd');
 });
 
 test('a prompt is saved without a task, without text, and without anywhere to run', async () => {
@@ -59,13 +67,13 @@ test('a prompt is saved without a task, without text, and without anywhere to ru
   const { prompt, ran, preflight } = await saved.json();
   expect(prompt).toMatchObject({ body: 'what does settle_seconds default to?', task_id: null, target: '', state: 'queued', error: '' });
   expect(ran).toBe(false);
-  expect(preflight.blocks.map(b => b.code)).toEqual(['nowhere']);
+  expect(preflight.warns.map(b => b.code)).toEqual(['nowhere']);
   expect(prompt.resolved.harness).toEqual({ value: 'omp', from: 'default' });
   const empty = await call('/prompts', {});
   expect(empty.status).toBe(201);
   expect((await empty.json()).preflight.blocks.map(b => b.code)).toContain('no_text');
   const o = await outline();
-  expect(o.defaults).toEqual({ harness: 'omp', queue_mode: 'manual' });
+  expect(o.defaults).toEqual({ harness: 'omp', queue_mode: 'manual', launch_mode: 'new' });
   expect(o.prompts.map(p => p.id)).toContain(prompt.id);
   expect((await call(`/prompts/${prompt.id}`, undefined, 'DELETE')).status).toBe(200);
   expect((await outline()).prompts.map(p => p.id)).not.toContain(prompt.id);
@@ -76,13 +84,13 @@ test('a blocked run answers 409, keeps the prompt as blocked, and can be queued 
   const res = await call(`/prompts/${prompt.id}/run`, {});
   expect(res.status).toBe(409);
   const refused = await res.json();
-  expect(refused.error).toContain('Nowhere to run');
-  expect(refused.preflight.blocks[0]).toMatchObject({ code: 'nowhere', fix: 'repo' });
+  expect(refused.error).toContain('home directory');
+  expect(refused.preflight.warns[0]).toMatchObject({ code: 'nowhere', fix: 'repo' });
   expect(await promptOf(prompt.id)).toMatchObject({ state: 'blocked' });
   expect(await json(`/prompts/${prompt.id}`, { state: 'queued', body: 'orphan, edited' }, 'PATCH')).toMatchObject({ state: 'queued', body: 'orphan, edited', error: '' });
   const now = await json('/prompts', { body: 'run me', target: 'no-such-pane', run: true });
   expect(now).toMatchObject({ ran: false, prompt: { state: 'blocked' } });
-  expect(now.preflight.blocks.map(b => b.code)).toEqual(['pane_gone']);
+  expect(now.preflight.warns.map(b => b.code)).toEqual(['pane_gone']);
   expect((await call('/tasks/none/run-next', {})).status).toBe(409);
   expect(await sent()).toEqual((await sent()).filter(a => a[0] !== 'queue'));
 });
@@ -127,7 +135,7 @@ test('a run goes to a ready pane, is linked to the next turn there, and records 
   const o = await outline();
   expect(o.panes.find(p => p.id === a)).toMatchObject({ task_id: task.id, kind: 'agent', ready: true });
   // Typed at a pane: the prompt lands in the pane's task.
-  const made = await json('/prompts', { body: 'add a file', target: a, run: true });
+  const made = await json('/prompts', { body: 'add a file', target: a, run: true, allow_warnings: true });
   expect(made).toMatchObject({ ran: true, prompt: { task_id: task.id, state: 'running', pane_id: a } });
   expect((await sent()).find(c => c[0] === 'queue' && c.includes(a)).at(-1)).toBe('add a file');
   expect((await call(`/prompts/${made.prompt.id}/run`, {})).status).toBe(409);
@@ -144,7 +152,7 @@ test('a run goes to a ready pane, is linked to the next turn there, and records 
   const turn = await (await call('/turns/' + runs[0].id.slice(5))).json();
   expect(turn.head_before).not.toBe(turn.head_after);
   // A reply is a new prompt on the same pane; an errored run marks its prompt errored.
-  const reply = await json('/prompts', { body: 'again', task_id: task.id, target: a, run: true });
+  const reply = await json('/prompts', { body: 'again', task_id: task.id, target: a, run: true, allow_warnings: true });
   expect(reply.ran).toBe(true);
   await turnDone('run-2', a, 'again', 'errored');
   expect(await promptOf(reply.prompt.id)).toMatchObject({ state: 'errored' });
@@ -156,17 +164,21 @@ test('a pane on its own question is never typed at', async () => {
   await hook('ask-1', { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'needs_input', TUIOS_WINDOW_ID: a, TUIOS_SESSION_ID: 's' });
   const made = await json('/prompts', { body: 'yes', target: a, run: true });
   expect(made).toMatchObject({ ran: false, prompt: { state: 'blocked' } });
-  expect(made.preflight.blocks.map(b => b.code)).toEqual(['pane_blocked']);
+  expect(made.preflight.warns.map(b => b.code)).toEqual(['pane_blocked']);
   expect((await sent()).some(c => c[0] === 'queue' && c.includes(a))).toBe(false);
+  const proceeded = await call(`/prompts/${made.prompt.id}/run`, { allow_warnings: true });
+  expect(proceeded.status).toBe(202);
+  expect((await sent()).filter(c => c[0] === 'queue' && c.includes(a)).map(c => c.at(-1))).toEqual(['yes']);
+  expect((await sent()).filter(c => ['send-keys', 'send-text', 'respond'].includes(c[0]) && c.includes(a))).toEqual([]);
 });
 
 test('queues run lowest position first; an automatic queue advances when its pane rests and holds at a block', async () => {
-  const task = await json('/tasks', { title: 'Queue', queue_mode: 'auto' });
+  const task = await json('/tasks', { title: 'Queue', repo: plain, queue_mode: 'auto' });
   const a = await pane('pane-queue', task.id);
   const ids = [];
-  for (const body of ['one', 'two', 'three']) ids.push((await json('/prompts', { body, task_id: task.id })).prompt.id);
+  for (const body of ['one', 'two', 'three']) ids.push((await json('/prompts', { body, task_id: task.id, target: a })).prompt.id);
   const blocked = (await json('/prompts', { body: 'four', task_id: task.id, target: 'gone-pane' })).prompt.id;
-  const last = (await json('/prompts', { body: 'five', task_id: task.id })).prompt.id;
+  const last = (await json('/prompts', { body: 'five', task_id: task.id, target: a })).prompt.id;
   // Saving never runs, even in an automatic queue with a pane at rest.
   expect((await sent()).some(c => c[0] === 'queue' && c.includes(a))).toBe(false);
   await call(`/prompts/${ids[2]}/move`, { before: ids[0] });
@@ -196,7 +208,7 @@ test('with no pane at rest a run launches an agent in the repo and sends there',
   const task = await json('/tasks', { title: 'Launch', repo, model: 'gpt-x' });
   const { prompt } = await json('/prompts', { body: 'start here', task_id: task.id });
   expect(prompt.preflight.blocks).toEqual([]);
-  expect((await call(`/prompts/${prompt.id}/run`, {})).status).toBe(202);
+  expect((await call(`/prompts/${prompt.id}/run`, { allow_warnings: true })).status).toBe(202);
   let calls = [];
   for (let i = 0; i < 50 && !calls.some(c => c[0] === 'queue' && c.includes('launched-1')); i++) { await Bun.sleep(100); calls = await sent(); }
   const start = calls.find(c => c[0] === 'start-agent');
@@ -247,7 +259,7 @@ test('deleting a task moves its subtasks up a level and its prompts and runs to 
 test('a prompt that was sent does not report its own busy pane as a block', async () => {
   const task = await json('/tasks', { title: 'Replies', repo });
   const a = await pane('pane-reply', task.id);
-  const made = await json('/prompts', { body: 'reply one', target: a, run: true });
+  const made = await json('/prompts', { body: 'reply one', target: a, run: true, allow_warnings: true });
   expect(made).toMatchObject({ ran: true, prompt: { state: 'running', pane_id: a, preflight: { blocks: [] } }, preflight: { blocks: [] } });
   expect((await outline()).panes.find(p => p.id === a).ready).toBe(false);
   expect((await promptOf(made.prompt.id)).preflight.blocks).toEqual([]);
@@ -256,15 +268,15 @@ test('a prompt that was sent does not report its own busy pane as a block', asyn
   expect((await again.json()).preflight.blocks).toEqual([]);
   // The pane is still busy for every other prompt.
   const next = await json('/prompts', { body: 'reply two', target: a });
-  expect(next.preflight.blocks.map(b => b.code)).toEqual(['pane_blocked']);
+  expect(next.preflight.warns.map(b => b.code)).toContain('pane_blocked');
   // Done, the prompt stays clean while its pane works on something else, but running it again is checked in full.
   await turnDone('reply-1', a, 'reply one');
-  const other = await json('/prompts', { body: 'reply three', target: a, run: true });
+  const other = await json('/prompts', { body: 'reply three', target: a, run: true, allow_warnings: true });
   expect(other).toMatchObject({ ran: true, preflight: { blocks: [] } });
   expect(await promptOf(made.prompt.id)).toMatchObject({ state: 'done', preflight: { blocks: [] } });
   const rerun = await call(`/prompts/${made.prompt.id}/run`, {});
   expect(rerun.status).toBe(409);
-  expect((await rerun.json()).preflight.blocks.map(b => b.code)).toEqual(['pane_blocked']);
+  expect((await rerun.json()).preflight.warns.map(b => b.code)).toContain('pane_blocked');
 });
 
 test('the outline lists the documents a run reported, without carrying its response', async () => {
@@ -360,7 +372,7 @@ list-agents) echo '${JSON.stringify({ agents: [{ window_id: 'missed', name: 'mis
     await open('ev-exit', 'ask exit'); await open('ev-closed', 'ask closed');
     expect(await runOf('ask exit')).toMatchObject({ state: 'working', finished: null });
     expect(await runOf('ask closed')).toMatchObject({ state: 'working', finished: null });
-    const at = Date.now() + 5000;
+    const at = Math.ceil((Date.now() + 5000) / 1000) * 1000;
     await emit({ type: 'window-exit', session: 's', window: 'ev-exit', time: at * 1e6 });
     expect(await until('ask exit', 'ended')).toMatchObject({ state: 'ended', unread: false, finished: new Date(at).toISOString() });
     expect(await runOf('ask closed')).toMatchObject({ state: 'working', finished: null });
@@ -373,7 +385,7 @@ list-agents) echo '${JSON.stringify({ agents: [{ window_id: 'missed', name: 'mis
     // A prompt is running on a pane that closes mid-run: the run ends, the prompt is errored and says why, and its auto queue is held by it.
     const task = await json('/tasks', { title: 'Closes mid-run', queue_mode: 'auto' });
     const a = await pane('ev-run', task.id);
-    const made = await json('/prompts', { body: 'long job', target: a, run: true });
+    const made = await json('/prompts', { body: 'long job', target: a, run: true, allow_warnings: true });
     expect(made).toMatchObject({ ran: true, prompt: { state: 'running', pane_id: a } });
     const waiting = (await json('/prompts', { body: 'after it', task_id: task.id })).prompt;
     await Bun.sleep(5); await open(a, 'long job');

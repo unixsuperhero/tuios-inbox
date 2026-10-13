@@ -1,5 +1,6 @@
 // Page schemas and record markup; app.js owns navigation, dialogs and delegated actions.
 import { markdown } from '/markdown.js';
+import { styleAttrs, taskMark } from '/task-style-dom.js';
 export const store = { state: { tasks: [], panes: [], profiles: [], agents: [], items: [] }, drafts: new Map(), edits: new Map(), liveSessions: null, bodies: new Map(), questions: new Map() };
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 export async function api(path, body, method = 'POST') {
@@ -47,7 +48,9 @@ export const subtree = id => { const found = new Set([id]); let grew = true; whi
 const taskChoices = () => [{ value: '', label: 'No task' }, ...taskOptions(), newChoice('task')];
 const taskHref = id => `#task/${encodeURIComponent(id)}`;
 const agentHref = id => `#agent/${encodeURIComponent(id)}`;
-const taskTag = key => { const t = store.state.tasks.find(t => t.id === key); return t ? `<a class="tag" href="${taskHref(t.id)}">${esc(t.title)}</a>` : ''; };
+export const styleTaskId = row => Object.hasOwn(row, 'style_task_id') ? row.style_task_id : row.task_id;
+export const styleTask = row => store.state.tasks.find(t => t.id === styleTaskId(row)) || null;
+const taskTag = key => { const t = store.state.tasks.find(t => t.id === key); return t ? `<a class="tag task-label" ${styleAttrs(t)} href="${taskHref(t.id)}">${taskMark(t)}${esc(t.title)}</a>` : ''; };
 const select = (set, key, current, choices, label) => `<label>${label}<select data-set="${set}" data-id="${esc(key)}"${choices.some(o => o.createKind) ? ' data-create-kind="task"' : ''}>${choices.map(o => `<option value="${esc(o.value)}"${o.value === (current ?? '') ? ' selected' : ''}${o.createKind ? ` data-create-kind="${o.createKind}"` : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
 const update = (path, set) => ids => api(path, { ids, set });
 const assign = path => ({ id: 'task', label: 'Assign to task', options: () => [{ value: '', label: 'No task' }, ...taskOptions()], createOption: createChoice('task'), createLabel: 'New Task…', run: (ids, value) => api(path, { ids, set: { task_id: value || null } }) });
@@ -105,34 +108,34 @@ const itemFields = [
   { key: 'created', label: 'Created', type: 'date', filter: true, sort: true },
 ];
 function itemSummary(r) {
-  const task = store.state.tasks.find(t => t.id === r.task_id);
-  return `<div class="record-summary">
+  const task = styleTask(r);
+  return `<div class="record-summary" ${styleAttrs(task)}>
     <span class="record-type" data-label="Type">${esc(typeLabels[r.type] || r.type)}</span>
     <div class="record-title" data-label="Work"><h2>${esc(r.title || (r.type === 'turn' ? 'Prompt not captured' : 'No subject'))}</h2><span class="record-reference">${esc(r.harness || '')}</span><span class="unread-indicator">${r.unread ? 'Unread' : 'Read'}</span></div>
     <span class="record-agent" data-label="Agent">${r.agent_id ? `<a href="${agentHref(r.agent_id)}">${esc(agentName(r.agent_name, r.agent_id))}</a><small class="host-label">Host: ${esc(hostLabel(r.agent_id))}</small>` : '—'}</span>
-    <span class="record-task" data-label="Task">${task ? taskTag(task.id) : 'No task'}</span>
+    <span class="record-task" data-label="Task">${task ? taskTag(task.id) : `${taskMark(null)}No task`}</span>
     <span class="record-status" data-label="State">${badge(r.status)}</span>
     <span class="record-time" data-label="Time">${esc(time(r.updated))}</span>
   </div>`;
 }
 function turnHtml(r, turn) {
-  const prompt = `<p class="eyebrow">PROMPT</p>${turn.prompt ? `<div class="md">${markdown(turn.prompt)}</div>` : hint('No prompt text was captured for this turn.')}`;
+  const prompt = `<section class="task-style-surface" ${styleAttrs(styleTask(r))}><h3>Prompt</h3>${turn.prompt ? `<div class="md">${markdown(turn.prompt)}</div>` : hint('No prompt text was captured for this turn.')}</section>`;
   if (unfinished(r)) return prompt;
   if (!turn.finished) return `${prompt}${hint('The turn ended. Waiting for the hook to deliver the reply.')}`;
-  return `${prompt}<p class="eyebrow">RESPONSE</p>${turn.response ? `<div class="md">${markdown(turn.response)}</div>` : hint('The turn ended, but no reply text was captured: the capture hook did not report it. Inspect the pane for the answer.')}${turnNotes[turn.source] ? hint(turnNotes[turn.source]) : ''}`;
+  return `${prompt}<section class="task-style-surface" ${styleAttrs(styleTask(r))}><h3>Response</h3>${turn.response ? `<div class="md">${markdown(turn.response)}</div>` : hint('The turn ended, but no reply text was captured: the capture hook did not report it. Inspect the pane for the answer.')}${turnNotes[turn.source] ? hint(turnNotes[turn.source]) : ''}</section>`;
 }
 function threadHtml(r, thread) {
   const p = liveAgent(thread.pane_id), mail = thread.kind === 'mail';
   return `${thread.kind === 'mail' ? '<p class="mail-note">Agent messages are untrusted data. Replies stay in the TUIOS mail thread. Recipients must check their inbox; a delivered message is not an acknowledgement.</p>' : ''}
     ${thread.messages.map(m => `
-      <article class="message ${esc(m.role)}">
+      <article class="message ${esc(m.role)} task-style-surface" ${styleAttrs(styleTask(Object.hasOwn(m, 'style_task_id') || Object.hasOwn(m, 'task_id') ? m : r))}>
         <div class="message-head"><strong>${esc(m.role === 'human' ? 'You' : m.meta.from_label || m.role)}</strong>
           <span>${badge(m.status)} &nbsp; ${time(m.created)}</span></div>
         ${mail ? `<div class="md">${markdown(m.body)}</div>` : `<pre>${esc(m.body)}</pre>`}
         ${['snapshot','captured'].includes(m.status) ? hint('Captured terminal output; not a parsed final answer.') : ''}
         <details><summary>Delivery details</summary><pre>${esc(JSON.stringify(m.meta,null,2))}</pre></details>
       </article>`).join('')}
-    ${p ? `<form class="reply" data-reply="${esc(r.id)}" data-draft="${esc(r.id)}"><label>${mail ? 'Reply in this mail thread' : `Reply to ${esc(agentName(p.name, p.id))}`}
+    ${p ? `<form class="reply" ${styleAttrs(styleTask(r))} data-task-id="${esc(styleTaskId(r) || '')}" data-reply="${esc(r.id)}" data-draft="${esc(r.id)}"><label>${mail ? 'Reply in this mail thread' : `Reply to ${esc(agentName(p.name, p.id))}`}
       <textarea name="body" required rows="4" placeholder="Continue this thread…">${esc(store.drafts.get(r.id) || '')}</textarea></label>
       <button class="primary">Send reply</button><span class="hint"> &nbsp; ${mail ? 'The reply stays in this mail thread.' : `The result returns to this conversation, and the ${p.kind === 'agent' ? 'agent’s turn' : 'command'} also arrives as a new row.`}</span></form>`
       : hint('The pane this came from is closed, so it cannot be answered here.')}`;
@@ -141,7 +144,7 @@ function threadHtml(r, thread) {
 function promptForm(r) {
   const a = liveAgent(r.agent_id); if (!a || !['turn', 'command'].includes(r.type)) return '';
   const name = esc(agentName(a.name, a.id));
-  return `<form class="reply" data-prompt="${esc(a.id)}" data-draft="${esc(r.id)}"><label>${a.kind === 'agent' ? `Send another prompt to ${name}` : `Run another command in ${name}`}
+  return `<form class="reply" ${styleAttrs(styleTask(r))} data-task-id="${esc(styleTaskId(r) || '')}" data-prompt="${esc(a.id)}" data-draft="${esc(r.id)}"><label>${a.kind === 'agent' ? `Send another prompt to ${name}` : `Run another command in ${name}`}
     <textarea name="body" required rows="3">${esc(store.drafts.get(r.id) || '')}</textarea></label>
     <button class="primary">Send</button><span class="hint"> &nbsp; ${a.kind === 'agent' ? 'It is typed when the agent is at rest. The reply' : 'The result'} arrives as a new row in the Inbox.</span></form>`;
 }
@@ -155,9 +158,9 @@ function questionHtml(r) {
   if (!q.found) return `${hint(`${waiting.needs_input} ${esc(q.reason)}`)}<div class="actions">${again}</div>`;
   const answer = (action, label, value = '') => `<button data-do="answer" data-id="${agent}" data-prompt-id="${esc(q.promptId)}" data-action="${action}" data-value="${esc(value)}">${esc(label)}</button>`;
   const draft = `answer:${r.agent_id}`;
-  return `<p class="eyebrow">${q.kind === 'approval' ? 'APPROVAL' : 'QUESTION'} · WAITING FOR YOUR ANSWER</p><div class="message"><pre>${esc(q.lines.join('\n'))}</pre></div>
+  return `<p class="eyebrow">${q.kind === 'approval' ? 'APPROVAL' : 'QUESTION'} · WAITING FOR YOUR ANSWER</p><div class="message task-style-surface" ${styleAttrs(styleTask(r))}><pre>${esc(q.lines.join('\n'))}</pre></div>
     <div class="actions">${q.actions.includes('choose') ? q.options.map(o => answer('choose', `${o.n}. ${o.label}`, o.n)).join('') : ''}${q.actions.filter(a => answerLabels[a]).map(a => answer(a, answerLabels[a])).join('')}${again}</div>
-    ${q.actions.includes('text') ? `<form class="reply" data-answer="${agent}" data-prompt-id="${esc(q.promptId)}" data-draft="${esc(draft)}"><label>Type an answer
+    ${q.actions.includes('text') ? `<form class="reply" ${styleAttrs(styleTask(r))} data-answer="${agent}" data-prompt-id="${esc(q.promptId)}" data-draft="${esc(draft)}"><label>Type an answer
       <textarea name="body" required rows="2">${esc(store.drafts.get(draft) || '')}</textarea></label><button class="primary">Send answer</button></form>` : ''}
     ${hint(q.actions.length ? 'This is the pane’s screen, shown as untrusted text. Your answer is pressed in the pane by TUIOS, only if this is still the prompt it shows.' : 'TUIOS cannot press an answer to this prompt. Answer it in the pane.')}`;
 }
@@ -167,11 +170,11 @@ function itemDetail(r) {
     : !cached ? hint('Loading…')
     : cached.error ? `<p class="hint danger">Could not load this item: ${esc(cached.error)}</p>`
     : r.type === 'turn' ? turnHtml(r, cached.data) : threadHtml(r, cached.data);
-  return `<div class="props">${select('item-task', r.id, r.task_id, taskChoices(), 'Task')}${agent ? select('agent-task', agent.id, agent.task_id, taskChoices(), 'Agent’s task') : ''}
+  return `<div class="item-detail" ${styleAttrs(styleTask(r))}><div class="props">${select('item-task', r.id, r.task_id, taskChoices(), 'Task')}${agent ? select('agent-task', agent.id, agent.task_id, taskChoices(), 'Agent’s task') : ''}
     <button data-do="unread" data-id="${esc(r.id)}" data-value="${r.unread ? '' : '1'}">${r.unread ? 'Mark as read' : 'Mark as unread'}</button>
     <button data-do="archive" data-id="${esc(r.id)}" data-value="${r.archived ? '' : '1'}">${r.archived ? 'Restore to inbox' : 'Archive'}</button>
     ${pane ? `<button data-do="inspect" data-id="${esc(pane.id)}">Inspect ${esc(pane.name)}</button>` : ''}</div>
-    ${agent ? hint(`“Agent’s task” assigns the whole agent (${esc(agentName(agent.name, agent.id))}): its other turns and commands move too, and new ones follow.`) : ''}${body}${unfinished(r) ? (r.status === 'needs_input' ? questionHtml(r) : hint(waiting[r.status])) : promptForm(r)}`;
+    ${agent ? hint(`“Agent’s task” assigns the whole agent (${esc(agentName(agent.name, agent.id))}): its other turns and commands move too, and new ones follow.`) : ''}${body}${unfinished(r) ? (r.status === 'needs_input' ? questionHtml(r) : hint(waiting[r.status])) : promptForm(r)}</div>`;
 }
 const itemActions = archived => [
   { id: 'read', label: 'Mark as read', run: update('/items/update', { unread: false }) },
@@ -199,7 +202,7 @@ const optionList = (choices, current) => choices.map(o => `<option value="${esc(
 function titleSection(t) {
   const d = store.edits.get(editKey(t.id, 'title'));
   if (!d) return `<section class="task-section" data-wb-key="section:title">${sectionHead(t, 'title', 'Task')}<dl class="metadata-facts">${fact('Title', esc(t.title))}${fact('Status', badge(t.status))}</dl></section>`;
-  return `<section class="task-section is-editing" data-wb-key="section:title">${sectionHead(t, 'title', 'Task')}<div class="props"><label class="grow">Title<input ${field(t, 'title', 'title', d.title)} maxlength="200"></label><label>Status<select ${field(t, 'title', 'status')}>${optionList(statuses, d.status)}</select></label></div>${sectionButtons(t, 'title')}</section>`;
+  return `<section class="task-section is-editing" data-wb-key="section:title">${sectionHead(t, 'title', 'Task')}<div class="props"><label class="grow">Title<input ${field(t, 'title', 'title', d.title)}></label><label>Status<select ${field(t, 'title', 'status')}>${optionList(statuses, d.status)}</select></label></div>${sectionButtons(t, 'title')}</section>`;
 }
 function pathsSection(t) {
   const d = store.edits.get(editKey(t.id, 'paths'));
@@ -239,14 +242,14 @@ function taskDetail(t) {
     ...mine.map(p => [p.id, { ...p, pane: true }]),
     ...agents.filter(a => a.task_id === t.id).map(a => [a.id, { ...mine.find(p => p.id === a.id), ...a, pane: mine.some(p => p.id === a.id) }]),
   ]).values()];
-  return `<section class="entity-metadata" aria-label="Task details">
-    <div class="metadata-heading"><a href="#tasks">← Tasks</a>${archivedTag(t)}</div>
+  return `<section class="entity-metadata" ${styleAttrs(t)} aria-label="Task details">
+    <div class="metadata-heading"><a href="#tasks">← Tasks</a><span class="task-label">${taskMark(t)}${esc(t.title)}</span>${archivedTag(t)}</div>
     ${titleSection(t)}${pathsSection(t)}${parentSection(t)}${homeSection(t)}
     <dl class="metadata-facts">${fact('Created', esc(time(t.created)))}${fact('Task ID', esc(t.id))}</dl>
     <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}">Compose work</button><button data-do="open-pane" data-kind="agent" data-id="${esc(t.id)}">New Agent…</button><button data-do="open-pane" data-kind="pane" data-id="${esc(t.id)}">New Pane…</button><button data-do="open-mail" data-id="${esc(t.id)}">Send mail</button>${archiveButton('task-archive', t)}</div>
     ${notesSection(t)}
     <div class="metadata-members"><h2 class="section-title">Agents and panes <span>${members.length}</span></h2><div id="member-selection" data-workbench-controls></div>
-    ${members.map(m => `<div class="pane" data-wb-key="member:${esc(m.id)}"><div class="member-summary"><input type="checkbox" data-wb-pick="members" data-id="${esc(m.id)}" aria-label="Select ${esc(agentName(m.name, m.id))}"><div><strong>${agents.some(a => a.id === m.id) ? `<a href="${agentHref(m.id)}">${esc(agentName(m.name, m.id))}</a>` : esc(agentName(m.name, m.id))}</strong> ${badge(m.state)}${archivedTag(m)}<span class="host-label">Host: ${esc(hostLabel(m.id))}</span><small>${esc(m.kind)}${m.harness ? ` · ${esc(m.harness)}` : ''} · ${esc(m.id)}${m.pane ? ' · managed here' : ' · assigned here'}</small></div></div><div class="pane-actions">${m.pane ? `<button data-do="inspect" data-id="${esc(m.id)}">Inspect</button>${mine.find(p => p.id === m.id)?.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(m.id)}">Check mail</button>` : ''}` : ''}</div></div>`).join('') || hint('No members yet. Open an agent or pane here, or assign an existing recipient from Agents.')}</div>
+    ${members.map(m => `<div class="pane" ${styleAttrs(styleTask(m))} data-wb-key="member:${esc(m.id)}"><div class="member-summary"><input type="checkbox" data-wb-pick="members" data-id="${esc(m.id)}" aria-label="Select ${esc(agentName(m.name, m.id))}"><div><strong>${agents.some(a => a.id === m.id) ? `<a href="${agentHref(m.id)}">${esc(agentName(m.name, m.id))}</a>` : esc(agentName(m.name, m.id))}</strong> ${badge(m.state)}${archivedTag(m)}<span class="host-label">Host: ${esc(hostLabel(m.id))}</span><small>${esc(m.kind)}${m.harness ? ` · ${esc(m.harness)}` : ''} · ${esc(m.id)}${m.pane ? ' · managed here' : ' · assigned here'}</small></div></div><div class="pane-actions">${m.pane ? `<button data-do="inspect" data-id="${esc(m.id)}">Inspect</button>${mine.find(p => p.id === m.id)?.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(m.id)}">Check mail</button>` : ''}` : ''}</div></div>`).join('') || hint('No members yet. Open an agent or pane here, or assign an existing recipient from Agents.')}</div>
     ${hint('Work uses observed recipients assigned to this task. Mail uses only panes opened in this task; assignment does not move native sessions or directories.')}
   </section>`;
 }
@@ -254,8 +257,8 @@ function taskDetail(t) {
 function agentDetail(a) {
   const pane = store.state.panes.find(p => p.id === a.id);
   const profile = pane && store.state.profiles.find(p => p.id === pane.profile_id);
-  return `<section class="entity-metadata" aria-label="Agent details">
-    <div class="metadata-heading"><a href="#agents">← Agents</a>${archivedTag(a)}</div>
+  return `<section class="entity-metadata" ${styleAttrs(styleTask(a))} aria-label="Agent details">
+    <div class="metadata-heading"><a href="#agents">← Agents</a>${taskTag(styleTaskId(a))}${archivedTag(a)}</div>
     <div class="props">${select('agent-task', a.id, a.task_id, taskChoices(), 'Task')}${archiveButton('agent-archive', a)}${pane ? `<button data-do="inspect" data-id="${esc(a.id)}">Inspect pane</button>${pane.kind === 'agent' ? `<button data-do="check-mail" data-id="${esc(a.id)}">Check mail</button>` : ''}` : ''}</div>
     <dl class="metadata-facts"><div><dt>Name</dt><dd>${esc(agentName(a.name, a.id))}</dd></div><div><dt>Native pane ID</dt><dd>${esc(a.id)}</dd></div><div><dt>Host</dt><dd>${esc(hostLabel(a.id))}</dd></div><div><dt>Kind</dt><dd>${esc(a.kind)}</dd></div><div><dt>Harness</dt><dd>${esc(a.harness || 'Not reported')}</dd></div><div><dt>TUIOS session</dt><dd>${esc(a.session || 'Not reported')}</dd></div><div><dt>Last known state</dt><dd>${badge(a.state)}</dd></div><div><dt>Last seen</dt><dd>${esc(time(a.seen))}</dd></div>${pane?.profile_id ? `<div><dt>Launch profile</dt><dd>${esc(profile?.name || pane.profile_id)}</dd></div>` : ''}${pane?.conversation_id ? `<div><dt>Conversation ID</dt><dd>${esc(pane.conversation_id)}</dd></div>` : ''}</dl>
     ${hint('Assigning this recipient groups its turns and commands with the task. Items explicitly moved to another task stay there. Native session, directory and managed-mail membership do not change.')}
@@ -306,9 +309,9 @@ export const pages = {
         { key: 'agent_count', label: 'Agents', type: 'number', filter: true, sort: true },
       ],
       rowId: t => t.id, rowHref: t => taskHref(t.id), rowClass: t => t.unread_count ? 'is-unread' : 'is-read',
-      summary: t => `<div class="record-summary">
+      summary: t => `<div class="record-summary" ${styleAttrs(t)}>
         <span class="record-type" data-label="Type">Task</span>
-        <div class="record-title" data-label="Work"><h3>${esc(t.title)}</h3><span class="record-reference">${t.parent_id ? `↳ ${esc(store.state.tasks.find(p => p.id === t.parent_id)?.title || 'parent')} · ` : ''}${t.path ? esc(basename(t.path)) : 'no directory'}${archivedTag(t)}</span></div>
+        <div class="record-title" data-label="Work"><h3>${taskMark(t)}${esc(t.title)}</h3><span class="record-reference">${t.parent_id ? `↳ ${esc(store.state.tasks.find(p => p.id === t.parent_id)?.title || 'parent')} · ` : ''}${t.path ? esc(basename(t.path)) : 'no directory'}${archivedTag(t)}</span></div>
         <span class="record-agent" data-label="Agents">${t.agent_count} observed</span>
         <span class="record-task" data-label="Unread"><span class="unread-indicator">${t.unread_count} unread</span></span>
         <span class="record-status" data-label="State">${badge(t.status)}</span>
@@ -336,7 +339,7 @@ export const pages = {
         archivedField,
       ],
       rowId: a => a.id, rowHref: a => agentHref(a.id), rowClass: a => a.unread_count ? 'is-unread' : 'is-read',
-      summary: a => `<div class="record-summary">
+      summary: a => `<div class="record-summary" ${styleAttrs(styleTask(a))}>
         <span class="record-type" data-label="Type">${esc(a.kind)}</span>
         <div class="record-title" data-label="Work"><h3>${esc(agentName(a.name, a.id))}</h3><span class="record-reference">${esc(a.session || a.id)}${archivedTag(a)}</span><span class="host-label">Host: ${esc(hostLabel(a.id))}</span><span class="unread-indicator">${a.unread_count} unread</span></div>
         <span class="record-agent" data-label="Harness">${esc(a.harness || '—')}</span>

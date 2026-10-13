@@ -199,3 +199,17 @@ test('an unsafe registered ssh_config is rejected before any ssh is spawned', ()
   const base = { ssh: 'h', bun: 'bun', collector_path: '/c' };
   for (const bad of ['rel.conf', '/a\nb', '/a\0b']) expect(() => buildCommand({ ...base, ssh_config: bad }, ['export'])).toThrow(/SSH config/);
 });
+
+test('history styling follows current prompt owner including explicit No task without altering archive assignment', () => {
+  const db = fresh();
+  db.exec("ALTER TABLE turns ADD COLUMN prompt_id TEXT; CREATE TABLE prompts(id TEXT PRIMARY KEY,task_id TEXT); INSERT INTO tasks VALUES ('leaf','Leaf task'); INSERT INTO prompts VALUES ('p',NULL)");
+  db.run("INSERT INTO turns (id,session,pane_id,pane_name,harness,prompt,response,source,state,started,task_id,prompt_id) VALUES ('linked','s1','p1','alpha','omp','ask','answer','pane','done','2026-01-01T00:00:00Z','t1','p')");
+  const h = createHistory(db);
+  expect(h.get('legacy:turn:linked')).toMatchObject({ task_id: 't1', style_task_id: null, response: 'answer' });
+  db.run("UPDATE prompts SET task_id='leaf' WHERE id='p'");
+  expect(h.search().records[0]).toMatchObject({ task_id: 't1', style_task_id: 'leaf' });
+  db.run("DELETE FROM prompts WHERE id='p'");
+  expect(h.get('legacy:turn:linked')).toMatchObject({ task_id: 't1', style_task_id: 't1' });
+  db.close();
+});
+

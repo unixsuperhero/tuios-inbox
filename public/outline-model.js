@@ -1,6 +1,6 @@
 // Pure outline model: inheritance by lookup, run preflight, queue order. No DOM, no fetch, so server and browser share it.
-export const DEFAULTS = { harness: 'omp', queue_mode: 'manual' };
-export const FIELDS = ['repo', 'branch', 'harness', 'model', 'queue_mode', 'session', 'workspace'];
+export const DEFAULTS = { harness: 'omp', queue_mode: 'manual', launch_mode: 'new' };
+export const FIELDS = ['repo', 'branch', 'harness', 'model', 'queue_mode', 'session', 'workspace', 'launch_mode'];
 const get = (index, key) => key == null ? undefined : index instanceof Map ? index.get(key) : index?.[key];
 const set = value => value !== undefined && value !== null && value !== '';
 const own = (record, field) => { const src = record.own || record; return field === 'repo' ? (set(src.repo) ? src.repo : src.path) : src[field]; };
@@ -22,6 +22,14 @@ export function resolve(record, tasksById) {
       cur = get(tasksById, first && isPrompt(cur) ? cur.task_id : cur.parent_id);
     }
   }
+  out.cwd = { value: null, from: 'none' };
+  const seen = new Set();
+  for (let cur = isPrompt(record) ? get(tasksById, record.task_id) : record; cur && !seen.has(cur); cur = get(tasksById, cur.parent_id)) {
+    seen.add(cur);
+    const worktree = own(cur, 'worktree'), repo = own(cur, 'repo');
+    const value = set(worktree) ? worktree : repo;
+    if (set(value)) { out.cwd = { value, from: cur === record ? 'self' : cur.id }; break; }
+  }
   return out;
 }
 
@@ -31,30 +39,43 @@ export function profileFor(harness, profiles = []) {
   return profiles.find(p => p.id === name) || profiles.find(p => p.executable === name) || null;
 }
 
-/** The pane a prompt runs in when it names none: an agent of its task that is at rest. */
-export function pickPane(prompt, panes = []) {
-  if (!prompt.task_id) return null;
-  return panes.find(p => p.task_id === prompt.task_id && p.kind === 'agent' && p.ready) || null;
+/** Explicit continuations keep their target; reuse only selects a known compatible app-launched agent. */
+export function pickPane(prompt, panes = [], resolved = {}, profiles = []) {
+  if (prompt.target) return panes.find(p => p.id === prompt.target) || null;
+  if ((resolved.launch_mode?.value ?? prompt.launch_mode ?? DEFAULTS.launch_mode) !== 'reuse') return null;
+  const cwd = resolved.cwd?.value, harness = resolved.harness?.value ?? DEFAULTS.harness;
+  const profile = profileFor(harness, profiles)?.id ?? harness, model = resolved.model?.value ?? '';
+  return panes.find(p => (p.task_id ?? null) === (prompt.task_id ?? null) && p.kind === 'agent' && p.ready && ['idle', 'done'].includes(p.state)
+    && set(p.launch_cwd) && set(p.launch_profile) && p.launch_model != null
+    && p.launch_cwd === cwd && p.launch_profile === profile && p.launch_model === model) || null;
 }
 
 /**
  * @param {{prompt: object, resolved: object, panes?: object[], git?: object, profiles?: object[]}} input
- * @returns {{blocks: {code: string, message: string, fix: string}[], warns: {code: string, message: string}[]}}
+ * @returns {{blocks: {code: string, message: string, fix: string}[], warns: {code: string, message: string, fix?: string}[]}}
  */
-// A prompt already sent has its place: the pane is busy with that very prompt, which is no block. `strict` is the moment of running, when every block counts.
+// Sent prompts keep their recorded execution context. Strict preflight rechecks advisories before dispatch.
 export function preflight({ prompt, resolved, panes = [], git = null, profiles = [], strict = false }) {
   const blocks = [], warns = [], sent = !strict && ['running', 'done'].includes(prompt.state);
   if (!String(prompt.body || '').trim()) blocks.push({ code: 'no_text', message: 'No text to send', fix: 'body' });
   if (sent) ;
   else if (prompt.target) {
     const pane = panes.find(p => p.id === prompt.target);
-    if (!pane || pane.state === 'closed') blocks.push({ code: 'pane_gone', message: 'Target pane is gone', fix: 'target' });
-    else if (pane.state === 'needs_input') blocks.push({ code: 'pane_blocked', message: 'Target pane is waiting on its own question', fix: 'target' });
-    else if (!pane.ready) blocks.push({ code: 'pane_blocked', message: 'Target pane is busy; wait for it to come to rest', fix: 'target' });
-  } else if (!pickPane(prompt, panes)) {
-    if (!resolved.repo?.value) blocks.push({ code: 'nowhere', message: 'Nowhere to run: no pane at rest and no repo directory to launch in', fix: 'repo' });
-    else if (!profileFor(resolved.harness?.value, profiles)) blocks.push({ code: 'no_harness', message: `No agent profile launches ${resolved.harness?.value || 'a harness'} on this host`, fix: 'harness' });
+    if (!pane || pane.state === 'closed') warns.push({ code: 'pane_gone', message: 'Target pane is gone; attempting it may fail, or choose another target', fix: 'target' });
+    else {
+      if (pane.state === 'needs_input') warns.push({ code: 'pane_blocked', message: 'Target pane is waiting on its own question; Queue anyway waits without answering it', fix: 'target' });
+      else if (!pane.ready) warns.push({ code: 'pane_blocked', message: 'Target pane is busy; Queue anyway waits for it to come to rest', fix: 'target' });
+      if (pane.kind !== 'agent' || !set(pane.launch_profile) || !set(pane.launch_cwd) || pane.launch_model == null) warns.push({ code: 'pane_unknown', message: 'Target pane launch context is unknown; verify its agent and project before proceeding', fix: 'target' });
+      const harness = resolved.harness?.value, profile = profileFor(harness, profiles)?.id ?? harness;
+      if (set(pane.launch_profile) && profile && pane.launch_profile !== profile) warns.push({ code: 'harness_mismatch', message: `Target pane uses ${pane.launch_profile}, prompt expects ${profile}`, fix: 'harness' });
+      if (pane.launch_model != null && pane.launch_model !== (resolved.model?.value ?? '')) warns.push({ code: 'model_mismatch', message: 'Target pane model differs from the prompt model', fix: 'model' });
+      if (set(pane.launch_cwd) && resolved.cwd?.value && pane.launch_cwd !== resolved.cwd.value) warns.push({ code: 'cwd_mismatch', message: `Target pane runs in ${pane.launch_cwd}, prompt expects ${resolved.cwd.value}`, fix: 'target' });
+    }
+  } else if (!pickPane(prompt, panes, resolved, profiles)) {
+    if (!resolved.cwd?.value) warns.push({ code: 'nowhere', message: 'No directory is set; proceeding launches in your home directory', fix: 'repo' });
+    if (!profileFor(resolved.harness?.value, profiles)) warns.push({ code: 'no_harness', message: `No saved agent profile for ${resolved.harness?.value || DEFAULTS.harness}; proceeding launches that executable without extra profile arguments`, fix: 'harness' });
   }
+  if (new TextEncoder().encode(String(prompt.body || '')).length > 16 * 1024) warns.push({ code: 'native_message_limit', message: 'Prompt exceeds the native 16 KiB queue-message limit; attempting it may be refused, and the full text will be preserved', fix: 'body' });
   if (git?.state === 'ok') {
     const branch = resolved.branch?.value;
     if (branch && git.head && git.head !== branch) warns.push({ code: 'branch_mismatch', message: `Repo is on ${git.head}, task expects ${branch}` });
@@ -99,7 +120,7 @@ export function queueStatus(prompts, taskId, mode, panes = []) {
  */
 export function runTask(run, promptsById) {
   const prompt = get(promptsById, run?.prompt_id);
-  return (prompt ? prompt.task_id : run?.task_id) ?? run?.inherits ?? null;
+  return prompt ? prompt.task_id ?? null : run?.task_id ?? run?.inherits ?? null;
 }
 /** The task a pane is filed under: its own, else the one it inherits from its session. */
 export const paneTask = pane => pane?.task_id ?? pane?.inherits ?? null;

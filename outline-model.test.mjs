@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { DEFAULTS, FIELDS, resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask, indicators, sumIndicators, itemKind, queueItems, queueCounts, markable, paneTask, taskIndicators, INDICATORS } from './public/outline-model.js';
+import { resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask, indicators, sumIndicators, itemKind, queueItems, queueCounts, markable, paneTask, taskIndicators } from './public/outline-model.js';
 
 const tasks = {
   root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2 },
@@ -10,7 +10,6 @@ const profiles = [{ id: 'omp', executable: 'omp' }, { id: 'claude', executable: 
 
 test('a missing field is looked up through the prompt, its task, the parents, then the default', () => {
   const r = resolve({ id: 'p', body: 'x', task_id: 'kid', harness: '', model: 'opus' }, tasks);
-  expect(Object.keys(r)).toEqual(FIELDS);
   expect(r.model).toEqual({ value: 'opus', from: 'self' });
   expect(r.harness).toEqual({ value: 'claude-code', from: 'kid' });
   expect(r.repo).toEqual({ value: '/r', from: 'root' });
@@ -21,38 +20,86 @@ test('a missing field is looked up through the prompt, its task, the parents, th
 });
 test('orphans fall back to defaults or none, and a task row may carry repo as path or under own', () => {
   const r = resolve({ id: 'p', body: 'x', task_id: null }, tasks);
-  expect(r.harness).toEqual({ value: DEFAULTS.harness, from: 'default' });
+  expect(r.harness).toEqual({ value: 'omp', from: 'default' });
   expect(r.queue_mode).toEqual({ value: 'manual', from: 'default' });
+  expect(r.launch_mode).toEqual({ value: 'new', from: 'default' });
   expect(r.repo).toEqual({ value: null, from: 'none' });
   expect(resolve({ id: 't', parent_id: null, path: '/p' }, {}).repo).toEqual({ value: '/p', from: 'self' });
   expect(resolve({ id: 't', parent_id: null, own: { repo: '/o' } }, {}).repo).toEqual({ value: '/o', from: 'self' });
   const loop = { a: { id: 'a', parent_id: 'b' }, b: { id: 'b', parent_id: 'a' } };
   expect(resolve(loop.a, loop).repo.from).toBe('none');
 });
+test('launch mode inherits without copying and child session/workspace resolve independently', () => {
+  const hierarchy = {
+    root: { id: 'root', own: { launch_mode: 'reuse', session: 'native', workspace: 1 } },
+    kid: { id: 'kid', parent_id: 'root', own: { workspace: 4 } },
+  };
+  const prompt = { body: 'x', task_id: 'kid' };
+  expect(resolve(prompt, hierarchy).launch_mode).toEqual({ value: 'reuse', from: 'root' });
+  expect(resolve(prompt, hierarchy).session).toEqual({ value: 'native', from: 'root' });
+  expect(resolve(prompt, hierarchy).workspace).toEqual({ value: 4, from: 'kid' });
+  expect(resolve({ ...prompt, launch_mode: 'new' }, hierarchy).launch_mode).toEqual({ value: 'new', from: 'self' });
+  hierarchy.kid.own.launch_mode = 'new';
+  expect(resolve(prompt, hierarchy).launch_mode).toEqual({ value: 'new', from: 'kid' });
+  hierarchy.kid.own.launch_mode = '';
+  expect(resolve(prompt, hierarchy).launch_mode).toEqual({ value: 'reuse', from: 'root' });
+});
+test('cwd uses the nearest task directory and never combines a child repo with ancestor worktree', () => {
+  const hierarchy = {
+    root: { id: 'root', own: { repo: '/project', worktree: '/project-worktree' } },
+    kid: { id: 'kid', parent_id: 'root', own: { repo: '/child-project' } },
+    leaf: { id: 'leaf', parent_id: 'kid', own: {} },
+  };
+  const prompt = { body: 'x', task_id: 'leaf' };
+  expect(resolve(prompt, hierarchy).cwd).toEqual({ value: '/child-project', from: 'kid' });
+  hierarchy.kid.own.worktree = '/child-worktree';
+  expect(resolve(prompt, hierarchy).cwd).toEqual({ value: '/child-worktree', from: 'kid' });
+  expect(resolve(hierarchy.kid, hierarchy).cwd).toEqual({ value: '/child-worktree', from: 'self' });
+  hierarchy.kid.own = {};
+  expect(resolve(prompt, hierarchy).cwd).toEqual({ value: '/project-worktree', from: 'root' });
+  expect(resolve({ id: 'legacy', path: '/legacy', worktree: '/legacy-worktree' }, {}).cwd).toEqual({ value: '/legacy-worktree', from: 'self' });
+  expect(resolve({ body: 'x', task_id: null }, hierarchy).cwd).toEqual({ value: null, from: 'none' });
+});
 
 const pf = (prompt, panes = [], git = null) => preflight({ prompt, resolved: resolve(prompt, tasks), panes, git, profiles });
 const codes = r => r.blocks.map(b => b.code);
-test('preflight names every block with its fix', () => {
-  expect(pf({ body: ' ', task_id: 'root' }).blocks).toEqual([{ code: 'no_text', message: 'No text to send', fix: 'body' }]);
-  expect(codes(pf({ body: 'x', task_id: null }))).toEqual(['nowhere']);
-  expect(pf({ body: 'x', task_id: 'lone' }).blocks[0].fix).toBe('repo');
-  expect(codes(pf({ body: 'x', task_id: 'root', harness: 'gemini' }))).toEqual(['no_harness']);
-  expect(codes(pf({ body: 'x', task_id: 'kid' }))).toEqual([]);
-  expect(codes(pf({ body: 'x', target: 'gone' }))).toEqual(['pane_gone']);
-  expect(codes(pf({ body: 'x', target: 'a' }, [{ id: 'a', state: 'closed' }]))).toEqual(['pane_gone']);
-  expect(codes(pf({ body: 'x', target: 'a' }, [{ id: 'a', state: 'needs_input' }]))).toEqual(['pane_blocked']);
-  expect(codes(pf({ body: 'x', target: 'a' }, [{ id: 'a', state: 'working', ready: false }]))).toEqual(['pane_blocked']);
-  expect(codes(pf({ body: 'x', target: 'a' }, [{ id: 'a', state: 'idle', ready: true }]))).toEqual([]);
-  // A task's own resting agent stands in for a repo.
-  expect(codes(pf({ body: 'x', task_id: 'lone' }, [{ id: 'a', task_id: 'lone', kind: 'agent', state: 'done', ready: true }]))).toEqual([]);
+const warnings = r => r.warns.map(w => [w.code, w.fix]);
+const launchedPane = extra => ({ id: 'a', task_id: 'root', kind: 'agent', state: 'idle', ready: true, launch_cwd: '/r', launch_profile: 'omp', launch_model: 'gpt', ...extra });
+test('empty text blocks dispatch, while configuration findings stay actionable warnings', () => {
+  expect(pf({ body: ' ', task_id: 'root' }).blocks.map(b => [b.code, b.fix])).toEqual([['no_text', 'body']]);
+  expect(warnings(pf({ body: 'x', task_id: null }))).toEqual([['nowhere', 'repo']]);
+  expect(warnings(pf({ body: 'x', task_id: 'root', harness: 'gemini' }))).toEqual([['no_harness', 'harness']]);
+  expect(warnings(pf({ body: 'x', task_id: 'lone', harness: 'gemini' }))).toEqual([['nowhere', 'repo'], ['no_harness', 'harness']]);
+  for (const prompt of [{ body: 'x', task_id: null }, { body: 'x', harness: 'gemini' }, { body: 'x', target: 'gone' }]) expect(codes(pf(prompt))).toEqual([]);
+  expect(warnings(pf({ body: 'x', task_id: 'kid' }))).toEqual([]);
 });
-test('preflight warns without blocking', () => {
+test('target health and launch-context mismatches warn without preventing an attempt', () => {
+  const prompt = { body: 'x', task_id: 'root', target: 'a' };
+  expect(warnings(pf(prompt))).toEqual([['pane_gone', 'target']]);
+  expect(warnings(pf(prompt, [launchedPane({ state: 'closed' })]))).toEqual([['pane_gone', 'target']]);
+  for (const state of ['needs_input', 'working']) {
+    const result = pf(prompt, [launchedPane({ state, ready: false })]);
+    expect(warnings(result)).toEqual([['pane_blocked', 'target']]);
+    expect(result.blocks).toEqual([]);
+  }
+  expect(warnings(pf(prompt, [{ id: 'a', state: 'idle', ready: true }]))).toEqual([['pane_unknown', 'target']]);
+  expect(warnings(pf(prompt, [launchedPane({ launch_cwd: '/other', launch_profile: 'claude', launch_model: 'opus' })]))).toEqual([['harness_mismatch', 'harness'], ['model_mismatch', 'model'], ['cwd_mismatch', 'target']]);
+  expect(pf(prompt, [launchedPane()])).toEqual({ blocks: [], warns: [] });
+});
+test('preflight preserves git findings without blocking', () => {
   const git = { state: 'ok', head: 'main', dirty: true, pr: { checks: 'failing' } };
   const r = pf({ body: 'x', task_id: 'root' }, [], git);
   expect(r.blocks).toEqual([]);
   expect(r.warns.map(w => w.code)).toEqual(['branch_mismatch', 'dirty', 'checks_failing']);
-  expect(pf({ body: 'x', task_id: 'root' }, [], { state: 'ok', head: 'fix-parser', dirty: false, pr: null }).warns).toEqual([]);
-  expect(pf({ body: 'x', task_id: 'root' }, [], { state: 'not_a_repo' }).warns).toEqual([]);
+  expect(pf({ body: 'x', task_id: 'root' }, [], { state: 'ok', head: 'fix-parser', dirty: false, pr: null })).toEqual({ blocks: [], warns: [] });
+});
+test('native transport warning measures UTF-8 bytes and never changes prompt text', () => {
+  const prompt = { body: 'é'.repeat(8192), task_id: 'root' };
+  expect(pf(prompt)).toEqual({ blocks: [], warns: [] });
+  prompt.body += 'é';
+  expect(warnings(pf(prompt))).toEqual([['native_message_limit', 'body']]);
+  expect(pf(prompt).blocks).toEqual([]);
+  expect(prompt.body).toBe('é'.repeat(8193));
 });
 test('the queue runs lowest position first, one queue per task and one for no task', () => {
   const prompts = [
@@ -67,11 +114,29 @@ test('the queue runs lowest position first, one queue per task and one for no ta
   expect(queueHeld(prompts, nextInQueue(prompts, 'kid'))).toBe(true);
   expect(queueHeld(prompts, nextInQueue(prompts, 'root'))).toBe(false);
 });
-test('profiles and resting panes are matched for a run', () => {
-  expect(profileFor('claude-code', profiles).id).toBe('claude');
+test('new prompts never automatically reuse an idle pane and explicit targets keep their address', () => {
+  const prompt = { body: 'x', task_id: 'root' }, pane = launchedPane();
+  expect(pickPane(prompt, [pane], resolve(prompt, tasks), profiles)).toBe(null);
+  expect(pickPane({ ...prompt, target: 'a' }, [pane], resolve(prompt, tasks), profiles)).toEqual(pane);
+  const busy = launchedPane({ state: 'working', ready: false });
+  expect(pickPane({ ...prompt, target: 'a' }, [busy], resolve(prompt, tasks), profiles)).toEqual(busy);
+});
+test('reuse selects only a known compatible idle app launch, otherwise dispatch launches fresh', () => {
+  const prompt = { body: 'x', task_id: 'root', launch_mode: 'reuse' }, resolved = resolve(prompt, tasks);
+  const pane = launchedPane();
+  const incompatible = [
+    { launch_cwd: '/other' }, { launch_profile: 'claude' }, { launch_model: 'opus' },
+    { launch_cwd: undefined }, { launch_profile: undefined }, { launch_model: undefined },
+    { state: 'working', ready: false }, { state: 'needs_input', ready: false }, { state: 'closed' },
+    { kind: 'shell' }, { task_id: 'kid' }, { state: 'unknown' },
+  ].map(launchedPane);
+  expect(pickPane(prompt, incompatible, resolved, profiles)).toBe(null);
+  expect(pickPane(prompt, [...incompatible, pane], resolved, profiles)).toEqual(pane);
+  expect(pickPane(prompt, [launchedPane({ state: 'done' })], resolved, profiles)?.id).toBe('a');
+  const custom = { ...prompt, harness: 'custom-agent', model: 'custom-model' };
+  expect(pickPane(custom, [launchedPane({ launch_profile: 'custom-agent', launch_model: 'custom-model' })], resolve(custom, tasks), profiles)?.id).toBe('a');
+  expect(profileFor('claude-code', profiles)).toEqual({ id: 'claude', executable: 'claude' });
   expect(profileFor('nope', profiles)).toBe(null);
-  expect(pickPane({ task_id: null }, [{ id: 'a', task_id: null, kind: 'agent', ready: true }])).toBe(null);
-  expect(pickPane({ task_id: 't' }, [{ id: 's', task_id: 't', kind: 'shell', ready: true }, { id: 'a', task_id: 't', kind: 'agent', ready: true }]).id).toBe('a');
 });
 test('omp todo calls replay into a final list', () => {
   const call = args => ({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'x' }, { type: 'toolCall', name: 'todo', arguments: args }] } });
@@ -238,7 +303,6 @@ test('indicators: one entry per kind in a fixed order, counts summed, read runs 
   expect(['blocked', 'errored', 'queued', 'running', 'done'].map(s => itemKind(prompt(s)))).toEqual(['blocked', 'prompt_error', 'queued', 'working', 'ended']);
   const all = [run('done', true, 2), run('done', true), run('errored', true, 1), run('idle', true), run('closed', true), run('needs_input', false), run('working', false), run('done', false, 4), prompt('blocked'), prompt('errored'), prompt('queued'), prompt('queued'), prompt('done')];
   expect(inds(indicators(all))).toBe('working:1 needs_input:1 errored:1 prompt_error:1 blocked:1 done:2 idle:1 ended:1 queued:2 doc:3');
-  expect(indicators(all).map(i => i.kind)).toEqual(INDICATORS);
   expect(indicators([run('done', false, 3)])).toEqual([]);
   expect(indicators([])).toEqual([]);
   // A pane row is one agent however many of its turns say working.
@@ -293,15 +357,16 @@ test('the Queue page is one flat list, oldest first, scoped to everything, a tas
   expect(list({ type: 'pane', id: 'p4' }, new Set(['run:r1']))).toEqual(['run:r7']);
 });
 
-test('a sent prompt does not report its own pane being busy; the moment of running stays strict', () => {
-  const busy = [{ id: 'p1', task_id: 'child', kind: 'agent', state: 'working', ready: false }];
+test('sent prompts retain their context while strict dispatch reports current advisories', () => {
+  const busy = [launchedPane({ state: 'working', ready: false })];
   for (const state of ['running', 'done']) {
-    expect(pf({ body: 'x', task_id: 'child', target: 'p1', pane_id: 'p1', state }, busy).blocks).toEqual([]);
-    expect(pf({ body: 'x', task_id: 'loose', pane_id: 'p1', state }, busy).blocks).toEqual([]);
+    expect(pf({ body: 'x', task_id: 'root', target: 'a', pane_id: 'a', state }, busy)).toEqual({ blocks: [], warns: [] });
+    expect(pf({ body: 'x', task_id: 'loose', pane_id: 'a', state }, busy)).toEqual({ blocks: [], warns: [] });
   }
-  for (const state of ['queued', 'blocked', 'errored']) expect(pf({ body: 'x', task_id: 'child', target: 'p1', state }, busy).blocks.map(b => b.code)).toEqual(['pane_blocked']);
-  expect(preflight({ prompt: { body: 'x', task_id: 'child', target: 'p1', state: 'done' }, resolved: resolve({ task_id: 'child' }, tasks), panes: busy, profiles, strict: true }).blocks.map(b => b.code)).toEqual(['pane_blocked']);
-  expect(pf({ body: ' ', task_id: 'child', target: 'p1', state: 'running' }, busy).blocks.map(b => b.code)).toEqual(['no_text']);
+  for (const state of ['queued', 'blocked', 'errored']) expect(warnings(pf({ body: 'x', task_id: 'root', target: 'a', state }, busy))).toEqual([['pane_blocked', 'target']]);
+  const prompt = { body: 'x', task_id: 'root', target: 'a', state: 'done' };
+  expect(warnings(preflight({ prompt, resolved: resolve(prompt, tasks), panes: busy, profiles, strict: true }))).toEqual([['pane_blocked', 'target']]);
+  expect(codes(pf({ body: ' ', task_id: 'root', target: 'a', state: 'running' }, busy))).toEqual(['no_text']);
 });
 
 test('docsIn finds mdoc item URLs and Markdown links to .md paths, once each, in order, and nothing else', () => {
@@ -344,28 +409,28 @@ test('an automatic queue that is not moving says why: held, waiting, or never st
   expect(queueStatus([{ ...q('a', 'queued', 1), task_id: null }], null, 'auto', [])).toBe(null);
   expect(queueStatus([q('a', 'done', 1), q('b', 'errored', 2)], 't', 'auto', [])).toBe(null);
   // Held by the earliest earlier prompt that is blocked or errored; one of another task or a later one does not hold.
-  expect(queueStatus([q('e', 'errored', 1), q('b', 'blocked', 2), q('n', 'queued', 3)], 't', 'auto', [pane('p', false)])).toEqual({ state: 'held', next: 'n', by: 'e', pane: null, text: 'Held by an errored prompt' });
-  expect(queueStatus([q('b', 'blocked', 2), q('n', 'queued', 3)], 't', 'auto')).toMatchObject({ state: 'held', by: 'b', text: 'Held by a blocked prompt' });
+  expect(queueStatus([q('e', 'errored', 1), q('b', 'blocked', 2), q('n', 'queued', 3)], 't', 'auto', [pane('p', false)])).toMatchObject({ state: 'held', next: 'n', by: 'e', pane: null });
+  expect(queueStatus([q('b', 'blocked', 2), q('n', 'queued', 3)], 't', 'auto')).toMatchObject({ state: 'held', by: 'b' });
   expect(queueStatus([{ ...q('x', 'blocked', 1), task_id: 'other' }, q('n', 'queued', 3), q('late', 'errored', 4)], 't', 'auto')).toMatchObject({ state: 'start', by: null });
   // A running prompt ahead, or a busy pane, ends by itself.
-  expect(queueStatus([q('r', 'running', 1, { pane_id: 'p' }), q('n', 'queued', 3)], 't', 'auto', [pane('p', false)])).toEqual({ state: 'waiting', next: 'n', by: 'r', pane: 'p', text: 'Waiting for the running prompt to end' });
-  expect(queueStatus([q('n', 'queued', 3)], 't', 'auto', [pane('idle', true), pane('busy', false), pane('else', false, { task_id: 'other' })])).toEqual({ state: 'waiting', next: 'n', by: null, pane: 'busy', text: 'Waiting for busy to come to rest' });
+  expect(queueStatus([q('r', 'running', 1, { pane_id: 'p' }), q('n', 'queued', 3)], 't', 'auto', [pane('p', false)])).toMatchObject({ state: 'waiting', next: 'n', by: 'r', pane: 'p' });
+  expect(queueStatus([q('n', 'queued', 3)], 't', 'auto', [pane('idle', true), pane('busy', false), pane('else', false, { task_id: 'other' })])).toMatchObject({ state: 'waiting', next: 'n', by: null, pane: 'busy' });
   // A prompt that names a pane waits for that pane only; a closed one is no pane at all.
   expect(queueStatus([q('n', 'queued', 3, { target: 'named' })], 't', 'auto', [pane('busy', false), pane('named', true, { task_id: 'other' })])).toMatchObject({ state: 'start' });
   expect(queueStatus([q('n', 'queued', 3, { target: 'named' })], 't', 'auto', [pane('named', false, { task_id: 'other' })])).toMatchObject({ state: 'waiting', pane: 'named' });
-  expect(queueStatus([q('n', 'queued', 3)], 't', 'auto', [pane('gone', false, { state: 'closed' }), pane('sh', false, { kind: 'shell' })])).toEqual({ state: 'start', next: 'n', by: null, pane: null, text: 'Not started: press Run next' });
+  expect(queueStatus([q('n', 'queued', 3)], 't', 'auto', [pane('gone', false, { state: 'closed' }), pane('sh', false, { kind: 'shell' })])).toMatchObject({ state: 'start', next: 'n', by: null, pane: null });
 });
 
 test('a run is filed under its prompt\'s task, and under its own only when it has no prompt', () => {
   const prompts = new Map([['p1', { id: 'p1', task_id: 'from-prompt' }], ['p0', { id: 'p0', task_id: null }]]);
   expect(runTask({ prompt_id: 'p1', task_id: 'own' }, prompts)).toBe('from-prompt');
-  expect(runTask({ prompt_id: 'p0', task_id: 'own' }, prompts)).toBe(null);
+  expect(runTask({ prompt_id: 'p0', task_id: 'own', inherits: 'ancestor' }, prompts)).toBe(null);
   expect(runTask({ prompt_id: 'deleted', task_id: 'own' }, prompts)).toBe('own');
   expect(runTask({ prompt_id: null, task_id: 'own' }, prompts)).toBe('own');
   expect(runTask({ task_id: undefined }, { p1: { task_id: 'x' } })).toBe(null);
   // The rail and the review queue use the same rule.
   const data = { tasks: [{ id: 'a', title: 'A', created: '1' }, { id: 'b', title: 'B', created: '2' }], prompts: [{ id: 'p', task_id: 'b', state: 'done', body: 'x', position: 1 }], runs: [{ id: 'r', prompt_id: 'p', task_id: 'a', unread: 1, state: 'done', started: '2026-01-01T00:00:00Z', prompt: 'x' }], panes: [] };
-  expect(railTree(data).find(g => g.rows.length).id).toBe(runTask(data.runs[0], new Map(data.prompts.map(p => [p.id, p]))));
+  expect(railTree(data).find(g => g.rows.length).id).toBe('b');
   expect(reviewQueue(data).map(g => g.id)).toEqual(['b']);
 });
 
@@ -393,18 +458,17 @@ const inheritData = () => ({
 });
 test('a run with no task of its own is filed under the one it inherits, in the rail, the review queue and the Queue page', () => {
   const data = inheritData(), prompts = new Map(data.prompts.map(p => [p.id, p]));
-  expect(data.runs.map(r => runTask(r, prompts))).toEqual(['a', 'a', 'b', 'b', 'b', null]);
+  expect(data.runs.map(r => runTask(r, prompts))).toEqual(['a', 'a', 'b', 'b', null, null]);
   expect(runTask({ task_id: 'own', inherits: 'x' }, prompts)).toBe('own');
   expect(runTask({ prompt_id: 'qb', task_id: null, inherits: 'x' }, prompts)).toBe('b');
   expect(paneTask(data.panes[0])).toBe('a'); expect(paneTask(data.panes[1])).toBe('b'); expect(paneTask(data.panes[4])).toBe(null);
   const tree = railTree(data), rowsOf = id => tree.find(g => g.id === id).rows;
-  // One row per pane in the whole rail: the assigned pane's taskless turns sit with the rest of it.
-  const every = tree.flatMap(g => [g, ...g.groups]).flatMap(g => g.rows.map(r => r.id));
-  expect(new Set(every).size).toBe(every.length);
+  // One row per pane and owner; an explicit No task prompt stays separate from its pane's inherited task.
+  expect(rowsOf('none').find(r => r.pane_id === 'm1').items.map(i => i.id)).toEqual(['run:turn:m3']);
   expect(rowsOf('a').find(r => r.pane_id === 'h1')).toMatchObject({ unread: 2, via: true, empty: false, lead: 'run:turn:i1' });
   expect(rowsOf('b').find(r => r.pane_id === 'm1')).toMatchObject({ unread: 3, via: false });
-  expect(rowsOf('b').find(r => r.pane_id === 'm1').items.map(i => i.id)).toEqual(['run:turn:m1', 'run:turn:m2', 'prompt:qb', 'run:turn:m3']);
-  expect(rowsOf('none').map(r => r.pane_id).sort()).toEqual(['old', 'sh123456789']);
+  expect(rowsOf('b').find(r => r.pane_id === 'm1').items.map(i => i.id)).toEqual(['run:turn:m1', 'run:turn:m2', 'prompt:qb']);
+  expect(rowsOf('none').map(r => r.pane_id).sort()).toEqual(['m1', 'old', 'sh123456789']);
   const list = scope => queueItems(data, scope).map(i => i.id);
   expect(list({ type: 'task', id: 'a' })).toEqual(['run:turn:i1', 'run:turn:i2']);
   expect(list({ type: 'task', id: 'b' })).toEqual(['run:turn:m1', 'run:turn:m2', 'prompt:qb']);

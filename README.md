@@ -31,9 +31,17 @@ are changed, and no login service or automatic restart is installed. Logs append
 to `~/.local/state/h-tuios/server-PORT.log`. These commands require Bun, `lsof`,
 and `ps`. The former harness-status command is now `h tuios setup-status [HARNESS...]`.
 
-## Inbox
+## Plan in Tasks, review in Queue
 
-The default page is the live Flight deck inbox: a dark blue workspace with a left navigation rail, condensed headings, amber actions, and searchable work records. It uses the real SQLite/TUIOS data and APIs, not sample data. **Task groups**, **Work**, and **Review** switch the main work area; task groups list the agents and shell panes assigned to each task. **Not assigned to a task** contains recipients outside the visible task groups. Task and agent pages show their scoped history.
+Tasks is the default page, backed by real SQLite/TUIOS records. The planning outline and its navigation show tasks and subtasks, not panes, prompts, or response trees. Expand a task to write a next step, create a subtask, or compose a multiline prompt inline. Saving and running are separate actions; the editor needs no special `>` prefix. Completed tasks remain available under a disclosure.
+
+Tasks uses `#outline/tasks`; bare `#outline` also opens Tasks. Use **Add subtask** inside an expanded task, then **Save prompt** or **Run** in its prompt editor. `j`/`k` move through the outline, Enter expands a task, `n` starts a new task, and Cmd/Ctrl+Enter runs a prompt or sends a reply. Completed ancestors remain visible when they contain open descendants.
+
+Saved or dispatched prompt text stays in its inline receipt until you choose **New prompt** to start another draft. Native errors remain visible with retry/settings controls. The advanced **Everything** view is `#outline/everything` under **Activity**.
+
+Queue is the aftermath workspace for results, questions, failures, documents, and continued replies. Its reader retains the full prompt, captured response, and provenance. Task creation stays in Tasks rather than occupying the review layout. Advanced activity, history, and native TUIOS views remain reachable.
+
+The Flight deck shell retains dark blue surfaces, condensed headings, and amber actions. Each task and subtask has an independent persistent identity, carried to its prompts and responses. Task marks, subdued washes, and narrow rules are the only task-color exception to the shared palette. Status, unread state, selection, and keyboard focus keep their existing treatments. Existing keyed SSE updates preserve drafts, focus, scrolling, and disclosures.
 
 Unread records have a lighter blue background, a bold title, and an explicit **Unread** label with a dot. Read records have a darker background, normal-weight title, and **Read** label. Checking a record adds an outline without replacing its read-state styling.
 
@@ -41,9 +49,9 @@ Checkboxes and **Select all** are available in the Inbox, task and agent histori
 
 Task and agent rail selections can be archived independently. This hides those entries without stopping panes or archiving their work. Task member lists also support unarchiving agents. The Tasks and Agents indexes retain their status, assignment, archive, and unarchive actions; Agent profiles supports bulk deletion with confirmation.
 
-The review queue contains unread, unarchived finished responses, oldest first by default. Shell command output is bucketed apart and hidden until **Show commands** is ticked. Opening a record marks it read; **Mark as unread** puts it back. **Next** moves to the following record. A successful reply also clears the record. The **Queues** page shows the same unread work as one queue per task, oldest at the top, with a reading pane beside it.
+Queue foregrounds work awaiting attention and retains result review and continuation. Opening a captured response marks it read; **Mark as unread** restores it, and a successful reply clears its unread flag. Execution state and review state remain separate. Retained activity review and the legacy **Queues** view keep their unread response buckets, shell-command filtering, and reading pane.
 
-Inbox, Queues, Prompts, Tasks, TUIOS, Agents, Archive, History, Collectors, and Agent profiles are available in the left navigation. Work indexes retain shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Opening a work record navigates to its main-pane detail. Task and Agent pages contain factual, editable metadata and scoped history; scope uses Task IDs or native Agent/pane IDs, not display names or removable filter chips. On narrow screens, the bottom Task groups, Work, and Review buttons switch between work areas; Queues has its own reading pane.
+Tasks and Queue are the primary destinations. Advanced views retain activity indexes, Prompts, native TUIOS, Agents, Archive, History, Collectors, and Agent profiles. Work indexes keep shared search, filters (`is`, `is not`, `has`, `has no`), sort, multi-select, and bulk actions. Retained task and Agent detail pages scope history by Task ID or native pane ID, not display names or removable filter chips.
 
 All is the default type selection and exclusive reset. Turns and Commands toggle independently; selecting both includes either type. The type union combines with search, filters, and sort. Selecting neither returns to All. Read and unread backgrounds describe state, never alternating stripes.
 
@@ -66,6 +74,8 @@ Choose **Prompts** in the left navigation to see agent turns without command rec
 Record headers and table titles occupy one line with an ellipsis when needed. The body retains the entire prompt and completed response. Both render as Markdown, including headings, emphasis, lists, code blocks, and tables.
 
 A turn row opens when a pane starts working. Native metadata or the capture hook supplies its prompt without waiting for a final reply. Reconciliation recovers missing prompts for still-active panes from supported transcripts. Known prompts remain unchanged as later hook reports arrive. When the turn ends, the hook supplies the response and the row becomes unread. If no reliable prompt source exists, the detail states that no prompt text was captured.
+
+Saved-prompt association uses the actual dispatch time, not an empty startup-idle capture from a newly launched pane. Reconciliation ignores or repairs empty startup associations so the real captured run links to the dispatched prompt, including after backend restart.
 
 Turns with both a blank prompt and a blank response are automatically archived, including pending empty rows. Whitespace-only text counts as blank. The records remain in SQLite and Archive. A later captured prompt or response restores the same automatically archived record. Explicit manual archives stay archived. Prompt-only and response-only turns remain visible.
 
@@ -106,12 +116,29 @@ Working-directory **Browse** opens the backend host’s native directory chooser
 
 ## Working with a task
 
-1. Create a task with an existing project directory. Optionally associate an existing worktree directory. The app never creates worktrees.
-2. Read the task as plain text. Use each section's **Edit** button to change its title/status, directories, parent, or future launch home. **Save** applies that section, and **Cancel** leaves it unchanged. Created time and Task ID are immutable.
-3. Open an agent or shell from the task. Its dedicated TUIOS session is created on demand by default. An explicit future task home can use an existing session or numbered workspace instead. The **Host** selector applies to this new launch only. Choose the task's host or a registered TUIOS host. The task's home and existing panes stay put.
-4. Compose a prompt or shell command with a subject. Close the page or switch tasks while it runs.
-5. Read the result in Inbox. Reply to continue in the same pane and thread. Archive or mark threads unread independently of TUIOS's ephemeral read state.
-6. Use Inspect for a terminal snapshot, interruption, and shell keys. The inspector shows the `tuios attach SESSION` command for full interactive access.
+1. Create a task in Tasks, then expand it to add next steps and subtasks inline. A task can be saved before you configure execution.
+2. Set an existing project directory or optional existing worktree through settings. **Browse** opens the backend host's actual OS directory picker; manual entry remains available. The app never creates or switches branches or worktrees.
+3. Check the effective directory, harness, model, and launch mode beside dispatch. Subtasks inherit execution settings unless overridden. The nearest task with a project or worktree determines cwd, preferring that record's worktree. A child's own project does not inherit an unrelated ancestor worktree. Session and workspace resolve independently.
+4. Write a multiline prompt inline. Save it for later or run it explicitly. Untargeted prompts default to a new background agent. Reuse is an explicit option that reuses only a compatible known idle app-launched agent, otherwise it launches fresh. A targeted reply continues in its existing pane.
+5. Review warnings before dispatch. Use **Proceed anyway** to explicitly attempt the action, or **Queue anyway** for a busy pane or one answering its own question. Queuing uses the native queue rather than typing an accidental approval. Failed or unconfirmed dispatch preserves the prompt.
+6. Close the page or switch tasks while work runs, then read the aftermath in Queue. Replies keep the original task and execution address, including intentional No task ownership. Read/archive decisions remain independent of TUIOS's ephemeral read state.
+7. Use native Inspect for a terminal snapshot or full interactive access. Changing a task's future launch home does not move existing panes or rewrite history.
+
+### Appearance and execution warnings
+
+Every task and subtask receives its own server-assigned unique numeric appearance seed, including archived tasks and imported OMP subtasks. Theme, icon, and custom hex color can be overridden independently. The color control uses a native color picker. Reset clears these overrides and restores the original automatic assignment. Rename, reparent, restart, completion, and repeated import preserve the seed; deleting a task does not recycle it. Unique seeds do not promise unlimited perceptual uniqueness. Icons repeat, similar colors exist, and intentional matching overrides are allowed, so task labels remain visible.
+
+A custom color with less than 3:1 contrast against the Flight deck background shows a contrast warning. The warning does not block your choice.
+
+Prompt and response appearance follows the actual owning task, not the selected parent. Explicit No task ownership stays neutral. Appearance does not inherit even when execution does.
+
+Advisory checks never permanently block the user. Missing defaults, unfamiliar harness/model names, branch mismatch, dirty work, and pane-state concerns show named warnings with an explicit attempt action. API callers acknowledge these through `allow_warnings: true`. Without a directory, the warning explains the home-directory fallback. Without a saved harness profile, it explains that proceeding launches that executable without extra profile arguments.
+
+The override acknowledges app advice only. It does not grant native permissions or answer human approvals. Missing executables, gone targets, native refusals, and failed launches are actual errors, not reported successes. Busy/question targets wait in the native queue; queued acceptance is not completion.
+
+Task-title and prompt editors impose no arbitrary length caps. Native transport limits still apply, including TUIOS's documented 16 KiB queue-message ceiling. You can save the full prompt and explicitly attempt dispatch; actual native refusals remain visible. Prompts are never silently truncated or split.
+
+### Advanced native launches
 
 Register remote hosts with `tuios hosts add`. The launch dialog lists native link status and disables unavailable hosts. Remote agents use `HOST:SESSION` and the remote executable/checkout defaults; profile environment overrides cannot cross hosts. From a local task home, a remote shell opens as a hosted window in that session. From a remote task home, a shell on another host requires the destination session to exist. No launch changes the task's home.
 
@@ -336,7 +363,7 @@ A hook-only collector survives backend downtime but cannot provide live control 
 
 ## Verification and settings
 
-`bun test` covers task/profile persistence across backend restart, cross-origin mutation rejection, Host checks, invalid directories, and invalid profile arguments. Live verification exercised task creation, shell output, agent startup, state-based prompt completion, threaded replies, agent mail acknowledgement, both hooks, and browser rendering.
+Run `bun test` for the automated suites. Verification of a task-focused change must also exercise isolated native dispatch and capture, inherited cwd/model settings, fresh background execution, warning overrides, and appearance persistence/override/reset. Use separate `TUIOS_INBOX_DATA` and `TUIOS_INBOX_SPOOL` locations for fixtures; do not mutate live task data or restart the native daemon. This documentation update does not record a new successful verification run.
 
 Environment options: `PORT` defaults to 4399; `TUIOS_BIN` defaults to `/opt/homebrew/bin/tuios`; `TUIOS_INBOX_DATA` changes database storage; `TUIOS_INBOX_SPOOL` changes the hook spool. Use the same spool setting in the daemon and backend if overriding it.
 
@@ -365,4 +392,4 @@ The entry without a variant opens the merged workbench. Its desktop task rail is
 
 Merged screenshots: [desktop](.impeccable/review/task-first/workbench-desktop.png), [open response](.impeccable/review/task-first/workbench-response.png), and [mobile](.impeccable/review/task-first/workbench-mobile.png).
 
-These previews remain isolated sample-data comparisons. The default live app now uses the merged workbench design with its existing production APIs and records; it does not import the sample model.
+These previews remain isolated sample-data comparisons. The live app uses the Flight deck shell and the task-focused Tasks/Queue workflow with production APIs and records; it does not import the sample model.

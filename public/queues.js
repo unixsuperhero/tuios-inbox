@@ -1,7 +1,8 @@
 // Queues page: one bucket per task, oldest at the top, read on the right. Records, actions, drafts
 // and forms are the workbench's own (pages.js detail + app.js handlers); this module only lays
 // them out as a queue and moves you to the next one.
-import { store, pages, esc, agentName, hostLabel, unfinished, api, taskTree } from '/pages.js';
+import { store, pages, esc, agentName, hostLabel, unfinished, api, taskTree, styleTask } from '/pages.js';
+import { styleAttrs, taskMark } from '/task-style-dom.js';
 import { patchHTML } from '/workbench.js';
 import { buildBuckets, nextAfter, waitingFor, byOldest, ALL } from '/queue-model.js';
 
@@ -35,13 +36,14 @@ export function createQueues({ root, navigate, load, review, refresh, report }) 
 
   function renderRail({ all, buckets, bucket }) {
     const rail = document.querySelector('#task-rail'); if (!rail) return;
-    const link = (b, depth = 0) => `<a class="qb-bucket${b.count ? '' : ' is-empty'}" href="${href(b.id)}" data-wb-key="bucket:${esc(b.id)}" style="--depth:${depth}"${b.id === bucket?.id ? ' aria-current="page"' : ''}><span><strong>${esc(b.title)}</strong>${b.count ? `<small>oldest waiting ${waitingFor(b.rows[0])}${b.commandCount ? ` · ${b.commandCount} command${b.commandCount === 1 ? '' : 's'}` : ''}</small>` : `<small>${b.commandCount ? `${b.commandCount} command${b.commandCount === 1 ? '' : 's'} only` : 'nothing to review'}</small>`}</span><span class="qb-count">${b.count}</span></a>`;
+    const link = (b, depth = 0) => `<a class="qb-bucket${b.count ? '' : ' is-empty'}" href="${href(b.id)}" data-wb-key="bucket:${esc(b.id)}" ${styleAttrs(store.state.tasks.find(t => t.id === b.id) || null)} data-task-depth="${depth}"${b.id === bucket?.id ? ' aria-current="page"' : ''}><span><strong>${taskMark(store.state.tasks.find(t => t.id === b.id) || null)}${esc(b.title)}</strong>${b.count ? `<small>oldest waiting ${waitingFor(b.rows[0])}${b.commandCount ? ` · ${b.commandCount} command${b.commandCount === 1 ? '' : 's'}` : ''}</small>` : `<small>${b.commandCount ? `${b.commandCount} command${b.commandCount === 1 ? '' : 's'} only` : 'nothing to review'}</small>`}</span><span class="qb-count">${b.count}</span></a>`;
     patchHTML(rail, `<div class="wb-rail-heading"><h2>Queues</h2><p class="hint">One queue per task. Unread work waits here, oldest at the top, until you mark it reviewed or reply.</p></div>${link(all)}<p class="wb-members-label">By task</p>${taskTree(store.state.tasks.filter(t => !t.archived)).map(t => { const b = buckets.find(x => x.id === t.id); return b ? link(b, t.depth) : ''; }).join('')}${link(buckets.find(b => b.id === 'unassigned'))}`);
   }
 
   function row(r, bucket, item, position, total) {
-    return `<div class="wb-record ${r.unread ? 'is-unread' : 'is-read'}${picked.has(r.id) ? ' is-picked' : ''}" data-wb-key="${esc(r.id)}"><input type="checkbox" data-qb-pick="${esc(r.id)}" aria-label="Select ${esc(r.title || 'record')}"${picked.has(r.id) ? ' checked' : ''}${pending ? ' disabled' : ''}><a class="wb-record-link" href="${href(bucket.id, r.id)}"${item?.id === r.id ? ' aria-current="page"' : ''}>
+    return `<div class="wb-record ${r.unread ? 'is-unread' : 'is-read'}${picked.has(r.id) ? ' is-picked' : ''}" ${styleAttrs(styleTask(r))} data-wb-key="${esc(r.id)}"><input type="checkbox" data-qb-pick="${esc(r.id)}" aria-label="Select ${esc(r.title || 'record')}"${picked.has(r.id) ? ' checked' : ''}${pending ? ' disabled' : ''}><a class="wb-record-link" href="${href(bucket.id, r.id)}"${item?.id === r.id ? ' aria-current="page"' : ''}>
       <strong>${esc(r.title || 'Prompt not captured')}</strong>
+      <span class="task-label">${taskMark(styleTask(r))}${esc(styleTask(r)?.title || 'No task')}</span>
       <span>${esc(r.agent_id ? agentName(r.agent_name, r.agent_id) : 'No agent')} · ${esc(r.type)}${r.status === 'needs_input' ? ' · <b class="qb-blocked">needs your answer</b>' : ''}</span>
       ${r.agent_id ? `<span class="host-label">Host: ${esc(hostLabel(r.agent_id))}</span>` : ''}
       <small>${esc(r.status)} · ${esc(time(r.updated))} · waiting ${waitingFor(r)}</small>
@@ -57,14 +59,14 @@ export function createQueues({ root, navigate, load, review, refresh, report }) 
     const tasks = store.state.tasks.filter(t => !t.archived);
     const bulk = `<div class="qb-bulk" data-wb-key="bulk"><label class="wb-select-all"><input type="checkbox" data-qb-all${!rows.length || pending ? ' disabled' : ''}${rows.length && picked.size === rows.length ? ' checked' : ''}>Select all</label><span class="wb-selection-count">${picked.size ? `${picked.size} selected` : ''}</span>${picked.size ? `<button type="button" data-qb-bulk="read"${pending ? ' disabled' : ''}>Mark reviewed</button><button type="button" data-qb-bulk="archive"${pending ? ' disabled' : ''}>Archive</button><select data-qb-assign aria-label="Assign checked to task"${pending ? ' disabled' : ''}><option value="">Assign to task…</option><option value="__none">No task</option>${tasks.map(t => `<option value="${esc(t.id)}">${esc(t.title)}</option>`).join('')}</select>` : ''}</div>`;
     const kinds = `<div class="qb-kinds" role="group" aria-label="What to show"><button type="button" data-qb-kind="work" aria-pressed="${!showCommands}">Everything else <span>${bucket.count}</span></button><button type="button" data-qb-kind="commands" aria-pressed="${showCommands}">Commands <span>${bucket.commandCount}</span></button></div>`;
-    const head = `<div class="qb-queue-head" data-wb-key="head"><h2>${esc(bucket.title)} <span class="qb-count">${rows.length}</span></h2><p class="hint">Oldest at the top. Opening a record marks it read. <span class="qb-kbd"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>n</kbd> next · <kbd>u</kbd> mark unread</span></p>${kinds}${chips}${bulk}</div>`;
+    const head = `<div class="qb-queue-head" ${styleAttrs(store.state.tasks.find(t => t.id === bucket.id) || null)} data-wb-key="head"><h2>${taskMark(store.state.tasks.find(t => t.id === bucket.id) || null)}${esc(bucket.title)} <span class="qb-count">${rows.length}</span></h2><p class="hint">Oldest at the top. Opening a record marks it read. <span class="qb-kbd"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>n</kbd> next · <kbd>u</kbd> mark unread</span></p>${kinds}${chips}${bulk}</div>`;
     const list = rows.length ? rows.map((r, i) => row(r, bucket, item, i + 1, rows.length)).join('') : `<p class="qb-empty">${showCommands ? 'No unread commands here.' : 'Nothing waiting in this queue.'}</p>`;
     let reading;
     if (!item) {
       reading = rows.length ? `<div class="qb-empty"><p>Start at the top: the oldest thing waiting is <strong>${esc(rows[0].title || 'Prompt not captured')}</strong>.</p><p><a class="primary qb-start" href="${href(bucket.id, rows[0].id)}">Open the oldest</a></p></div>` : '<div class="qb-empty"><p>This queue is clear.</p></div>';
     } else {
       const next = nextAfter(rows, item.id);
-      reading = `<a class="qb-back" href="${href(bucket.id)}">← Queue</a><article class="wb-content wb-item ${item.unread ? 'is-unread' : 'is-read'}" data-wb-key="opened:${esc(item.id)}">
+      reading = `<a class="qb-back" href="${href(bucket.id)}">← Queue</a><article class="wb-content wb-item ${item.unread ? 'is-unread' : 'is-read'}" ${styleAttrs(styleTask(item))} data-wb-key="opened:${esc(item.id)}">
         <div class="wb-summary">${pages.inbox.list.summary(item)}</div>
         <div class="wb-review-actions"><button class="primary" data-qb-next${!next || reviewing ? ' disabled' : ''}>Next</button><button data-qb-toggle="${esc(item.id)}"${reviewing ? ' disabled' : ''}>${item.unread ? 'Mark read' : 'Mark unread'}</button><a href="#item/${encodeURIComponent(item.id)}">Open in workbench</a>${item.task_id ? `<a href="#task/${encodeURIComponent(item.task_id)}">Task history</a>` : ''}</div>
         <div class="wb-item-detail">${pages.inbox.list.detail(item)}</div></article>`;
