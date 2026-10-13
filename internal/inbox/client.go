@@ -138,7 +138,7 @@ func (c *Client) Hosts() ([]Host, error) {
 	return inventory.Hosts, err
 }
 
-// CreateWindow assigns a shell in the task's global session on the explicitly chosen machine.
+// CreateWindow assigns a shell in the task's session on the explicitly chosen machine.
 func (c *Client) CreateWindow(taskID, name, host string) error {
 	host = strings.TrimSpace(host)
 	if host == "" {
@@ -147,8 +147,7 @@ func (c *Client) CreateWindow(taskID, name, host string) error {
 	return c.request("POST", "/api/tasks/"+url.PathEscape(taskID)+"/panes", map[string]string{"name": name, "kind": "shell", "host": host}, nil)
 }
 
-// CreateSession creates an empty global container and makes it the task's default home.
-// Windows are created separately with an explicit execution machine.
+// CreateSession creates a local session, assigns its starter panes, and makes it the task's default home.
 // Errors after creation name the created session rather than claiming nothing happened.
 func (c *Client) CreateSession(taskID, name string) error {
 	var created struct {
@@ -156,6 +155,17 @@ func (c *Client) CreateSession(taskID, name string) error {
 	}
 	if err := c.action(map[string]any{"action": "create-session", "name": name}, &created); err != nil {
 		return err
+	}
+	var inventory struct {
+		Windows []Window `json:"windows"`
+	}
+	if err := c.request("GET", "/api/tuios?session="+url.QueryEscape(created.Session), nil, &inventory); err != nil {
+		return fmt.Errorf("session %q created; reading starter windows failed: %w", created.Session, err)
+	}
+	for _, window := range inventory.Windows {
+		if err := c.action(map[string]any{"action": "assign-task", "taskId": taskID, "session": created.Session, "window": window.ID}, nil); err != nil {
+			return fmt.Errorf("session %q created; assigning window failed: %w", created.Session, err)
+		}
 	}
 	if err := c.action(map[string]any{"action": "bind-task", "taskId": taskID, "session": created.Session}, nil); err != nil {
 		return fmt.Errorf("session %q created; setting the task home failed: %w", created.Session, err)

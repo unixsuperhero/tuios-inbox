@@ -28,7 +28,7 @@ export async function setupLaunchHost(form, api, store) {
     const selected = select.value;
     select.replaceChildren(...hostChoices(hosts, selected).map(c => { const option = new Option(c.label, c.value); option.disabled = Boolean(c.disabled); return option; }));
     select.value = selected;
-    note.textContent = 'Choose where execution happens. Paths belong to this machine, not the global session owner.';
+    note.textContent = 'Choose where execution happens. Paths belong to this machine, not the session owner.';
     form.dispatchEvent(new Event('hosts-ready'));
   } catch (error) {
     if (opens.get(form) !== open || !form.closest('dialog')?.open) return;

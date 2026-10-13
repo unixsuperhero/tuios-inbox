@@ -276,7 +276,7 @@ function finish(key, body, status, meta = {}) {
 function resultText(result) { if (typeof result === 'string') return result; for (const key of ['output', 'reply', 'text', 'content']) if (typeof result?.[key] === 'string') return result[key]; return JSON.stringify(result, null, 2); }
 function background(promise) { promise.catch(e => { lastError = e.message; console.error(e); changed(); }); }
 function rows(value, key) { return Array.isArray(value) ? value : value?.[key] || []; }
-async function nativeSessions(globalOnly = true) {
+async function nativeSessions() {
   const [remote, local] = await Promise.allSettled([cli(['ls', '--all-hosts']), cli(['ls'])]);
   const hosts = remote.status === 'fulfilled' ? rows(remote.value, 'hosts').map(h => ({ ...h })) : [{ host: 'local', status: 'unknown', error: remote.reason.message }];
   if (local.status === 'fulfilled') {
@@ -295,12 +295,12 @@ async function nativeSessions(globalOnly = true) {
     if (host) host.error = local.reason.message;
     else hosts.push({ host: 'local', status: 'down', error: local.reason.message });
   }
-  return { sessions: globalOnly ? sessions.filter(s => s.global === true) : sessions, hosts: hosts.map(({ sessions, ...h }) => h.host === 'local' ? { ...h, hostname: hostname() } : h) };
+  return { sessions, hosts: hosts.map(({ sessions, ...h }) => h.host === 'local' ? { ...h, hostname: hostname() } : h) };
 }
 async function nativeSession(target, mutate = false) {
   required(target, 'Session', 240);
   const snapshot = await nativeSessions(), session = snapshot.sessions.find(s => s.target === target);
-  if (!session) throw new Error('Native global session not found');
+  if (!session) throw new Error('Native session not found');
   const host = snapshot.hosts.find(h => h.host === session.host);
   if (session.saved || host?.status === 'down' || host?.status === 'saved') throw new Error('Session is saved or its host is down; attach it in TUIOS first');
   if (mutate && (host?.read_only || host?.status === 'read-only' || host?.status === 'readonly')) throw new Error('Native host is read-only');
@@ -358,7 +358,7 @@ async function executionHost(requested) {
 }
 async function launchPlan(t, requested, kind) {
   const host = await executionHost(requested), owner = t.session.includes(':') ? t.session.split(':')[0] : 'local';
-  if (owner !== 'local' && host !== owner) throw new Error('This execution machine has no proven native mapping from the remote session owner; choose its owning machine or a local global container');
+  if (owner !== 'local' && host !== owner) throw new Error('This execution machine has no proven native mapping from the remote session owner; choose its owning machine or a local session container');
   return { t: { ...t, host }, windowHost: host };
 }
 function launchProfile(t, profileId, supplied) {
@@ -371,10 +371,10 @@ function launchProfile(t, profileId, supplied) {
 }
 async function ensureSession(t) {
   return createInSession(t.session, async () => {
-    const snapshot = await nativeSessions(false);
+    const snapshot = await nativeSessions();
     if (snapshot.sessions.some(s => s.target === t.session)) { await taskHome(t.session, t.workspace); return; }
-    if (t.session !== `inbox-${(t.home_id || t.id)?.slice(0, 8)}` || t.workspace != null) throw new Error('Task home is no longer available; select a live native global home');
-    await cli(['new', sessionName(t.session), '--global', '--detach'], 15000, false);
+    if (t.session !== `inbox-${(t.home_id || t.id)?.slice(0, 8)}` || t.workspace != null) throw new Error('Task home is no longer available; select a live native home');
+    await cli(['new', sessionName(t.session), '--detach'], 15000, false);
   }, { newSession: true });
 }
 const inRemoteDirectory = (cwd, argv) => cwd ? ['sh', '-c', 'cd "$1" || exit; shift; exec "$@"', 'sh', cwd, ...argv] : argv;
@@ -411,7 +411,6 @@ function startProfile(t, name, profileId, cwd, opts = {}) {
       for (const [k,v] of Object.entries(JSON.parse(profile.env))) args.push('--env', `${k}=${v}`);
       args.push(profile.executable, '--', ...JSON.parse(profile.args), ...(opts.args || []));
       const r = hosted ? await hostedProfile(t, name, profile, cwd, opts) : await createInSession(t.session, () => cli(args, 130000, true, remote && !opts.remoteCwd && cwd && cwd !== homedir() ? cwd : undefined));
-      if (r.created_session === true) { r.ready = false; r.outcome = 'not_global'; r.error = 'Native startup recreated a missing session without global semantics; no prompt was sent'; }
       const paneId = r.window_id || r.id || r.window;
       if (!paneId) throw new Error(JSON.stringify(r));
       if (t.id) run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'agent', profile.id, ['window_closed','session_closed','shutdown'].includes(r.outcome) ? 'closed' : r.ready !== true ? 'needs_input' : 'idle', r.agent_session_id || '');
@@ -420,7 +419,7 @@ function startProfile(t, name, profileId, cwd, opts = {}) {
       run('UPDATE threads SET pane_id=? WHERE id=?', paneId, tid);
       const closed = ['window_closed','session_closed','shutdown'].includes(r.outcome);
       finish(mid, r.ready === true && !closed ? `${name} is ready. Compose a prompt to begin.` : `Agent startup outcome: ${JSON.stringify(r)}`, closed ? 'failed' : r.ready === true ? 'complete' : 'blocked', r);
-      outcome = r; if (['window_closed','session_closed','shutdown','not_global'].includes(r.outcome)) failure = r.error || 'Agent window closed during startup'; else started = paneId;
+      outcome = r; if (['window_closed','session_closed','shutdown'].includes(r.outcome)) failure = r.error || 'Agent window closed during startup'; else started = paneId;
     } catch (e) { finish(mid, e.message, 'failed'); failure = e.message; }
     if (opts.after) await opts.after(started, outcome, failure);
   })());
@@ -1102,11 +1101,10 @@ async function api(req, url) {
     if (!actions.includes(action)) throw new Error('Unsupported native action');
     if (['kill-session','close-workspace','close-window','interrupt-window'].includes(action) && body.confirmed !== true) throw new Error('Explicit confirmation is required');
     if (action === 'create-session') {
-      const name = sessionName(body.name), host = await executionHost(body.host), snapshot = await nativeSessions(false);
-      if (host !== 'local') throw new Error('Native remote session creation cannot create global containers; create a global session on that machine in TUIOS first');
-      const target = name;
+      const name = sessionName(body.name), host = await executionHost(body.host || 'local'), snapshot = await nativeSessions();
+      const target = host === 'local' ? name : host + ':' + name;
       if (snapshot.sessions.some(s => s.target === target)) throw new Error('Session already exists');
-      await createInSession(target, async () => { if ((await nativeSessions(false)).sessions.some(s => s.target === target)) throw new Error('Session already exists'); await cli(['new', name, '--global', '--detach'], 15000, false); }, { newSession:true }); changed(); return response({ session: target }, 201);
+      await createInSession(target, async () => { if ((await nativeSessions()).sessions.some(s => s.target === target)) throw new Error('Session already exists'); const args = ['new', name, '--detach']; if (host !== 'local') args.push('--host', host); await cli(args, 15000, false); }, { newSession:true }); changed(); return response({ session: target }, 201);
     }
     const session = await nativeSession(body.session, true), target = session.target;
     if (['rename-session','kill-session'].includes(action) && session.host !== 'local') throw new Error('This action is only supported for local sessions');

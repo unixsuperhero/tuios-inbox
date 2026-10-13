@@ -141,7 +141,7 @@ export function createTuios({ root, refresh }) {
   const table = (caption, body) => `<div class="native-table-scroll"><table class="native-table"><caption class="sr-only">${esc(caption)}</caption><thead><tr><th scope="col">Name</th><th scope="col">Host</th><th scope="col">State</th><th scope="col">Actions</th></tr></thead><tbody>${body}</tbody></table></div>`;
   function sessionList() {
     const rows = inventory?.sessions || [], found = filtered(rows, s => s.host || 'local', sessionState);
-    return `<div class="native-section-heading"><h2>Sessions <span>${rows.length}</span></h2>${actionButton('create-session')}</div>${filterBar(rows, s => s.host || 'local', sessionState)}${found.length ? table('Native sessions', found.map(s => `<tr data-wb-key="session:${esc(s.target)}"><td><a class="native-name" href="${href(s.target)}">${esc(sessionLabel(s))}</a><small>${esc(s.target)} · ${esc(s.window_count ?? s.windows?.length ?? 0)} panes</small></td><td>${esc(machineName(s.host))}</td><td><span class="badge">${esc(sessionState(s))}</span></td><td><div class="native-row-actions"><a href="${href(s.target)}">Inspect</a>${actionButton('label-session', { session: s.target })}</div></td></tr>`).join('')) : empty(inventory ? rows.length ? 'No sessions match these filters.' : 'No native sessions found. Create one, or start TUIOS in your terminal.' : 'Reading native sessions…')}<p class="hint">Only native global sessions are shown. Bind tasks to a global session and choose their execution machine separately. Hosts are configured in TUIOS, not here.</p>`;
+    return `<div class="native-section-heading"><h2>Sessions <span>${rows.length}</span></h2>${actionButton('create-session')}</div>${filterBar(rows, s => s.host || 'local', sessionState)}${found.length ? table('Native sessions', found.map(s => `<tr data-wb-key="session:${esc(s.target)}"><td><a class="native-name" href="${href(s.target)}">${esc(sessionLabel(s))}</a><small>${esc(s.target)} · ${esc(s.window_count ?? s.windows?.length ?? 0)} panes</small></td><td>${esc(machineName(s.host))}</td><td><span class="badge">${esc(sessionState(s))}</span></td><td><div class="native-row-actions"><a href="${href(s.target)}">Inspect</a>${actionButton('label-session', { session: s.target })}</div></td></tr>`).join('')) : empty(inventory ? rows.length ? 'No sessions match these filters.' : 'No native sessions found. Create one, or start TUIOS in your terminal.' : 'Reading native sessions…')}<p class="hint">Ordinary and global native sessions are shown. Bind tasks to a session and choose their execution machine separately. Hosts are configured in TUIOS, not here.</p>`;
   }
   function paneRows(data) {
     return (data.windows || []).map(w => ({ ...data.agents?.find(a => windowId(a) === windowId(w)), ...w }));
@@ -241,7 +241,7 @@ export function createTuios({ root, refresh }) {
     if (!supports(next)) return;
     if (dragging) { deferredRead = true; return; }
     deferredRead = false;
-    const rootRead = readResource('inventory', '/tuios', data => { inventory = { ...data, sessions: (data.sessions || []).filter(s => s.global === true) }; store.liveHosts = data.hosts || []; });
+    const rootRead = readResource('inventory', '/tuios', data => { inventory = { ...data, sessions: data.sessions || [] }; store.liveHosts = data.hosts || []; });
     if (next.view === 'overview') {
       await rootRead;
       if (dragging) { deferredRead = true; return; }
@@ -288,15 +288,15 @@ export function createTuios({ root, refresh }) {
     let fields = '', hint = '', submitLabel = names[action];
     if (['create-window', 'create-agent', 'split-window'].includes(action)) {
       fields += choice('host', 'Execution machine', hostChoices(inventory?.hosts || [], draft.host || ''), draft.host || '');
-      fields += `<p class="hint">Global session container ${esc(context.session)} · owner ${esc(machineName(session?.host))}. Choosing an execution machine does not change this container.</p>`;
+      fields += `<p class="hint">Session container ${esc(context.session)} · owner ${esc(machineName(session?.host))}. Choosing an execution machine does not change this container.</p>`;
     }
     if (['create-session', 'label-session', 'rename-session', 'name-workspace', 'create-window', 'rename-window', 'split-window', 'create-agent'].includes(action)) {
       const value = draft.name ?? (action === 'label-session' ? session?.display_name || session?.label || '' : action === 'rename-session' ? session?.name || context.session : action === 'name-workspace' ? data?.workspaces.find(w => workspaceId(w) === context.workspace)?.name || '' : action === 'rename-window' ? paneName(w || {}) : '');
       fields += field('name', action === 'label-session' ? 'Display label (empty clears; address stays unchanged)' : 'Name', value, (['label-session', 'name-workspace', 'rename-window'].includes(action) ? '' : 'required ') + 'maxlength="120"');
     }
     if (action === 'create-session') {
-      fields += '<input type="hidden" name="host" value="local">';
-      hint = `Creates an empty native global session owned by ${machineName('local')}. Each new pane chooses its own execution machine.`;
+      fields += choice('host', 'Session owner machine', hostChoices(inventory?.hosts || [], draft.host || 'local'), draft.host || 'local');
+      hint = 'Creates an ordinary native session on the selected owner machine, including its starter terminal. Each additional pane chooses its own execution machine.';
     }
     if (action === 'move-window') fields += choice('workspace', 'Destination numbered workspace · same session', knownWorkspaces(context.session).map(w => ({ value: workspaceId(w), label: workspaceLabel(w) })), workspace);
     if (['create-window', 'create-agent', 'name-workspace', 'select-workspace', 'close-workspace'].includes(action)) {
@@ -321,7 +321,7 @@ export function createTuios({ root, refresh }) {
     if (action === 'bind-task') {
       fields += choice('taskId', 'Task to bind', [{ value: '', label: 'Choose a task' }, ...taskOptions().slice(1)], draft.taskId || '');
       fields += field('workspace', 'Future workspace (empty = session default)', draft.workspace ?? context.workspace ?? '', 'type="number" min="1" step="1"');
-      hint = 'Future launches only. This sets the task’s global session/workspace container; it never moves existing panes, changes execution machines or assignment, or rewrites history. Empty workspace binds the session default.';
+      hint = 'Future launches only. This sets the task’s session/workspace container; it never moves existing panes, changes execution machines or assignment, or rewrites history. Empty workspace binds the session default.';
     }
     if (action === 'set-layout') {
       fields += choice('tiling', 'Tiling mode', [{ value: '', label: 'Leave unchanged' }, { value: 'true', label: 'Tiling' }, { value: 'false', label: 'Floating' }], draft.tiling || '');
@@ -354,7 +354,6 @@ export function createTuios({ root, refresh }) {
       const host = inventory?.hosts.find(h => h.host === payload.host);
       if (!host || hostUnavailable(host)) throw new Error('Choose an available execution machine. No default machine is used.');
     }
-    if (action === 'create-session' && payload.host !== 'local') throw new Error('Global sessions can only be created on the local owner machine.');
     if (action === 'create-agent') {
       const profile = store.state.profiles.find(p => p.id === payload.profileId);
       if (!profile || !profileCompatible(profile, payload.host)) throw new Error('Choose an agent profile compatible with this execution machine.');

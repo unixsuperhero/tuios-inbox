@@ -74,7 +74,7 @@ export function preflight({ prompt, resolved, panes = [], git = null, profiles =
   if (sent) ;
   else if (prompt.target) {
     const pane = panes.find(p => p.id === prompt.target);
-    if (pane?.live === false) blocks.push({ code: 'not_global', message: 'Target pane is not in an available native global session', fix: 'target' });
+    if (pane?.live === false) blocks.push({ code: 'session_unavailable', message: 'Target pane is not in an available native session', fix: 'target' });
     if (!pane || pane.state === 'closed') warns.push({ code: 'pane_gone', message: 'Target pane is gone; attempting it may fail, or choose another target', fix: 'target' });
     else {
       if (pane.state === 'needs_input') warns.push({ code: 'pane_blocked', message: 'Target pane is waiting on its own question; Queue anyway waits without answering it', fix: 'target' });

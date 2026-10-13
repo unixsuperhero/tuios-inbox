@@ -71,42 +71,63 @@ func TestUnavailableHosts(t *testing.T) {
 	}
 }
 
-func TestCreateSessionBindsEmptyGlobalContainer(t *testing.T) {
-	for _, failBind := range []bool{false, true} {
-		t.Run(fmt.Sprint(failBind), func(t *testing.T) {
-			var actions []map[string]string
+func TestCreateSessionAssignsStarterWindowsAndReportsPartialFailure(t *testing.T) {
+	for _, failure := range []string{"", "inventory", "assign", "bind"} {
+		t.Run(failure, func(t *testing.T) {
+			assigned := map[string]string{}
+			bound := ""
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != "POST" || r.URL.Path != "/api/tuios/action" {
-					t.Errorf("unexpected inventory/assignment request: %s %s", r.Method, r.URL)
-					w.WriteHeader(http.StatusNotFound)
+				if r.Method == "GET" && r.URL.Path == "/api/tuios" {
+					if failure == "inventory" {
+						http.Error(w, "inventory unavailable", http.StatusServiceUnavailable)
+						return
+					}
+					fmt.Fprint(w, `{"windows":[{"window_id":"starter-1"},{"window_id":"starter-2"}]}`)
 					return
 				}
 				var body map[string]string
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Error(err)
 				}
-				actions = append(actions, body)
-				if body["action"] == "create-session" {
-					fmt.Fprint(w, `{"session":"global-work"}`)
-				} else if failBind {
-					w.WriteHeader(http.StatusConflict)
-					fmt.Fprint(w, `{"error":"task unavailable"}`)
-				} else {
-					fmt.Fprint(w, `{}`)
+				switch body["action"] {
+				case "create-session":
+					fmt.Fprint(w, `{"session":"work"}`)
+				case "assign-task":
+					if failure == "assign" {
+						http.Error(w, "assignment refused", http.StatusConflict)
+						return
+					}
+					assigned[body["window"]] = body["taskId"]
+					fmt.Fprint(w, "{}")
+				case "bind-task":
+					if failure == "bind" {
+						http.Error(w, "task unavailable", http.StatusConflict)
+						return
+					}
+					bound = body["session"]
+					fmt.Fprint(w, "{}")
+				default:
+					t.Errorf("unexpected action: %s", body["action"])
+					w.WriteHeader(http.StatusNotFound)
 				}
 			}))
 			defer server.Close()
-			err := New(server.URL).CreateSession("task-1", "global-work")
-			if failBind {
-				if err == nil || !strings.Contains(err.Error(), `session "global-work" created; setting the task home failed`) {
+			err := New(server.URL).CreateSession("task-1", "work")
+			if failure != "" {
+				step := map[string]string{"inventory": "reading starter windows", "assign": "assigning window", "bind": "setting the task home"}[failure]
+				if err == nil || !strings.Contains(err.Error(), "session \"work\" created; "+step+" failed") {
 					t.Fatalf("partial creation error = %v", err)
 				}
-			} else if err != nil {
+				if bound != "" {
+					t.Fatalf("failed operation bound task to %q", bound)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
-			want := []map[string]string{{"action": "create-session", "name": "global-work"}, {"action": "bind-task", "taskId": "task-1", "session": "global-work"}}
-			if !reflect.DeepEqual(actions, want) {
-				t.Fatalf("actions = %#v, want %#v", actions, want)
+			if bound != "work" || !reflect.DeepEqual(assigned, map[string]string{"starter-1": "task-1", "starter-2": "task-1"}) {
+				t.Fatalf("home = %q, assignments = %#v", bound, assigned)
 			}
 		})
 	}

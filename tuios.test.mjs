@@ -131,7 +131,7 @@ nativeTest('launch-only directory overrides use selected machine without rewriti
 nativeTest('native hierarchy identifies session, workspace, pane and agent without moving terminal focus', async () => fixture(async f => {
   await f.action('create-session', { name: 'hierarchy' });
   await f.action('create-session', { name: 'hierarchy-extra' });
-  expect((await f.windows('hierarchy')).windows).toEqual([]);
+  expect((await f.hierarchy('hierarchy')).session).toMatchObject({ name: 'hierarchy' });
   const anchor = await f.create('hierarchy', 1, 'anchor');
   await f.cli('focus-window', anchor, '-s', 'hierarchy');
   const initial = await f.windows('hierarchy');
@@ -181,7 +181,7 @@ nativeTest('pane management preserves UUID and no-focus intent; exact confirmed 
   expect(await f.window('manage', pane)).toMatchObject({ window_id: pane, display_name: '--workspace=9', workspace: 3 });
   expect((await f.native('list-workspaces', '-s', 'manage')).workspaces.find(w => w.workspace === 2)).toMatchObject({ workspace: 2, name: '--workspace=9' });
   await f.action('close-window', { session: 'manage', window: pane, confirmed: true });
-  expect((await f.windows('manage')).windows.map(w => w.window_id).sort()).toEqual([initial.focused_window_id, other].sort());
+  expect((await f.windows('manage')).windows.map(w => w.window_id).sort()).toEqual([...initial.windows.map(w => w.window_id), other].sort());
   expect(await f.window('manage', other)).toMatchObject({ window_id: other, display_name: 'build-extra', workspace: 2 });
 }), 60000);
 
@@ -355,29 +355,29 @@ test('launch host module ignores stale discovery and disables unknown hosts', as
   } finally { if (originalOption === undefined) delete globalThis.Option; else globalThis.Option = originalOption; }
 });
 
-nativeTest('ordinary sessions remain historical but cannot receive new Inbox work', async () => fixture(async f => {
-  await f.action('create-session', { name: 'global-only' });
-  await f.cli('new', 'ordinary-history', '--detach');
-  const ordinary = (await f.windows('ordinary-history')).windows[0].window_id;
-  const at = new Date().toISOString();
-  await Bun.write(join(f.env.TUIOS_INBOX_SPOOL, 'ordinary-history.json'), JSON.stringify({ id:'ordinary-history', time:at, values:{TUIOS_EVENT:'after-agent-state',TUIOS_AGENT_STATE:'done',TUIOS_WINDOW_ID:ordinary,TUIOS_SESSION_ID:'ordinary-history'}, turn:{session:'ordinary-history',pane:ordinary,name:'historical ordinary pane',harness:'omp',state:'done',at,prompt:'old prompt',response:'retained old result',source:'pane'} }));
-  await f.json('/reconcile', {});
-  const outline = await f.json('/outline');
-  expect(outline.sessions.map(s => [s.name,s.global])).toEqual([['global-only',true]]);
-  expect(outline.panes.find(p => p.id === ordinary)).toMatchObject({ live:false,ready:false,session:'ordinary-history' });
-  const run = outline.runs.find(r => r.pane_id === ordinary);
-  expect(await f.json('/turns/' + run.id.slice(5))).toMatchObject({ prompt:'old prompt',response:'retained old result' });
-  expect((await f.request('/agents/' + ordinary + '/prompt', { body:'must not be sent' })).status).toBe(400);
-  const blocked = await f.json('/prompts', { body:'keep unsent ordinary continuation',target:ordinary,run:true,allow_warnings:true },201);
-  expect(blocked).toMatchObject({ ran:false,prompt:{state:'blocked',body:'keep unsent ordinary continuation'} });
-  expect(blocked.preflight.blocks.map(b => b.code)).toEqual(['not_global']);
-  expect((await f.request('/tuios/action', {action:'create-window',session:'global-only',workspace:1,name:'missing-machine'})).status).toBe(400);
-  expect((await f.windows('global-only')).windows).toEqual([]);
-  expect(await f.cli('capture-pane','-s','ordinary-history','-w',ordinary,'--scrollback','--lines','100')).not.toContain('must not be sent');
+nativeTest('ordinary and global sessions can be inspected and ordinary homes can receive work', async () => fixture(async f => {
+  await f.cli('new', 'global-home', '--global', '--detach');
+  await f.action('create-session', { name: 'ordinary-home' });
+  const inventory = await f.hierarchy();
+  expect(inventory.sessions.filter(s => s.global !== true).map(s => s.name)).toEqual(['ordinary-home']);
+  expect(inventory.sessions.find(s => s.name === 'global-home')).toMatchObject({ global:true });
+  const ordinary = await f.hierarchy('ordinary-home');
+  expect(ordinary.session).toMatchObject({ name:'ordinary-home' });
+  const task = await f.json('/tasks', { title:'Ordinary work', session:'ordinary-home', host:'local' },201);
+  await f.action('bind-task', { taskId:task.id, session:'ordinary-home', workspace:1 });
+  const bound = (await f.state()).tasks.find(t => t.id === task.id);
+  const pane = await f.shell(bound, 'ordinary-worker');
+  const result = await f.compose(bound, pane, 'printf ordinary-session-work', 'Ordinary session smoke');
+  expect(result.messages.find(m => m.role === 'shell').body).toContain('ordinary-session-work');
+  expect((await f.json('/outline')).panes.find(p => p.id === pane.id)).toMatchObject({ live:true,session:'ordinary-home' });
+  const before = await f.windows('global-home');
+  expect((await f.request('/tuios/action', {action:'create-window',session:'global-home',workspace:1,name:'missing-machine'})).status).toBe(400);
+  expect(await f.windows('global-home')).toEqual(before);
 }),60000);
 
 
-nativeTest('renaming a global container migrates explicit prompt homes without copying inherited ones', async () => fixture(async f => {
+
+nativeTest('renaming a session migrates explicit prompt homes without copying inherited ones', async () => fixture(async f => {
   await f.action('create-session', { name: 'rename-before' });
   const task = await f.json('/tasks', {title:'Rename home',session:'rename-before',host:'local'},201);
   const explicit = await f.json('/prompts', {body:'Explicit home',task_id:task.id,session:'rename-before'},201);

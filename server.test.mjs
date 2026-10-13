@@ -742,7 +742,7 @@ if (args[0] === 'ls') result = args.includes('--all-hosts') ? {hosts:[{host:'loc
 if (args[0] === 'new') { sessions.push({name:args[1],global:args.includes('--global')}); await Bun.write(file,JSON.stringify(sessions)); }
 if (args[0] === 'list-workspaces') result = {workspaces:[{workspace:2},{workspace:3}]};
 if (args[0] === 'list-agents') result = {agents:[{window_id:'native-2',agent_session_id:'sid-import',harness_id:'omp',state:'idle'}]};
-if (args[0] === 'start-agent') { const countFile = ${JSON.stringify(join(dir,'count'))}; const n = Number(await Bun.file(countFile).text().catch(() => '0')) + 1; await Bun.write(countFile, String(n)); while (await Bun.file(${JSON.stringify(join(dir,'gate'))}).exists()) await Bun.sleep(10); result = {window_id:'native-'+n,ready:true,outcome:'ready'}; }
+if (args[0] === 'start-agent') { const countFile = ${JSON.stringify(join(dir,'count'))}; const n = Number(await Bun.file(countFile).text().catch(() => '0')) + 1; await Bun.write(countFile, String(n)); while (await Bun.file(${JSON.stringify(join(dir,'gate'))}).exists()) await Bun.sleep(10); result = {window_id:'native-'+n,ready:true,outcome:'ready',created_session:n===1}; }
 if (args[0] === 'list-windows') { const { Database } = await import('bun:sqlite'); const db = new Database(process.env.TUIOS_INBOX_DATA + '/inbox.sqlite'); const target = args[args.indexOf('-s')+1]; result = {windows:db.query("SELECT id AS window_id,state,host FROM agents WHERE session=? AND state<>'closed'").all(target).map(a=>({...a,agent_state:{state:a.state}}))}; db.close(); }
 if (args[0] === 'queue' && args.includes('denied payload')) { console.error('native queue permission refused'); process.exit(1); }
 if (args[0] === 'kill-session') { const target=args.at(-1); await Bun.write(file,JSON.stringify(sessions.filter(s=>s.name!==target))); }
@@ -850,7 +850,7 @@ console.log(JSON.stringify(result));
     await rm(join(dir,'gate'));
     expect((await killing).status).toBe(200);
     let failed;for(let i=0;i<80;i++){failed=await json('/threads/'+afterKill.threadId);if(failed.messages.some(m=>m.status==='failed'))break;await Bun.sleep(25);}
-    expect(failed.messages).toMatchObject([{status:'failed',body:'Native global session not found'}]);
+    expect(failed.messages).toMatchObject([{status:'failed',body:'Native session not found'}]);
     expect(Number(await Bun.file(join(dir,'count')).text())).toBe(5);
     expect((await json('/tuios')).sessions.some(s=>s.target==='native-home')).toBe(false);
     db.close();

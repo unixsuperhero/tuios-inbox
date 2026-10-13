@@ -231,7 +231,7 @@ func (m *Model) layout(count int) ([]string, []hit) {
 			lines = append(lines, text("Create in "+m.home(task)))
 		}
 		if m.Form == formNewSession && !compact {
-			lines = append(lines, text("Create an empty global session and set it as the task's default home."), text("Windows are created separately on a chosen machine."))
+			lines = append(lines, text("Create a session, assign its starter terminal, and set it as the task's default home."), text("Additional windows are created on a chosen machine."))
 		}
 		if !compact {
 			lines = append(lines, text(""))

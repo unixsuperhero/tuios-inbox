@@ -109,7 +109,7 @@ test('empty text blocks dispatch, while configuration findings stay actionable w
   for (const prompt of [{ body: 'x', task_id: null }, { body: 'x', harness: 'gemini' }]) expect(codes(pf(prompt))).toEqual(['no_host']);
   expect(codes(pf({ body: 'x', target: 'gone' }))).toEqual([]);
   expect(warnings(pf({ body: 'x', task_id: 'kid' }))).toEqual([]);
-  expect(codes(pf({ body: 'x', target: 'ordinary' }, [launchedPane({ id: 'ordinary', live: false })]))).toEqual(['not_global']);
+  expect(codes(pf({ body: 'x', target: 'ordinary' }, [launchedPane({ id: 'ordinary', live: false })]))).toEqual(['session_unavailable']);
 });
 test('target health and launch-context mismatches warn without preventing an attempt', () => {
   const prompt = { body: 'x', task_id: 'root', target: 'a' };

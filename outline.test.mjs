@@ -460,13 +460,13 @@ test('a pane and a run without a task inherit the task whose session they live i
   expect(pane('hand-pane').task_id).toBe(null); expect(run('typed by hand').task_id).toBe(null);
 });
 
-test('global inventory is exposed to the outline and ordinary sessions cannot become task or prompt homes', async () => {
+test('ordinary and global sessions are available as task and prompt homes', async () => {
   const data = await outline();
   expect(data.sessions.filter(s => s.target === 's').map(s => [s.target, s.global])).toEqual([['s', true]]);
-  expect(data.sessions.some(s => s.target === 'ordinary' || s.global !== true)).toBe(false);
+  expect(data.sessions.find(s => s.target === 'ordinary')).toMatchObject({ target: 'ordinary', global: false });
   expect(data.hosts.find(h => h.host === 'local')).toMatchObject({ host: 'local', status: 'up' });
-  expect((await call('/tasks', { title: 'ordinary home', session: 'ordinary' })).status).toBe(400);
-  expect((await call('/prompts', { body: 'ordinary prompt home', session: 'ordinary' })).status).toBe(400);
+  expect(await json('/tasks', { title: 'ordinary home', session: 'ordinary' })).toMatchObject({ session: 'ordinary' });
+  expect(await json('/prompts', { body: 'ordinary prompt home', session: 'ordinary' })).toMatchObject({ prompt: { session: 'ordinary' } });
   const parent = await json('/tasks', { title: 'Machine parent', session: 's', host: 'local' });
   const child = await json('/tasks', { title: 'Machine child', parent_id: parent.id });
   const { prompt } = await json('/prompts', { body: 'inherited execution', task_id: child.id });
