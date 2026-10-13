@@ -27,6 +27,21 @@
 .history-records tr[data-task-style] > td:first-child { border-inline-start: 1px solid var(--task-border); }
 .task-label { display: inline-flex; align-items: center; gap: 0; }
 
+/* Queue identity stays visible across read and selected background changes. */
+:is(.q-row, .rt-group, .qb-bucket, .qb-queue-head, .qb-rows .wb-record, .is-queue .ol-owned-detail)[data-task-style]:not([data-task-style=""]) {
+  --queue-wash: color-mix(in srgb, var(--task-color) 20%, transparent);
+  border-inline-start-color: var(--task-color);
+  background-image: linear-gradient(var(--queue-wash), var(--queue-wash));
+}
+:is(.q-row, .qb-bucket, .qb-rows .wb-record)[data-task-style]:not([data-task-style=""]) {
+  border-color: color-mix(in srgb, var(--task-color) 65%, var(--line));
+}
+.q-row[data-task-style]:not([data-task-style=""]).is-read { --queue-wash: color-mix(in srgb, var(--task-color) 12%, transparent); }
+.q-row.is-selected { outline: 2px solid #dce9ff; outline-offset: -2px; }
+.q-row[data-task-style]:not([data-task-style=""]).is-selected { --queue-wash: color-mix(in srgb, var(--task-color) 10%, transparent); }
+:is(.q-row .q-path, .qb-rows .task-label) { color: color-mix(in srgb, var(--task-color) 15%, var(--ink)); }
+.is-queue .ol-owned-detail[data-task-style]:not([data-task-style=""]) { --queue-wash: color-mix(in srgb, var(--task-color) 14%, transparent); }
+
 @media (forced-colors: active) {
   .task-mark { color: CanvasText; }
   .task-style-surface,
@@ -34,4 +49,10 @@
     border-inline-start-color: CanvasText;
     background-image: none;
   }
+  :is(.q-row, .rt-group, .qb-bucket, .qb-queue-head, .qb-rows .wb-record, .is-queue .ol-owned-detail)[data-task-style]:not([data-task-style=""]) {
+    border-color: CanvasText;
+    background-image: none;
+  }
+  .q-row.is-selected { outline-color: Highlight; }
+  :is(.q-row .q-path, .qb-rows .task-label) { color: CanvasText; }
 }

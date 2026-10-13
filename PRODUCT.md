@@ -75,7 +75,7 @@ These remaining gaps are not resolved by the current UI changes.
 
 ## Brand commitments
 
-The confirmed name is **tuios inbox**. The incumbent Flight deck shell is recorded in [DESIGN.md](DESIGN.md). The task-focused redesign preserves its palette, typography, and controls, with a narrow task-identity color exception for marks, subdued washes, and rules. Task identity never replaces status, unread state, selection, or amber actions.
+The confirmed name is **tuios inbox**. The incumbent Flight deck shell is recorded in [DESIGN.md](DESIGN.md). The task-focused redesign preserves its palette, typography, and controls, with a narrow task-identity color exception for marks, tinted labels, washes, and rules. Task colors are saturated, with stronger washes in Queue and task navigation so tasks are easier to distinguish. Task identity never replaces status, unread state, selection, or amber actions.
 
 ## Evidence on hand
 

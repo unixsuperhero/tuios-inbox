@@ -41,7 +41,7 @@ Saved or dispatched prompt text stays in its inline receipt until you choose **N
 
 Queue is the aftermath workspace for results, questions, failures, documents, and continued replies. Its reader retains the full prompt, captured response, and provenance. Task creation stays in Tasks rather than occupying the review layout. Advanced activity, history, and native TUIOS views remain reachable.
 
-The Flight deck shell retains dark blue surfaces, condensed headings, and amber actions. Each task and subtask has an independent persistent identity, carried to its prompts and responses. Task marks, subdued washes, and narrow rules are the only task-color exception to the shared palette. Status, unread state, selection, and keyboard focus keep their existing treatments. Existing keyed SSE updates preserve drafts, focus, scrolling, and disclosures.
+The Flight deck shell retains dark blue surfaces, condensed headings, and amber actions. Each task and subtask has an independent persistent identity, carried to its prompts and responses. Task colors use saturated automatic and named palettes. Queue rows and task navigation have stronger tinted backgrounds and one-pixel task-colored borders; read queue rows use a quieter tint, and the selected row has a bright outline. Task labels and icons remain visible. Status, amber actions, and keyboard focus remain separate from task identity. Existing keyed SSE updates preserve drafts, focus, scrolling, and disclosures.
 
 Unread records have a lighter blue background, a bold title, and an explicit **Unread** label with a dot. Read records have a darker background, normal-weight title, and **Read** label. Checking a record adds an outline without replacing its read-state styling.
 

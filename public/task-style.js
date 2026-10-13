@@ -1,9 +1,9 @@
 const themes = Object.freeze([
-  { id: 'sage', label: 'Sage', color: '#9bd4bd' },
-  { id: 'sky', label: 'Sky', color: '#99c4de' },
-  { id: 'lavender', label: 'Lavender', color: '#c1adda' },
-  { id: 'rose', label: 'Rose', color: '#d9a7b4' },
-  { id: 'sand', label: 'Sand', color: '#d8c09a' },
+  { id: 'sage', label: 'Sage', color: '#53e6a3' },
+  { id: 'sky', label: 'Sky', color: '#59caff' },
+  { id: 'lavender', label: 'Lavender', color: '#b99aff' },
+  { id: 'rose', label: 'Rose', color: '#ff80ab' },
+  { id: 'sand', label: 'Sand', color: '#f4cf62' },
 ]);
 const icons = Object.freeze([
   { id: 'compass', label: 'Compass', shape: '<circle cx="12" cy="12" r="9"/><path d="m16 8-2.5 5.5L8 16l2.5-5.5Z"/>' },
@@ -42,7 +42,7 @@ export function taskStyle(style) {
   const assigned = Number.isSafeInteger(seed) && seed > 0;
   const theme = themes.find(t => t.id === (style?.theme ?? style?.style_theme));
   const custom = style?.color ?? style?.style_color;
-  const color = /^#[0-9a-f]{6}$/i.test(custom || '') ? custom.toLowerCase() : theme?.color || (assigned ? `hsl(${((seed * 137.50776405003785) % 360).toFixed(3)} 35% 70%)` : '#a7adb5');
+  const color = /^#[0-9a-f]{6}$/i.test(custom || '') ? custom.toLowerCase() : theme?.color || (assigned ? `hsl(${((seed * 137.50776405003785) % 360).toFixed(3)} 78% 72%)` : '#a7adb5');
   const icon = icons.find(i => i.id === (style?.icon ?? style?.style_icon)) || (assigned ? icons.find(i => i.id === automaticIcons[(seed - 1) % automaticIcons.length]) : null);
   const shape = icon?.shape || '<circle cx="12" cy="12" r="5"/>';
   return {

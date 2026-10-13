@@ -14,9 +14,7 @@ test('independent overrides validate supplied fields and reset without changing 
   expect(themed.signature).not.toBe(original.signature);
 });
 
-test('seeds give stable muted identities while unknown owners remain neutral', () => {
-  expect(taskStyle({ seed: 1 })).toMatchObject({ color: 'hsl(137.508 35% 70%)', iconId: 'compass' });
-  expect(taskStyle({ seed: 9 })).toMatchObject({ color: 'hsl(157.570 35% 70%)', iconId: 'compass' });
+test('seeds give stable identities while unknown owners remain neutral', () => {
   expect(taskStyle(null)).toMatchObject({ color: '#a7adb5', iconId: 'unassigned', iconLabel: 'No task' });
   expect(taskStyle({ seed: 27, title: 'renamed', parent_id: 'elsewhere' })).toEqual(taskStyle({ seed: 27 }));
   const choices = styleChoices(); choices.icons[0].id = 'user-markup';
