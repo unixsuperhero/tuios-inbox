@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
@@ -82,11 +82,11 @@ async function fixture(run) {
     const windows = session => native('list-windows', '-s', session);
     const window = (session, id) => native('get-window', '-s', session, id);
     const create = async (session, workspace, name) => {
-      const pane = (await action('create-window', { session, workspace, name, host: 'local', cwd: root })).window_id;
+      const pane = (await action('create-window', { session, workspace, name, host: 'local', paths_host: 'local', cwd: root })).window_id;
       await cli('send-text','-s',session,'-w',pane,"printf '\\033]133;A\\007'\n");
       return pane;
     };
-    const task = title => json('/tasks', { title, path: root }, 201);
+    const task = title => json('/tasks', { title, path: root, host: 'local', paths_host: 'local' }, 201);
     async function shell(task, name) {
       const pane = await json(`/tasks/${task.id}/panes`, { kind: 'shell', name, host: 'local' }, 201);
       await until(() => window(task.session, pane.id), pane => pane.at_prompt, 'task shell readiness');
@@ -109,6 +109,24 @@ async function fixture(run) {
     if (server && server.exitCode !== 0 && server.exitCode !== 143 && server.signalCode !== 'SIGTERM' && server.signalCode !== 'SIGKILL') console.error(output);
   }
 }
+
+nativeTest('launch-only directory overrides use selected machine without rewriting task paths', async () => fixture(async f => {
+  const foreign = await f.json('/tasks', { title: 'Remote-owned project', path: '/remote-only/project 日本 ', host: 'build', paths_host: 'build' }, 201);
+  const blocked = await f.request('/tasks/' + foreign.id + '/panes', { kind: 'shell', name: 'foreign-context', host: 'local' });
+  expect(blocked.status).toBe(400);
+  expect((await blocked.json()).error).toContain('Saved task directories belong to build');
+  const stale = await f.request('/tasks/' + foreign.id + '/panes', { kind: 'shell', name: 'stale-picker', host: 'local', cwd: f.root, paths_host: 'build' });
+  expect(stale.status).toBe(400);
+  const chosen = await f.json('/filesystem/select', { host: 'local', path: f.root, kind: 'directory' });
+  expect(chosen).toEqual({ host: 'local', path: f.root });
+  const pane = await f.json('/tasks/' + foreign.id + '/panes', { kind: 'shell', name: 'override-project', host: chosen.host, cwd: chosen.path, paths_host: chosen.host }, 201);
+  await until(() => f.window(foreign.session, pane.id), pane => pane.at_prompt, 'override shell readiness');
+  const result = await f.compose(foreign, pane, 'printf "LAUNCH_OVERRIDE=%s\\n" "$PWD"', 'check chosen directory');
+  expect(result.messages.find(m => m.role === 'shell').body).toContain('LAUNCH_OVERRIDE=' + await realpath(f.root));
+  expect((await f.state()).tasks.find(t => t.id === foreign.id)).toMatchObject({ host: 'build', path: '/remote-only/project 日本 ', paths_host: 'build' });
+  expect((await f.state()).agents.find(a => a.id === pane.id)).toMatchObject({ host: 'local', launch_cwd: f.root });
+}), 60000);
+
 
 nativeTest('native hierarchy identifies session, workspace, pane and agent without moving terminal focus', async () => fixture(async f => {
   await f.action('create-session', { name: 'hierarchy' });
@@ -273,7 +291,7 @@ nativeTest('confirmed workspace and exact session closure retain task, pane and 
 nativeTest('launch host choice lists registered hosts and refuses invalid or unregistered hosts without creating panes', async () => fixture(async f => {
   const listed = await f.json('/hosts');
   expect(listed.hosts.find(h => h.host === 'local')).toMatchObject({ host: 'local', status: 'up' });
-  const task = await f.task('Host choice');
+  const task = await f.json('/tasks', { title: 'Host choice' }, 201);
   await f.shell(task, 'first');
   const before = (await f.windows(task.session)).windows.length;
   for (const kind of ['shell', 'agent']) for (const host of [undefined, '', 'task', 'ghost', 'a:b', 'x y', 42]) {
@@ -291,12 +309,13 @@ test('launch host module requires a machine and preserves unavailable explicit c
   const { setupLaunchHost } = await import('./public/launch-host.js');
   const select = { value: 'gone', options: [], replaceChildren(...o) { this.options = o; } };
   const note = { textContent: '' };
-  const form = { querySelector: () => ({ querySelector: s => s === 'select' ? select : note }) };
+  const events = [], dialog = { open: true };
+  const form = { querySelector: () => ({ querySelector: s => s === 'select' ? select : note }), closest: () => dialog, dispatchEvent: event => events.push(event.type) };
   const originalOption = globalThis.Option;
   globalThis.Option = class { constructor(text, value) { this.text = text; this.value = value; } };
   try {
   await setupLaunchHost(form, async () => ({ hosts: [{ host: 'local', status: 'up' }, { host: 'build', status: 'up' }, { host: 'dead', status: 'down', error: 'timeout' }] }), {});
-  expect(select.required).toBe(true);
+  expect(events).toEqual(['hosts-ready']);
   expect(select.options.map(o => [o.value, o.disabled || false])).toEqual([['', false], ['local', false], ['build', false], ['dead', true], ['gone', true]]);
   expect(select.options[3].text).toContain('down: timeout');
   expect(select.value).toBe('gone');
@@ -309,7 +328,8 @@ test('launch host module ignores stale discovery and disables unknown hosts', as
   const { setupLaunchHost } = await import('./public/launch-host.js');
   const select = { value: '', options: [], replaceChildren(...o) { this.options = o; } };
   const note = { textContent: '' };
-  const form = { querySelector: () => ({ querySelector: s => s === 'select' ? select : note }) };
+  const events = [], dialog = { open: true };
+  const form = { querySelector: () => ({ querySelector: s => s === 'select' ? select : note }), closest: () => dialog, dispatchEvent: event => events.push(event.type) };
   const originalOption = globalThis.Option;
   globalThis.Option = class { constructor(text, value) { this.text = text; this.value = value; } };
   try {
@@ -324,7 +344,14 @@ test('launch host module ignores stale discovery and disables unknown hosts', as
   expect(select.options.map(o => [o.value, o.disabled || false])).toEqual([['', false], ['new', false], ['mystery', true]]);
   await setupLaunchHost(form, async () => { throw new Error('boom'); }, {});
   expect(select.options.map(o => o.value)).toEqual(['']);
-  expect(note.textContent).toContain('boom');
+  expect(events).toEqual(['hosts-ready', 'hosts-ready']);
+  const pending = setupLaunchHost(form, api, {});
+  dialog.open = false;
+  slow[2]({ hosts: [{ host: 'closed-result', status: 'up' }] });
+  await pending;
+  expect(select.options.map(o => o.value)).toEqual(['']);
+  expect(events).toEqual(['hosts-ready', 'hosts-ready']);
+  expect(note.textContent).toBe('Loading execution machines…');
   } finally { if (originalOption === undefined) delete globalThis.Option; else globalThis.Option = originalOption; }
 });
 

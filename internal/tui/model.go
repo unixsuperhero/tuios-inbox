@@ -255,6 +255,9 @@ func (m *Model) handleLoad(msg loadMsg) tea.Cmd {
 	}
 	m.Filter = lineEdit{}
 	m.Search = false
+	if m.Form == formNewWindow && m.Host == "" {
+		return m.chooseHost()
+	}
 	return m.load()
 }
 
@@ -270,7 +273,7 @@ func (m *Model) setTask(id string) {
 	m.Busy = false
 }
 
-func (m *Model) beginForm(f form) {
+func (m *Model) beginForm(f form) tea.Cmd {
 	m.Error = ""
 	m.Notice = ""
 	m.setTask(m.TaskID)
@@ -289,6 +292,10 @@ func (m *Model) beginForm(f form) {
 	m.Draft = lineEdit{}
 	m.Host = ""
 	m.Search = false
+	if f == formNewWindow {
+		return m.chooseHost()
+	}
+	return nil
 }
 
 func (m *Model) submit() tea.Cmd {
@@ -512,6 +519,9 @@ func (m *Model) handleKey(key, text string) tea.Cmd {
 			return nil
 		}
 	}
+	if m.Form == formNewWindow && m.Host == "" {
+		return m.chooseHost()
+	}
 	if m.Form == formNewTask || m.Form == formNewWindow || m.Form == formNewSession {
 		if key == "enter" {
 			return m.submit()
@@ -533,7 +543,7 @@ func (m *Model) handleKey(key, text string) tea.Cmd {
 				m.Draft = lineEdit{}
 				m.setTask(m.TaskID)
 			} else {
-				m.beginForm(formNewTask)
+				return m.beginForm(formNewTask)
 			}
 		default:
 			m.Filter.key(key, text)
@@ -544,11 +554,11 @@ func (m *Model) handleKey(key, text string) tea.Cmd {
 	}
 	switch key {
 	case "n", "ctrl+n":
-		m.beginForm(formNewTask)
+		return m.beginForm(formNewTask)
 	case "w":
-		m.beginForm(formNewWindow)
+		return m.beginForm(formNewWindow)
 	case "s":
-		m.beginForm(formNewSession)
+		return m.beginForm(formNewSession)
 	case "r":
 		return m.load()
 	case "/":
@@ -589,9 +599,9 @@ func (m *Model) click(id int) tea.Cmd {
 	case hitNewTask:
 		return m.handleKey("ctrl+n", "")
 	case hitNewWindow:
-		m.beginForm(formNewWindow)
+		return m.beginForm(formNewWindow)
 	case hitNewSession:
-		m.beginForm(formNewSession)
+		return m.beginForm(formNewSession)
 	case hitSubmit:
 		return m.handleKey("enter", "")
 	case hitChoose:
@@ -645,7 +655,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Writing || m.Jumping {
 			break
 		}
-		if m.Form == formNewTask || m.Form == formNewWindow || m.Form == formNewSession {
+		if m.Form == formNewWindow && m.Host == "" {
+			cmd = m.chooseHost()
+		} else if m.Form == formNewTask || m.Form == formNewWindow || m.Form == formNewSession {
 			m.Draft.insert(msg.Content)
 		} else if m.Search || m.Form == formChoose || m.Form == formChooseHost {
 			m.Filter.insert(msg.Content)

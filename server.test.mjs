@@ -21,7 +21,7 @@ async function launch(dir, port, env = {}) {
 }
 async function start() {
   const bin = join(home, 'not-installed');
-  await Bun.write(bin, `#!/bin/sh\ncase "$1" in ls) echo '{"sessions":[{"name":"s","global":true}]}';; *) echo 'Native operation unavailable in fixture' >&2; exit 1;; esac\n`);
+  await Bun.write(bin, `#!/bin/sh\ncase "$1" in ls) case "$*" in *--all-hosts*) echo '{"hosts":[{"host":"local","status":"up","sessions":[{"name":"s","global":true}]},{"host":"build","status":"up","sessions":[]},{"host":"readonly","status":"read-only","read_only":true,"sessions":[]}]}';; *) echo '{"sessions":[{"name":"s","global":true}]}';; esac;; *) echo 'Native operation unavailable in fixture' >&2; exit 1;; esac\n`);
   await chmod(bin,0o755); child = await launch(home, port);
 }
 async function stop() { child.kill(); await child.exited; }
@@ -55,11 +55,11 @@ async function hook(key, values, rest = {}, { dir = home, request = call } = {})
 const turnHook = (key, pane, prompt, name = pane) => hook(key, { TUIOS_EVENT: 'after-agent-state', TUIOS_AGENT_STATE: 'done', TUIOS_WINDOW_ID: pane },
   { turn: { session: 's', pane, name, harness: 'codex', state: 'done', at: new Date().toISOString(), prompt, response: `reply to ${prompt}`, source: 'pane' } });
 const commandHook = (key, pane, command, code = '0') => hook(key, { TUIOS_EVENT: 'after-command-finished', TUIOS_COMMAND: command, TUIOS_EXIT_CODE: code, TUIOS_WINDOW_ID: pane, TUIOS_SESSION_ID: 's', TUIOS_WINDOW_NAME: '' }, { capture: `output of ${command}` });
-const newTask = async title => (await call('/tasks', { title, path: home })).json();
+const newTask = async title => (await call('/tasks', { paths_host: 'local', host: 'local', title, path: home })).json();
 const tasksOf = (s, ...titles) => titles.map(title => s.items.find(i => i.title === title).task_id);
 
 test('task edits and agent profile arguments survive a backend restart', async () => {
-  const created = await call('/tasks', { title: 'Durable task', path: home, host: 'local', notes: [{ body: 'before', context: true }] });
+  const created = await call('/tasks', { paths_host: 'local', title: 'Durable task', path: home, host: 'local', notes: [{ body: 'before', context: true }] });
   expect(created.status).toBe(201);
   const task = await created.json();
   expect((await call(`/tasks/${task.id}`, { status: 'active' }, 'PATCH')).status).toBe(200);
@@ -74,8 +74,8 @@ test('task edits and agent profile arguments survive a backend restart', async (
 
 test('a remote web page cannot create tasks through the local command server', async () => {
   const before = (await (await call('/state')).json()).tasks.map(t => t.id);
-  expect((await call('/tasks', { title: 'Injected', path: home }, 'POST', { Origin: 'https://untrusted.example' })).status).toBe(403);
-  expect((await call('/tasks', { title: 'Injected', path: home }, 'POST', { 'X-Inbox-Request': '' })).status).toBe(403);
+  expect((await call('/tasks', { paths_host: 'local', host: 'local', title: 'Injected', path: home }, 'POST', { Origin: 'https://untrusted.example' })).status).toBe(403);
+  expect((await call('/tasks', { paths_host: 'local', host: 'local', title: 'Injected', path: home }, 'POST', { 'X-Inbox-Request': '' })).status).toBe(403);
   expect((await call('/state', undefined, 'GET', { Host: 'untrusted.example' })).status).toBe(403);
   expect((await (await call('/state')).json()).tasks.map(t => t.id)).toEqual(before);
 });
@@ -83,14 +83,14 @@ test('a remote web page cannot create tasks through the local command server', a
 test('a task may be created without a project directory and given one later', async () => {
   const created = await (await call('/tasks', { title: 'No directory yet', host: 'local' })).json();
   expect(created).toMatchObject({ title: 'No directory yet', path: '', worktree: '' });
-  expect((await call(`/tasks/${created.id}`, { path: join(home, 'missing') }, 'PATCH')).status).toBe(400);
-  const updated = await (await call(`/tasks/${created.id}`, { path: home }, 'PATCH')).json();
+  expect((await call(`/tasks/${created.id}`, { paths_host: 'local', path: join(home, 'missing') }, 'PATCH')).status).toBe(400);
+  const updated = await (await call(`/tasks/${created.id}`, { paths_host: 'local', path: home }, 'PATCH')).json();
   expect(updated).toMatchObject({ path: home, title: 'No directory yet' });
   expect((await (await call(`/tasks/${created.id}`, { path: '' }, 'PATCH')).json()).path).toBe('');
 });
 
 test('a task can be a subtask of another; cycles and self-parenting are refused', async () => {
-  const parent = await (await call('/tasks', { title: 'Parent', path: home })).json();
+  const parent = await (await call('/tasks', { paths_host: 'local', host: 'local', title: 'Parent', path: home })).json();
   const child = await (await call('/tasks', { title: 'Child', parent_id: parent.id })).json();
   expect(child).toMatchObject({ parent_id: parent.id, path: '' });
   const grandchild = await (await call('/tasks', { title: 'Grandchild', parent_id: child.id })).json();
@@ -104,17 +104,96 @@ test('a task can be a subtask of another; cycles and self-parenting are refused'
 });
 
 test('invalid working directories and non-argv agent arguments are rejected', async () => {
-  expect((await call('/tasks', { title: 'Invalid', path: join(home, 'missing'), host: 'local' })).status).toBe(400);
+  expect((await call('/tasks', { paths_host: 'local', title: 'Invalid', path: join(home, 'missing'), host: 'local' })).status).toBe(400);
   expect((await call('/profiles', { name: 'Bad argv', executable: 'codex', args: '--model x', env: {}, protocol: '' })).status).toBe(400);
   expect((await call('/profiles', { name: 'Bad environment', executable: 'codex', args: [], env: { SECRET: 42 }, protocol: '' })).status).toBe(400);
 });
 test('remote task directories are saved on their selected or inherited machine rather than statted locally', async () => {
-  const parent = await (await call('/tasks', {title:'Remote path parent',host:'build',path:'/remote-only/project'})).json();
+  const parent = await (await call('/tasks', { paths_host: 'build',title:'Remote path parent',host:'build',path:'/remote-only/project'})).json();
   expect(parent).toMatchObject({host:'build',path:'/remote-only/project'});
-  const child = await (await call('/tasks', {title:'Inherited remote directory',parent_id:parent.id,repo:'/remote-only/child',worktree:'/remote-only/worktree'})).json();
+  const child = await (await call('/tasks', { paths_host: 'build', title:'Inherited remote directory',parent_id:parent.id,repo:'/remote-only/child',worktree:'/remote-only/worktree'})).json();
   expect(child).toMatchObject({host:'',path:'/remote-only/child',worktree:'/remote-only/worktree'});
-  expect(await (await call(`/tasks/${child.id}`,{repo:'/remote-only/changed'},'PATCH')).json()).toMatchObject({path:'/remote-only/changed',session:child.session});
-  expect((await call(`/tasks/${child.id}`,{repo:'/remote-only/changed',host:'local'},'PATCH')).status).toBe(400);
+  expect(await (await call(`/tasks/${child.id}`,{ paths_host: 'build',repo:'/remote-only/changed'},'PATCH')).json()).toMatchObject({path:'/remote-only/changed',session:child.session});
+  expect((await call(`/tasks/${child.id}`,{ paths_host: 'build',repo:'/remote-only/changed',host:'local'},'PATCH')).status).toBe(400);
+});
+
+test('task rebinding clears foreign siblings and stale selections never mutate saved directories', async () => {
+  const parent = await (await call('/tasks', { title: 'Provenance parent', host: 'local', path: home, worktree: home, paths_host: 'local' })).json();
+  const child = await (await call('/tasks', { title: 'Provenance child', parent_id: parent.id, path: home, paths_host: 'local' })).json();
+  await call('/tasks/' + parent.id, { host: 'build' }, 'PATCH');
+  let outline = await (await call('/outline')).json();
+  expect(outline.tasks.find(t => t.id === child.id)).toMatchObject({ path: home, paths_host: 'local', resolved: { cwd: { value: null }, paths_mismatch: { host: 'local', path: home } } });
+  expect((await call('/tasks/' + child.id, { path: '/remote/project', paths_host: 'local' }, 'PATCH')).status).toBe(400);
+  expect((await call('/tasks/' + parent.id, { path: '/remote/project', paths_host: 'build' }, 'PATCH')).status).toBe(200);
+  expect((await state()).tasks.find(t => t.id === parent.id)).toMatchObject({ path: '/remote/project', worktree: '', paths_host: 'build' });
+  const reversed = await (await call('/tasks', { title: 'Worktree rebinding', host: 'local', path: home, worktree: home, paths_host: 'local' })).json();
+  expect(await (await call('/tasks/' + reversed.id, { host: 'build', worktree: '/remote/worktree', paths_host: 'build' }, 'PATCH')).json()).toMatchObject({ path: '', worktree: '/remote/worktree', paths_host: 'build' });
+  const prompt = await (await call('/prompts', { body: 'retain my text', task_id: parent.id, host: 'local', run: true, allow_warnings: true })).json();
+  expect(prompt).toMatchObject({ ran: false, prompt: { state: 'blocked', body: 'retain my text' } });
+  expect(prompt.preflight.blocks.map(b => b.code)).toEqual(['paths_host_mismatch']);
+  expect((await call('/tasks', { title: 'Unbound manual directory', path: home })).status).toBe(400);
+  expect((await call('/tasks', { title: 'Exact remote manual directory', host: 'build', paths_host: 'build', path: '/remote/project with spaces 日本 ' })).status).toBe(201);
+  expect((await state()).tasks.find(t => t.title === 'Exact remote manual directory')).toMatchObject({ path: '/remote/project with spaces 日本 ', paths_host: 'build' });
+});
+test('local OS picker cannot be invoked without the local execution machine', async () => {
+  for (const route of ['/pick-directory', '/pick-file']) for (const host of [undefined, '', 'build']) {
+    const res = await call(route, { host });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'The OS picker requires host local; use native filesystem browsing for another machine' });
+  }
+  const selected = await call('/filesystem/select', { host: 'local', path: home, kind: 'directory' });
+  expect(await selected.json()).toEqual({ host: 'local', path: home });
+  expect((await call('/filesystem/select', { host: 'local', path: home, kind: 'file' })).status).toBe(400);
+});
+test('profile filesystem executables require provenance while bare commands remain portable', async () => {
+  const body = { name: 'Bound shell', executable: '/bin/sh', args: [], protocol: '', env: {} };
+  expect((await call('/profiles', body)).status).toBe(400);
+  const saved = await (await call('/profiles', { ...body, executable_host: 'local' })).json();
+  expect((await state()).profiles.find(p => p.id === saved.id)).toMatchObject({ executable: '/bin/sh', executable_host: 'local' });
+  const portable = await (await call('/profiles', { ...body, executable: 'sh', executable_host: 'build' })).json();
+  expect((await state()).profiles.find(p => p.id === portable.id)).toMatchObject({ executable: 'sh', executable_host: '' });
+  expect((await call('/profiles', { ...body, executable: './tool', executable_host: 'local' })).status).toBe(400);
+});
+
+test('saved directory suggestions are host-scoped and readonly browsing is denied', async () => {
+  const local = await (await call('/paths?host=local')).json();
+  const remote = await (await call('/repo-paths?host=build')).json();
+  expect(local).toEqual({ host: 'local', paths: [home] });
+  expect(remote).toEqual({ host: 'build', paths: ['/remote-only/changed', '/remote-only/project', '/remote-only/worktree', '/remote/project', '/remote/project with spaces 日本 ', '/remote/worktree'] });
+  expect((await call('/paths')).status).toBe(400);
+  for (const route of ['/filesystem?host=readonly', '/paths?host=readonly']) {
+    const denied = await call(route);
+    expect(denied.status).toBe(400);
+    expect((await denied.json()).error).toContain('read-only');
+  }
+  const denied = await call('/filesystem/select', { host: 'readonly', path: '/project', kind: 'directory' });
+  expect(denied.status).toBe(400);
+  expect((await denied.json()).error).toContain('read-only');
+});
+test('legacy directories bind once to their known effective host and unknown paths never get retagged on restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'paths-migration-')), file = join(dir, 'inbox.sqlite'), p = await freePort();
+  const db = new Database(file, { create: true });
+  db.exec("CREATE TABLE tasks (id TEXT PRIMARY KEY,title TEXT NOT NULL,path TEXT NOT NULL,worktree TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'open',session TEXT NOT NULL,created TEXT NOT NULL,parent_id TEXT,host TEXT NOT NULL DEFAULT ''); CREATE TABLE profiles (id TEXT PRIMARY KEY,name TEXT NOT NULL,executable TEXT NOT NULL,args TEXT NOT NULL,protocol TEXT NOT NULL DEFAULT '',env TEXT NOT NULL DEFAULT '{}')");
+  const put = db.query('INSERT INTO tasks(id,title,path,worktree,session,created,parent_id,host) VALUES (?,?,?,?,?,?,?,?)');
+  put.run('parent','Legacy parent','/old/project','/old/worktree','inbox-parent','2026-01-01',null,'build');
+  put.run('child','Legacy child','/old/child','','inbox-child','2026-01-01','parent','');
+  put.run('unknown','Unknown origin','/old/unknown','','inbox-unknown','2026-01-01',null,'');
+  db.run("INSERT INTO profiles(id,name,executable,args) VALUES ('path','Legacy local file','/bin/sh','[]'),('portable','Portable command','sh','[]')"); db.close();
+  let proc;
+  const get = async () => (await fetch('http://127.0.0.1:' + p + '/api/state')).json();
+  try {
+    proc = await launch(dir, p);
+    let result = await get();
+    expect(result.tasks.find(t => t.id === 'child')).toMatchObject({ host: '', path: '/old/child', paths_host: 'build' });
+    expect(result.tasks.find(t => t.id === 'unknown')).toMatchObject({ paths_host: '' });
+    expect(result.profiles.find(t => t.id === 'path')).toMatchObject({ executable_host: 'local' });
+    expect(result.profiles.find(t => t.id === 'portable')).toMatchObject({ executable_host: '' });
+    proc.kill(); await proc.exited; proc = null;
+    const stored = new Database(file); stored.run("UPDATE tasks SET host='local' WHERE id IN ('parent','unknown')"); stored.close();
+    proc = await launch(dir, p); result = await get();
+    expect(result.tasks.find(t => t.id === 'child')).toMatchObject({ paths_host: 'build', path: '/old/child' });
+    expect(result.tasks.find(t => t.id === 'unknown')).toMatchObject({ host: 'local', paths_host: '', path: '/old/unknown' });
+  } finally { if (proc) { proc.kill(); await proc.exited; } await rm(dir, { recursive: true, force: true }); }
 });
 
 test('a finished agent turn from the hook is unread until its reply is opened', async () => {
@@ -432,7 +511,7 @@ test('task notes are independent and only marked notes reach agent prompts, neve
   const req = (path, body, method = 'POST') => fetch(`${api}/api${path}`, { method, headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body ?? {}) });
   const sent = async () => (await Bun.file(log).text().catch(() => '')).split('\x01').filter(Boolean).map(l => l.split('\0').filter(Boolean));
   try {
-    const task = await (await req('/tasks', { title: 'Notes', path: dir })).json();
+    const task = await (await req('/tasks', { paths_host: 'local', host: 'local', title: 'Notes', path: dir })).json();
     const keep = await (await req(`/tasks/${task.id}/notes`, { body: 'use the staging db', context: true })).json();
     const skip = await (await req(`/tasks/${task.id}/notes`, { body: 'private', context: false })).json();
     expect(await (await req(`/tasks/${task.id}/notes/${skip.id}`, { context: true }, 'PATCH')).json()).toMatchObject({ id: skip.id, body: 'private', context: true });
@@ -679,8 +758,8 @@ console.log(JSON.stringify(result));
   const untilPane = async promptId => { let prompt; for (let i = 0; i < 80; i++) { prompt = (await json('/outline')).prompts.find(p => p.id === promptId); if (prompt.pane_id && prompt.state !== 'blocked' && (await calls()).some(c => c[0] === 'queue' && c.includes(prompt.pane_id) && c.at(-1) === prompt.body)) return prompt; await Bun.sleep(25); } throw new Error('Launch did not complete: ' + JSON.stringify(prompt)); };
   try {
     expect((await json('/state')).tasks.find(t => t.id === 'old')).toMatchObject({ style_seed: 1, archived: 1, style: { seed: 1, theme: null, icon: null, color: null } });
-    const parent = await json('/tasks', { title: 'Native parent', repo: dir, worktree: home, session: 'native-home', workspace: 2, host: 'local', model: 'test-model' });
-    const child = await json('/tasks', { title: 'Own project', parent_id: parent.id, repo: dir, workspace: 3 });
+    const parent = await json('/tasks', { paths_host: 'local', title: 'Native parent', repo: dir, worktree: home, session: 'native-home', workspace: 2, host: 'local', model: 'test-model' });
+    const child = await json('/tasks', { paths_host: 'local', title: 'Own project', parent_id: parent.id, repo: dir, workspace: 3 });
     const resolved = (await json('/outline')).tasks.find(t => t.id === child.id);
     expect(resolved.own).toMatchObject({ session: '', workspace: 3, worktree: '' });
     expect(resolved.resolved.cwd).toEqual({ value: dir, from: 'self' });
@@ -741,20 +820,25 @@ console.log(JSON.stringify(result));
     expect((await request('/prompts/' + unfamiliar.prompt.id + '/run', { allow_warnings: true })).status).toBe(202);
     expect((await calls()).filter(c => c[0] === 'queue' && c.includes('unfamiliar')).map(c => c.at(-1))).toEqual(['unfamiliar payload']);
     expect((await calls()).filter(c => ['run', 'send-text', 'send-keys', 'respond'].includes(c[0]) && c.includes('unfamiliar'))).toEqual([]);
-    const blocked = await json('/prompts',{body:'held hosted payload',task_id:child.id,host:'build',launch_mode:'new',run:true,allow_warnings:true});
+    const foreign = await json('/prompts', { body: 'do not borrow local paths', task_id: child.id, host: 'build', run: true, allow_warnings: true });
+    expect(foreign.preflight.blocks.map(b => b.code)).toEqual(['paths_host_mismatch']);
+    const remoteTask = await json('/tasks', { title: 'Hosted machine project', session: 'native-home', workspace: 3, host: 'build', model: 'test-model', repo: '/remote-only/hosted 日本 ', paths_host: 'build' });
+    const blocked = await json('/prompts',{body:'held hosted payload',task_id:remoteTask.id,launch_mode:'new',run:true,allow_warnings:true});
     let blockedView; for(let i=0;i<80;i++){blockedView=(await json('/outline')).prompts.find(p=>p.id===blocked.prompt.id);if(blockedView.state==='blocked')break;await Bun.sleep(25);}
     expect(blockedView).toMatchObject({state:'blocked',body:'held hosted payload',pane_id:'hosted-1',target:'hosted-1'});
     expect((await json('/state')).agents.find(a=>a.id==='hosted-1')).toMatchObject({session:'native-home',host:'build',state:'needs_input'});
+    const command = (await calls()).find(c => c[0] === 'new-window' && c.includes('/remote-only/hosted 日本 '));
+    expect(command.slice(command.indexOf('--') + 2)).toEqual(['sh', '-c', 'cd "$1" || exit; shift; exec "$@"', 'sh', '/remote-only/hosted 日本 ', 'env', 'TUIOS_AGENT=omp', 'omp', '--model', 'test-model']);
     expect((await calls()).filter(c=>c[0]==='queue'&&c.includes('hosted-1'))).toEqual([]);
     await Bun.write(join(dir,'hosted-ready'),'ready');
-    const hosted = await json('/prompts',{body:'real hosted ready payload',task_id:child.id,host:'build',launch_mode:'new',run:true,allow_warnings:true});
+    const hosted = await json('/prompts',{body:'real hosted ready payload',task_id:remoteTask.id,launch_mode:'new',run:true,allow_warnings:true});
     expect(await untilPane(hosted.prompt.id)).toMatchObject({state:'running',pane_id:'hosted-2'});
     await Bun.write(join(dir,'hosted-ready'),'errored');
-    const errored=await json('/prompts',{body:'do not dispatch after failed startup',task_id:child.id,host:'build',launch_mode:'new',run:true,allow_warnings:true});
+    const errored=await json('/prompts',{body:'do not dispatch after failed startup',task_id:remoteTask.id,launch_mode:'new',run:true,allow_warnings:true});
     let errorView;for(let i=0;i<80;i++){errorView=(await json('/outline')).prompts.find(p=>p.id===errored.prompt.id);if(errorView.state==='blocked')break;await Bun.sleep(25);}
     expect(errorView).toMatchObject({state:'blocked',body:'do not dispatch after failed startup',pane_id:'hosted-3',target:'hosted-3'});
     expect((await calls()).filter(c=>c[0]==='queue'&&c.includes('hosted-3'))).toEqual([]);
-    const unsupported=await json('/prompts',{body:'preserved protocol prompt',task_id:child.id,host:'build',harness:'codex',run:true,allow_warnings:true});
+    const unsupported=await json('/prompts',{body:'preserved protocol prompt',task_id:remoteTask.id,harness:'codex',run:true,allow_warnings:true});
     expect(unsupported).toMatchObject({ran:false,prompt:{state:'blocked',body:'preserved protocol prompt',pane_id:''}});
     expect(unsupported.preflight.blocks[0].message).toContain('approval semantics');
     await Bun.write(join(dir,'gate'),'hold');

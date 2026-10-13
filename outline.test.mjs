@@ -26,7 +26,7 @@ async function pane(name, taskId) {
   await turnDone('seed-' + name, name, 'earlier'); await call('/agents/update', { ids: [name], set: { task_id: taskId } });
   const resolved = (await outline()).tasks.find(t => t.id === taskId)?.resolved;
   const db = new (await import('bun:sqlite')).Database(join(home, 'inbox.sqlite'));
-  db.run('UPDATE agents SET launch_cwd=?,launch_profile=?,launch_model=?,host=?,session=? WHERE id=?', [resolved?.cwd.value || (await import('node:os')).homedir(), 'omp', resolved?.model.value || '', resolved?.host.value || 'local', resolved?.session.value || 's', name]); db.close();
+  db.run('UPDATE agents SET launch_cwd=?,launch_profile=?,launch_model=?,host=?,session=? WHERE id=?', [resolved?.cwd.value || plain, 'omp', resolved?.model.value || '', resolved?.host.value || 'local', resolved?.session.value || 's', name]); db.close();
   await Bun.sleep(5); return name;
 }
 const promptOf = async key => (await outline()).prompts.find(p => p.id === key);
@@ -107,7 +107,7 @@ test('a blocked run answers 409, keeps the prompt as blocked, and can be queued 
 });
 
 test('task facts are set by alias, inherited by lookup, and cleared back to inherit', async () => {
-  const parent = await json('/tasks', { title: 'Fix parser', repo, branch: 'main', harness: 'omp', model: 'gpt-x', host: 'local', queue_mode: 'auto' });
+  const parent = await json('/tasks', {paths_host:'local', title: 'Fix parser', repo, branch: 'main', harness: 'omp', model: 'gpt-x', host: 'local', queue_mode: 'auto' });
   const kid = await json('/tasks', { title: 'Tokenizer', parent_id: parent.id });
   expect((await call('/tasks', { title: 'Bad', queue_mode: 'sometimes' })).status).toBe(400);
   let o = await outline(), p = o.tasks.find(t => t.id === parent.id), k = o.tasks.find(t => t.id === kid.id);
@@ -128,20 +128,20 @@ test('task facts are set by alias, inherited by lookup, and cleared back to inhe
 });
 
 test('git facts name a pull request, its absence, and an unreachable service without failing', async () => {
-  const withPr = await json('/tasks', { title: 'Has PR', repo, branch: 'main' });
+  const withPr = await json('/tasks', {host:'local',paths_host:'local', title: 'Has PR', repo, branch: 'main' });
   const git = await json('/git/refresh', { task_id: withPr.id });
   expect(git).toMatchObject({ state: 'ok', head: 'main', pr_state: 'ok', pr: { number: 42, state: 'open', checks: 'failing' } });
   const { prompt } = await json('/prompts', { body: 'x', task_id: withPr.id });
   expect(prompt.preflight.warns.map(w => w.code)).toEqual(['checks_failing']);
-  expect(await json('/git/refresh', { task_id: (await json('/tasks', { title: 'No PR', repo, branch: 'nopr' })).id })).toMatchObject({ state: 'ok', pr: null, pr_state: 'none' });
-  expect(await json('/git/refresh', { task_id: (await json('/tasks', { title: 'Down', repo, branch: 'elsewhere' })).id })).toMatchObject({ state: 'ok', pr: null, pr_state: 'unavailable' });
-  expect(await json('/git/refresh', { task_id: (await json('/tasks', { title: 'Plain', repo: plain })).id })).toMatchObject({ state: 'not_a_repo', pr_state: 'none' });
+  expect(await json('/git/refresh', { task_id: (await json('/tasks', {host:'local',paths_host:'local', title: 'No PR', repo, branch: 'nopr' })).id })).toMatchObject({ state: 'ok', pr: null, pr_state: 'none' });
+  expect(await json('/git/refresh', { task_id: (await json('/tasks', {host:'local',paths_host:'local', title: 'Down', repo, branch: 'elsewhere' })).id })).toMatchObject({ state: 'ok', pr: null, pr_state: 'unavailable' });
+  expect(await json('/git/refresh', { task_id: (await json('/tasks', {host:'local',paths_host:'local', title: 'Plain', repo: plain })).id })).toMatchObject({ state: 'not_a_repo', pr_state: 'none' });
   expect(await json('/git/refresh', { task_id: (await json('/tasks', { title: 'Bare' })).id })).toMatchObject({ state: 'none' });
   await call(`/prompts/${prompt.id}`, undefined, 'DELETE');
 });
 
 test('a run goes to a ready pane, is linked to the next turn there, and records its commits', async () => {
-  const task = await json('/tasks', { title: 'Runs', repo });
+  const task = await json('/tasks', {host:'local',paths_host:'local', title: 'Runs', repo });
   const a = await pane('pane-run', task.id);
   const o = await outline();
   expect(o.panes.find(p => p.id === a)).toMatchObject({ task_id: task.id, kind: 'agent', ready: true });
@@ -184,7 +184,7 @@ test('a pane on its own question is never typed at', async () => {
 });
 
 test('queues run lowest position first; an automatic queue advances when its pane rests and holds at a block', async () => {
-  const task = await json('/tasks', { title: 'Queue', repo: plain, queue_mode: 'auto' });
+  const task = await json('/tasks', {host:'local',paths_host:'local', title: 'Queue', repo: plain, queue_mode: 'auto' });
   const a = await pane('pane-queue', task.id);
   const ids = [];
   for (const body of ['one', 'two', 'three']) ids.push((await json('/prompts', { body, task_id: task.id, target: a })).prompt.id);
@@ -217,7 +217,7 @@ test('queues run lowest position first; an automatic queue advances when its pan
 });
 
 test('with no pane at rest a run launches an agent in the repo and sends there', async () => {
-  const task = await json('/tasks', { title: 'Launch', repo, model: 'gpt-x', host: 'local' });
+  const task = await json('/tasks', {paths_host:'local', title: 'Launch', repo, model: 'gpt-x', host: 'local' });
   const { prompt } = await json('/prompts', { body: 'start here', task_id: task.id });
   expect(prompt.preflight.blocks).toEqual([]);
   expect((await call(`/prompts/${prompt.id}/run`, { allow_warnings: true })).status).toBe(202);
@@ -269,7 +269,7 @@ test('deleting a task moves its subtasks up a level and its prompts and runs to 
 });
 
 test('a prompt that was sent does not report its own busy pane as a block', async () => {
-  const task = await json('/tasks', { title: 'Replies', repo });
+  const task = await json('/tasks', {host:'local',paths_host:'local', title: 'Replies', repo });
   const a = await pane('pane-reply', task.id);
   const made = await json('/prompts', { body: 'reply one', target: a, run: true, allow_warnings: true });
   expect(made).toMatchObject({ ran: true, prompt: { state: 'running', pane_id: a, preflight: { blocks: [] } }, preflight: { blocks: [] } });
@@ -343,7 +343,7 @@ test('a reported document is opened only when it is an existing regular .md file
   const real = (await sh(repo, 'pwd', '-P')) + '/notes.md';
   expect(await json('/open-file', { path: join(repo, 'notes.md') })).toMatchObject({ ok: true });
   expect(await json('/open-file', { path: 'file://' + join(repo, 'notes.md') })).toMatchObject({ ok: true });
-  const task = await json('/tasks', { title: 'Docs', repo }), a = await pane('pane-docs', task.id);
+  const task = await json('/tasks', {host:'local',paths_host:'local', title: 'Docs', repo }), a = await pane('pane-docs', task.id);
   const run = (await outline()).runs.find(r => r.pane_id === a);
   expect(await json('/open-file', { path: './notes.md', turn: run.id })).toMatchObject({ ok: true });
   await refused({ path: '../repo/notes.txt', turn: run.id }, 'Only .md files');
@@ -493,9 +493,29 @@ test('warning override and automatic queues cannot create on an unspecified mach
 });
 
 test('a remote directory never borrows local Git preflight even when the same path exists locally', async () => {
-  const task=await json('/tasks',{title:'Remote Git realm',repo,host:'build',branch:'main'});
+  const task=await json('/tasks',{paths_host:'build',title:'Remote Git realm',repo,host:'build',branch:'main'});
   const saved=await json('/prompts',{body:'Inspect on the selected machine',task_id:task.id});
   expect((await outline()).tasks.find(t=>t.id===task.id).git).toMatchObject({state:'unknown',head:'',pr:null,pr_state:'unknown'});
   expect(saved.preflight.warns.map(w=>w.code)).toEqual(['remote_git_unknown']);
   expect(await json('/git/refresh',{task_id:task.id})).toMatchObject({state:'unknown',head:'',pr:null});
+});
+
+test('targeted replies keep actual pane context after task host switches and remote-origin documents never open locally', async () => {
+  const profile = await json('/profiles', { name: 'Local-only shell file', executable: '/bin/sh', executable_host: 'local', args: [], env: {}, protocol: '' });
+  const task = await json('/tasks', { title: 'Retained pane context', repo: plain, host: 'local', paths_host: 'local' });
+  const target = await pane('actual-context-pane', task.id);
+  await json('/tasks/' + task.id, { host: 'build', harness: profile.id }, 'PATCH');
+  const before = (await sent()).filter(c => ['start-agent', 'new-window'].includes(c[0])).length;
+  const reply = await json('/prompts', { body: 'reply in the existing actual pane', task_id: task.id, target, host: 'build', run: true, allow_warnings: true });
+  expect(reply).toMatchObject({ ran: true, prompt: { pane_id: target, resolved: { cwd: { value: null }, paths_mismatch: { host: 'local', path: plain } }, preflight: { blocks: [] } } });
+  const calls = await sent();
+  expect(calls.filter(c => c[0] === 'queue' && c.includes(target)).at(-1).at(-1)).toBe('reply in the existing actual pane');
+  expect(calls.filter(c => ['start-agent', 'new-window'].includes(c[0])).length).toBe(before);
+  expect((await outline()).panes.find(p => p.id === target)).toMatchObject({ host: 'local', launch_cwd: plain });
+  const document = join(plain, 'remote-origin.md'); await Bun.write(document, '# Same-spelling local file must not open');
+  const run = (await outline()).runs.find(r => r.pane_id === target);
+  const db = new (await import('bun:sqlite')).Database(join(home, 'inbox.sqlite')); db.run("UPDATE agents SET host='build' WHERE id=?", [target]); db.close();
+  const denied = await call('/open-file', { path: document, turn: run.id });
+  expect(denied.status).toBe(400);
+  expect((await denied.json()).error).toBe('Remote documents cannot be opened by the local OS; open this file on build');
 });

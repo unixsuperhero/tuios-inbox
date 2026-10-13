@@ -9,13 +9,12 @@ export function hostChoices(hosts = [], current = '', blank = 'Choose an executi
 }
 
 export async function setupLaunchHost(form, api, store) {
-  const label = form.querySelector('#pane-host-label');
+  const label = form.querySelector('[data-host-label]');
   if (!label) return;
   const select = label.querySelector('select'), note = label.querySelector('small');
   const open = (opens.get(form) || 0) + 1;
   opens.set(form, open);
   const current = select.value;
-  select.required = true;
   const replace = hosts => {
     select.replaceChildren(...hostChoices(hosts, current).map(c => { const option = new Option(c.label, c.value); option.disabled = Boolean(c.disabled); return option; }));
     select.value = current;
@@ -24,15 +23,18 @@ export async function setupLaunchHost(form, api, store) {
   note.textContent = 'Loading execution machines…';
   try {
     const hosts = (await api('/hosts')).hosts || [];
-    if (opens.get(form) !== open) return;
+    if (opens.get(form) !== open || !form.closest('dialog')?.open) return;
     store.liveHosts = hosts;
     const selected = select.value;
     select.replaceChildren(...hostChoices(hosts, selected).map(c => { const option = new Option(c.label, c.value); option.disabled = Boolean(c.disabled); return option; }));
     select.value = selected;
-    note.textContent = 'Choose where this pane runs. Its global session container stays unchanged.';
+    note.textContent = 'Choose where execution happens. Paths belong to this machine, not the global session owner.';
+    form.dispatchEvent(new Event('hosts-ready'));
   } catch (error) {
-    if (opens.get(form) !== open) return;
+    if (opens.get(form) !== open || !form.closest('dialog')?.open) return;
     select.replaceChildren(...hostChoices([], select.value).map(c => { const option = new Option(c.label, c.value); option.disabled = Boolean(c.disabled); return option; }));
+    store.liveHosts = [];
+    form.dispatchEvent(new Event('hosts-ready'));
     note.textContent = `Execution machines unavailable: ${error.message}. No default machine is used.`;
   }
 }

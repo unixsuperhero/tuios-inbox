@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { resolve, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, reviewQueue, railTree, reviewItems, docsIn, queueStatus, runTask, indicators, sumIndicators, itemKind, queueItems, taskItems, queueCounts, markable, paneTask, taskIndicators } from './public/outline-model.js';
 
 const tasks = {
-  root: { id: 'root', parent_id: null, repo: '/r', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2, host: 'local' },
+  root: { id: 'root', parent_id: null, repo: '/r', paths_host: 'local', branch: 'fix-parser', harness: '', model: 'gpt', queue_mode: 'auto', session: 'work', workspace: 2, host: 'local' },
   kid: { id: 'kid', parent_id: 'root', repo: '', branch: '', harness: 'claude-code', model: '', queue_mode: '', session: '', workspace: null },
   lone: { id: 'lone', parent_id: null, path: '', branch: '' },
 };
@@ -24,8 +24,8 @@ test('orphans fall back to defaults or none, and a task row may carry repo as pa
   expect(r.queue_mode).toEqual({ value: 'manual', from: 'default' });
   expect(r.launch_mode).toEqual({ value: 'new', from: 'default' });
   expect(r.repo).toEqual({ value: null, from: 'none' });
-  expect(resolve({ id: 't', parent_id: null, path: '/p' }, {}).repo).toEqual({ value: '/p', from: 'self' });
-  expect(resolve({ id: 't', parent_id: null, own: { repo: '/o' } }, {}).repo).toEqual({ value: '/o', from: 'self' });
+  expect(resolve({ id: 't', parent_id: null, host: 'local', paths_host: 'local', path: '/p' }, {}).repo).toEqual({ value: '/p', from: 'self' });
+  expect(resolve({ id: 't', parent_id: null, own: { repo: '/o', host: 'local', paths_host: 'local' } }, {}).repo).toEqual({ value: '/o', from: 'self' });
   const loop = { a: { id: 'a', parent_id: 'b' }, b: { id: 'b', parent_id: 'a' } };
   expect(resolve(loop.a, loop).repo.from).toBe('none');
 });
@@ -54,8 +54,8 @@ test('launch mode inherits without copying and child session/workspace resolve i
 });
 test('cwd uses the nearest task directory and never combines a child repo with ancestor worktree', () => {
   const hierarchy = {
-    root: { id: 'root', own: { repo: '/project', worktree: '/project-worktree' } },
-    kid: { id: 'kid', parent_id: 'root', own: { repo: '/child-project' } },
+    root: { id: 'root', own: { repo: '/project', worktree: '/project-worktree', host: 'local', paths_host: 'local' } },
+    kid: { id: 'kid', parent_id: 'root', own: { repo: '/child-project', paths_host: 'local' } },
     leaf: { id: 'leaf', parent_id: 'kid', own: {} },
   };
   const prompt = { body: 'x', task_id: 'leaf' };
@@ -65,8 +65,36 @@ test('cwd uses the nearest task directory and never combines a child repo with a
   expect(resolve(hierarchy.kid, hierarchy).cwd).toEqual({ value: '/child-worktree', from: 'self' });
   hierarchy.kid.own = {};
   expect(resolve(prompt, hierarchy).cwd).toEqual({ value: '/project-worktree', from: 'root' });
-  expect(resolve({ id: 'legacy', path: '/legacy', worktree: '/legacy-worktree' }, {}).cwd).toEqual({ value: '/legacy-worktree', from: 'self' });
+  expect(resolve({ id: 'legacy', path: '/legacy', worktree: '/legacy-worktree', host: 'local', paths_host: 'local' }, {}).cwd).toEqual({ value: '/legacy-worktree', from: 'self' });
   expect(resolve({ body: 'x', task_id: null }, hierarchy).cwd).toEqual({ value: null, from: 'none' });
+});
+
+test('path provenance follows final host without retagging parent, child, or prompt overrides', () => {
+  const hierarchy = {
+    root: { id: 'root', host: 'local', repo: '/local/project', paths_host: 'local' },
+    child: { id: 'child', parent_id: 'root', repo: '/local/child', paths_host: 'local' },
+  };
+  const prompt = { body: 'inspect', task_id: 'child' };
+  expect(resolve(prompt, hierarchy).cwd).toEqual({ value: '/local/child', from: 'child' });
+  hierarchy.root.host = 'build';
+  let resolved = resolve(prompt, hierarchy);
+  expect(resolved.host).toEqual({ value: 'build', from: 'root' });
+  expect(resolved.paths_mismatch).toEqual({ value: true, from: 'child', host: 'local', path: '/local/child' });
+  expect(preflight({ prompt, resolved, profiles }).blocks.map(b => b.code)).toEqual(['paths_host_mismatch']);
+  expect(resolved.cwd).toEqual({ value: null, from: 'none' });
+  hierarchy.root.host = 'local';
+  resolved = resolve({ ...prompt, host: 'build' }, hierarchy);
+  expect(resolved.paths_mismatch.host).toBe('local');
+  expect(preflight({ prompt: { ...prompt, target: 'pane' }, resolved, panes: [launchedPane({ id: 'pane' })], profiles }).blocks).toEqual([]);
+  delete hierarchy.child.paths_host;
+  expect(resolve(prompt, hierarchy).paths_mismatch).toEqual({ value: true, from: 'child', host: null, path: '/local/child' });
+});
+test('filesystem executable profiles are bound but PATH commands stay portable', () => {
+  const prompt = { body: 'inspect', host: 'build', harness: 'tool' }, resolved = resolve(prompt, {});
+  const bound = [{ id: 'tool', executable: '/tools/reviewer', executable_host: 'local' }];
+  expect(preflight({ prompt, resolved, profiles: bound }).blocks.map(b => b.code)).toEqual(['executable_host_mismatch']);
+  expect(preflight({ prompt, resolved, profiles: [{ ...bound[0], executable_host: 'build' }] }).blocks).toEqual([]);
+  expect(preflight({ prompt, resolved, profiles: [{ id: 'tool', executable: 'reviewer', executable_host: '' }] }).blocks).toEqual([]);
 });
 
 const pf = (prompt, panes = [], git = null) => preflight({ prompt, resolved: resolve(prompt, tasks), panes, git, profiles });

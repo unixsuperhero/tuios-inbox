@@ -8,6 +8,7 @@ import { createHistory } from './scripts/history.mjs';
 import { pullCollectors } from './scripts/pull-collectors.mjs';
 import { splitOnHost } from './scripts/native-split.mjs';
 import { nativeOwner } from './scripts/native-owner.mjs';
+import { listHostDirectory, selectHostPath } from './scripts/host-filesystem.mjs';
 import { DEFAULTS, resolve as resolveFields, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, docsIn } from './public/outline-model.js';
 import { parseStyleOverrides } from './public/task-style.js';
 
@@ -54,7 +55,7 @@ const all = (sql, ...args) => db.query(sql).all(...args);
 const one = (sql, ...args) => db.query(sql).get(...args);
 const run = (sql, ...args) => db.query(sql).run(...args);
 if (!one('SELECT 1 FROM profiles')) for (const [key, name, executable, protocol] of [['codex', 'Codex · structured', 'codex', 'codex'], ['claude', 'Claude Code', 'claude', ''], ['omp', 'oh-my-pi', 'omp', ''], ['opencode', 'OpenCode · ACP', 'opencode', 'acp']]) {
-  run('INSERT OR IGNORE INTO profiles VALUES (?,?,?,?,?,?)', key, name, executable, JSON.stringify(key === 'opencode' ? ['acp'] : []), protocol, '{}');
+  run('INSERT OR IGNORE INTO profiles (id,name,executable,args,protocol,env) VALUES (?,?,?,?,?,?)', key, name, executable, JSON.stringify(key === 'opencode' ? ['acp'] : []), protocol, '{}');
 }
 // Runs once: the scalar tasks.notes column becomes one unmarked note per nonempty value, then the column is dropped.
 if (all("SELECT name FROM pragma_table_info('tasks')").some(c => c.name === 'notes')) db.transaction(() => {
@@ -102,6 +103,15 @@ if (!one("SELECT 1 FROM settings WHERE key='migrated_items'")) db.transaction(()
 // Task-first outline: a task carries optional run facts ('' inherits from its parent), prompts wait in queues, and a turn is the run of a prompt.
 const columns = table => all(`SELECT name FROM pragma_table_info('${table}')`).map(c => c.name);
 for (const c of ['branch', 'harness', 'model', 'queue_mode', 'launch_mode', 'host', 'source', 'style_theme', 'style_icon', 'style_color']) if (!columns('tasks').includes(c)) db.exec(`ALTER TABLE tasks ADD COLUMN ${c} TEXT NOT NULL DEFAULT ''`);
+if (!columns('tasks').includes('paths_host')) db.transaction(() => {
+  db.exec("ALTER TABLE tasks ADD COLUMN paths_host TEXT NOT NULL DEFAULT ''");
+  const tasks = all('SELECT * FROM tasks'), byId = new Map(tasks.map(t => [t.id, t]));
+  for (const t of tasks) if (t.path || t.worktree) run('UPDATE tasks SET paths_host=? WHERE id=?', resolveFields(t, byId).host.value || '', t.id);
+})();
+if (!columns('profiles').includes('executable_host')) db.transaction(() => {
+  db.exec("ALTER TABLE profiles ADD COLUMN executable_host TEXT NOT NULL DEFAULT ''");
+  for (const p of all('SELECT id,executable FROM profiles')) if (p.executable.includes('/')) run("UPDATE profiles SET executable_host='local' WHERE id=?", p.id);
+})();
 if (!columns('tasks').includes('style_seed')) db.exec('ALTER TABLE tasks ADD COLUMN style_seed INTEGER');
 for (const c of ['launch_cwd', 'launch_profile', 'launch_model']) if (!columns('agents').includes(c)) db.exec(`ALTER TABLE agents ADD COLUMN ${c} TEXT NOT NULL DEFAULT ''`);
 db.transaction(() => {
@@ -190,14 +200,17 @@ async function cli(args, timeout = 15000, json = true, cwd = undefined) {
   return json ? (value ?? { output: stdout, exit_code: code }) : stdout;
 }
 function required(value, label, max = Infinity) { if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${label} is required${Number.isFinite(max) ? ` (maximum ${max} characters)` : ''}`); return value.trim(); }
-// A subtask without its own directory works where its nearest ancestor does.
-function workingDirectory(t) {
-  const seen = new Set();
-  for (let cur = t; cur && !seen.has(cur.id); cur = cur.parent_id ? one('SELECT * FROM tasks WHERE id=?', cur.parent_id) : null) {
-    seen.add(cur.id);
-    if (cur.worktree || cur.path) return cur.worktree || cur.path;
+async function launchDirectory(body, host, task = null) {
+  if (body.cwd) {
+    if (body.paths_host !== host) throw new Error('Directory selection is stale; choose it again for ' + host);
+    return executionDirectory(body.cwd, host);
   }
-  return homedir();
+  if (task) {
+    const ctx = outlineContext(), source = ctx.byId.get(task.id), resolved = resolveFields({ ...source, own: { ...source.own, host } }, ctx.byId);
+    if (resolved.paths_mismatch?.value) throw new Error('Saved task directories belong to ' + (resolved.paths_mismatch.host || 'an unknown machine') + '; choose the directory again for ' + host);
+    if (resolved.cwd.value) return executionDirectory(resolved.cwd.value, host);
+  }
+  return host === 'local' ? homedir() : null;
 }
 // The parent a task may have: an existing task that is not itself and not one of its own descendants.
 function parentFor(key, selfId = null) {
@@ -209,7 +222,7 @@ function parentFor(key, selfId = null) {
   }
   return parent;
 }
-async function directory(value) { const p = resolve(required(value, 'Directory')); if (!(await stat(p)).isDirectory()) throw new Error('Path must be an existing directory'); return p; }
+async function directory(value) { const p = resolve(remotePath(value)); if (!(await stat(p)).isDirectory()) throw new Error('Path must be an existing directory'); return p; }
 const notesOf = taskId => all('SELECT id,body,context,created,updated FROM task_notes WHERE task_id=? ORDER BY created,rowid', taskId).map(n => ({ ...n, context: Boolean(n.context) }));
 const styledTask = t => ({ ...t, style: { seed: t.style_seed, theme: t.style_theme || null, icon: t.style_icon || null, color: t.style_color || null } });
 function taskFor(key) { const t = one('SELECT * FROM tasks WHERE id=?', key); if (!t) throw new Error('Task not found'); return { ...styledTask(t), notes: notesOf(t.id) }; }
@@ -351,6 +364,7 @@ async function launchPlan(t, requested, kind) {
 function launchProfile(t, profileId, supplied) {
   const profile = supplied || one('SELECT * FROM profiles WHERE id=?', profileId);
   if (!profile) throw new Error('Profile not found');
+  if (profile.executable.includes('/') && (!profile.executable_host || profile.executable_host !== t.host)) throw new Error('Profile executable belongs to ' + (profile.executable_host || 'an unknown machine') + '; choose a profile for ' + t.host);
   if (t.host !== 'local' && !t.session.includes(':') && profile.protocol) throw new Error('Native hosted agents do not support protocol profiles with preserved approval semantics');
   if (t.host !== 'local' && Object.keys(JSON.parse(profile.env)).length) throw new Error('Profile environment does not cross machines; use a profile without env for another host');
   return profile;
@@ -364,7 +378,7 @@ async function ensureSession(t) {
   }, { newSession: true });
 }
 const inRemoteDirectory = (cwd, argv) => cwd ? ['sh', '-c', 'cd "$1" || exit; shift; exec "$@"', 'sh', cwd, ...argv] : argv;
-function remotePath(value) { const cwd = required(value, 'Remote directory', 4096); if (/[\x00-\x1f]/.test(cwd)) throw new Error('Remote directory must be one line'); return cwd; }
+function remotePath(value) { if (typeof value !== 'string' || !value.trim() || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value)) throw new Error('Path must be nonempty one-line text up to 4096 characters'); return value; }
 const executionDirectory = (value, host) => host === 'local' ? directory(tilde(value)) : remotePath(value);
 const ownerWindow = (target, params) => nativeOwner({ owner: target.slice(0, target.indexOf(':')), verb: 'new-window', params: { session: target.slice(target.indexOf(':') + 1), host: 'local', focus: false, ...params } });
 async function hostedProfile(t, name, profile, cwd, opts) {
@@ -417,17 +431,17 @@ async function newShell(t, name, windowHost) {
   await ensureSession(t);
   const remote = windowHost !== 'local';
   const args = ['new-window', '-s', t.session, '--host', windowHost, '--no-focus'];
-  if (!remote) args.push('--cwd', workingDirectory(t));
+  if (!remote) args.push('--cwd', t.path || homedir());
   if (t.workspace != null) args.push('--workspace', String(t.workspace));
   args.push('--', name);
   if (!remote) args.push('/bin/zsh', '-d', '-f');
-  else if (t.path || t.worktree) args.push(...inRemoteDirectory(workingDirectory(t), ['sh', '-c', 'exec "${SHELL:-/bin/sh}" -i']));
-  const result = await createInSession(t.session, () => t.session.includes(':') ? ownerWindow(t.session, { name, ...(t.workspace != null ? { workspace:t.workspace } : {}), command:(t.path || t.worktree) ? inRemoteDirectory(workingDirectory(t), ['sh', '-c', 'exec "${SHELL:-/bin/sh}" -i']) : [] }) : cli(args));
+  else if (t.path) args.push(...inRemoteDirectory(t.path, ['sh', '-c', 'exec "${SHELL:-/bin/sh}" -i']));
+  const result = await createInSession(t.session, () => t.session.includes(':') ? ownerWindow(t.session, { name, ...(t.workspace != null ? { workspace:t.workspace } : {}), command:t.path ? inRemoteDirectory(t.path, ['sh', '-c', 'exec "${SHELL:-/bin/sh}" -i']) : [] }) : cli(args));
   const paneId = result.window_id || result.id;
   if (!paneId) throw new Error('Missing window id: ' + JSON.stringify(result));
   run('INSERT INTO panes VALUES (?,?,?,?,?,?,?)', paneId, t.id, name, 'shell', null, 'idle', '');
   seeAgent(paneId, { session: t.session, name, kind: 'shell', state: 'idle', task: t.id, host: windowHost });
-  run('UPDATE agents SET session=? WHERE id=?', t.session, paneId);
+  run('UPDATE agents SET session=?,launch_cwd=? WHERE id=?', t.session, t.path || (windowHost === 'local' ? homedir() : ''), paneId);
   if (!remote) await cli(['send-text', '-s', t.session, '-w', paneId, `source '${root.replaceAll("'", "'\\''")}/scripts/shell.zsh'\n`], 15000, false);
   changed(); return paneFor(paneId);
 }
@@ -745,6 +759,24 @@ function taskFacts(body, t = {}) {
   if (out.host && (out.host.length > 120 || /[\s:\x00-\x1f]/.test(out.host) || out.host === 'task')) throw new Error('Host must be local or a configured native host alias');
   return out;
 }
+async function taskPaths(body, host, t = {}) {
+  const repo = body.path !== undefined ? body.path : body.repo;
+  const supplied = repo !== undefined || body.worktree !== undefined;
+  let path = t.path || '', worktree = t.worktree || '', paths_host = t.paths_host || '';
+  if (supplied && (repo || body.worktree)) {
+    if (!host) throw new Error('Choose an execution machine before setting directories');
+    if (body.paths_host !== host) throw new Error('Directory selection is stale; choose it again for ' + host);
+    if (paths_host !== host) {
+      if (repo === undefined) path = '';
+      if (body.worktree === undefined) worktree = '';
+    }
+    paths_host = host;
+  } else if (body.paths_host !== undefined && body.paths_host !== paths_host && (path || worktree)) throw new Error('Choose directories again before changing their execution machine');
+  if (repo !== undefined) path = repo ? await executionDirectory(repo, host) : '';
+  if (body.worktree !== undefined) worktree = body.worktree ? await executionDirectory(body.worktree, host) : '';
+  if (!path && !worktree) paths_host = '';
+  return { path, worktree, paths_host };
+}
 function taskStylePatch(body) {
   if (Object.hasOwn(body, 'style_seed') || Object.hasOwn(body, 'style')) throw new Error('Task style seed is assigned by the server');
   return Object.fromEntries(Object.entries(parseStyleOverrides(Object.fromEntries(['theme', 'icon', 'color'].filter(f => Object.hasOwn(body, 'style_' + f)).map(f => [f, body['style_' + f]])))).map(([f, v]) => ['style_' + f, v || '']));
@@ -811,7 +843,7 @@ const executionGit = (resolved, force=false) => resolved.host.value && resolved.
   : gitFacts(resolved.cwd.value,resolved.branch.value,force);
 function outlineContext() {
   const tasks = all('SELECT * FROM tasks ORDER BY created DESC').map(t => ({ ...styledTask(t), archived: Boolean(t.archived),
-    own: { repo: t.path, worktree: t.worktree, branch: t.branch, harness: t.harness, model: t.model, queue_mode: t.queue_mode, launch_mode: t.launch_mode, host: t.host, session: t.session === `inbox-${t.id.slice(0, 8)}` ? '' : t.session, workspace: t.workspace } }));
+    own: { repo: t.path, worktree: t.worktree, paths_host: t.paths_host, branch: t.branch, harness: t.harness, model: t.model, queue_mode: t.queue_mode, launch_mode: t.launch_mode, host: t.host, session: t.session === `inbox-${t.id.slice(0, 8)}` ? '' : t.session, workspace: t.workspace } }));
   const busy = new Set(all("SELECT pane_id FROM prompts WHERE state='running' AND pane_id<>''").map(p => p.pane_id));
   const panes = all("SELECT id,name,session,COALESCE(host,'') AS host,harness,kind,state,task_id,launch_cwd,launch_profile,launch_model FROM agents WHERE archived=0 ORDER BY seen DESC")
     .map(p => ({ ...p, ready: !['working', 'needs_input', 'closed'].includes(p.state) && !busy.has(p.id) && !active.has(p.id) }));
@@ -826,7 +858,8 @@ async function liveContext() {
 }
 async function promptView(p, ctx = null) {
   ctx ||= await liveContext();
-  const resolved = resolveFields(p, ctx.byId), git = await executionGit(resolved);
+  const resolved = resolveFields(p, ctx.byId), target = p.target && ctx.panes.find(pane => pane.id === p.target);
+  const git = await executionGit(target ? { ...resolved, host: { value: target.host }, cwd: { value: target.launch_cwd || null } } : resolved);
   return { ...p, resolved, preflight: preflight({ prompt: p, resolved, panes: ctx.panes, git, profiles: ctx.profiles }) };
 }
 // The newest runs, plus every unarchived run still waiting to be read or answered however old it is: the review queue must not miss one.
@@ -860,9 +893,11 @@ async function sendPrompt(key, paneId, queueOnly = false) {
 }
 // Warnings hold the saved prompt until the user explicitly chooses to proceed.
 async function runPrompt(key, allowWarnings = false) {
-  const p = promptFor(key), ctx = await liveContext(), resolved = resolveFields(p, ctx.byId), repo = resolved.cwd.value || homedir();
-  const pf = preflight({ prompt: p, resolved, panes: ctx.panes, git: await executionGit(resolved), profiles: ctx.profiles, strict: true });
+  const p = promptFor(key), ctx = await liveContext(), resolved = resolveFields(p, ctx.byId);
   const pane = p.target ? ctx.panes.find(x => x.id === p.target) : pickPane(p, ctx.panes, resolved, ctx.profiles);
+  const repo = pane ? pane.launch_cwd || null : resolved.cwd.value || (resolved.host.value === 'local' ? homedir() : null);
+  const git = await executionGit(pane ? { ...resolved, host: { value: pane.host }, cwd: { value: repo } } : resolved);
+  const pf = preflight({ prompt: p, resolved, panes: ctx.panes, git, profiles: ctx.profiles, strict: true });
   const task = p.task_id ? one('SELECT * FROM tasks WHERE id=?', p.task_id) : null;
   const sessionOwner = ctx.byId.get(resolved.session.from) || task;
   const home = { id: sessionOwner?.id || p.id, session: resolved.session.value || task?.session || `inbox-${p.id.slice(0, 8)}`, workspace: resolved.workspace.value, host: resolved.host.value };
@@ -954,7 +989,7 @@ async function settlePrompts() {
       }
       // A run whose pane closed under it never reports done; it ends the prompt as an error, so the queue shows why it holds.
       if (!['done', 'errored', 'ended'].includes(turn.state)) continue;
-      const ctx = outlineContext(), resolved = resolveFields(p, ctx.byId), repo = one('SELECT host FROM agents WHERE id=?',p.pane_id)?.host === 'local' ? resolved.cwd.value : null, after = await gitHead(repo);
+      const ctx = outlineContext(), resolved = resolveFields(p, ctx.byId), agent = one('SELECT host,launch_cwd FROM agents WHERE id=?', p.pane_id), repo = agent?.host === 'local' ? agent.launch_cwd || null : null, after = await gitHead(repo);
       const commits = p.head_before && after && after !== p.head_before ? commitRows((await gitLog(repo, `${p.head_before}..${after}`)).out) : [];
       run('UPDATE turns SET head_after=?,commits=? WHERE id=?', after, JSON.stringify(commits), turn.id);
       run('UPDATE prompts SET state=?,error=?,updated=? WHERE id=?', turn.state === 'done' ? 'done' : 'errored', turn.state === 'errored' ? 'The run ended in an error' : turn.state === 'ended' ? 'The pane closed before the run finished' : '', now(), p.id);
@@ -978,6 +1013,18 @@ async function api(req, url) {
   const body = method === 'POST' || method === 'PATCH' ? await req.json() : {};
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Request body must be a JSON object');
   if (Object.hasOwn(body, 'allow_warnings') && typeof body.allow_warnings !== 'boolean') throw new Error('allow_warnings must be true or false');
+  if (url.pathname === '/api/filesystem' && method === 'GET') {
+    const host = await executionHost(url.searchParams.get('host'));
+    const offset = url.searchParams.get('offset') ?? '0', hidden = url.searchParams.get('hidden') ?? 'false';
+    if (!/^(0|[1-9][0-9]*)$/.test(offset) || !['true', 'false'].includes(hidden)) throw new Error('Invalid directory page options');
+    return response(await listHostDirectory({ host, path: url.searchParams.get('path') ?? '', offset: Number(offset), hidden: hidden === 'true' }));
+  }
+  if (url.pathname === '/api/filesystem/select' && method === 'POST') return response(await selectHostPath({ host: await executionHost(body.host), path: body.path, kind: body.kind }));
+  if (['/api/paths', '/api/repo-paths'].includes(url.pathname) && method === 'GET') {
+    const host = await executionHost(url.searchParams.get('host'));
+    const paths = all("SELECT path AS path FROM tasks WHERE paths_host=? AND path<>'' UNION SELECT worktree AS path FROM tasks WHERE paths_host=? AND worktree<>'' ORDER BY path", host, host).map(row => row.path);
+    return response({ host, paths });
+  }
   if (url.pathname === '/api/outline' && method === 'GET') return cached('outline', req, outline);
   if (url.pathname === '/api/git/refresh' && method === 'POST') {
     const ctx = outlineContext(), t = ctx.byId.get(body.task_id); if (!t) throw new Error('Task not found');
@@ -1094,7 +1141,7 @@ async function api(req, url) {
     if (action === 'create-window') {
       const plan = await launchPlan({ session: target, workspace }, body.host, 'shell');
       args = ['new-window', '-s', target, '--host', plan.windowHost, '--workspace', String(workspace), '--no-focus'];
-      const cwd = body.cwd ? plan.windowHost === 'local' ? await directory(body.cwd) : remotePath(body.cwd) : null;
+      const cwd = await launchDirectory(body, plan.windowHost);
       if (cwd && plan.windowHost === 'local') args.push('--cwd', cwd);
       args.push('--', required(body.name, 'Window name', 120));
       if (session.host !== 'local') { const result = await createInSession(target, () => ownerWindow(target, {name:required(body.name,'Window name',120),workspace,command:cwd ? inRemoteDirectory(cwd,['sh','-c','exec "${SHELL:-/bin/sh}" -i']) : []})); changed(); return response(result,201); }
@@ -1137,7 +1184,7 @@ async function api(req, url) {
     if (action === 'create-agent') {
       const task = body.taskId ? taskFor(body.taskId) : null;
       const plan = await launchPlan({ id: task?.id || null, session: target, workspace }, body.host, 'agent');
-      const cwd = body.cwd ? plan.t.host === 'local' ? await directory(body.cwd) : remotePath(body.cwd) : task ? workingDirectory(task) : plan.t.host === 'local' ? homedir() : null;
+      const cwd = await launchDirectory(body, plan.t.host, task);
       return response({ threadId: startProfile(plan.t, required(body.name, 'Agent name', 120), body.profileId, cwd, { remoteCwd:plan.t.session.includes(':') || body.cwd && plan.t.host !== 'local' ? cwd : null }) }, 202);
     }
     const result = ['create-window','kill-session'].includes(action) ? await createInSession(target, () => cli(args, 15000, json)) : await cli(args, 15000, json);
@@ -1174,16 +1221,24 @@ async function api(req, url) {
     changed(); return response({ ok: true, deleted: ids.length });
   }
   if ((url.pathname === '/api/pick-directory' || url.pathname === '/api/pick-file') && method === 'POST') {
+    if (body.host !== 'local') throw new Error('The OS picker requires host local; use native filesystem browsing for another machine');
+    await executionHost(body.host);
     let path = null;
     try {
       const child = Bun.spawn(['/usr/bin/osascript', '-e', url.pathname === '/api/pick-file' ? 'POSIX path of (choose file)' : 'POSIX path of (choose folder)'], { stdout: 'pipe', stderr: 'ignore' });
       const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-      if (!code) path = text.trim() || null;
+      if (!code) path = text.replace(/\r?\n$/, '') || null;
     } catch {}
-    return response({ path });
+    if (path) path = (await selectHostPath({ host: 'local', path, kind: url.pathname === '/api/pick-file' ? 'file' : 'directory' })).path;
+    return response({ host: 'local', path });
   }
   // Opens a document a run reported with the OS default app. Only an existing regular .md file ever reaches the opener, as one argv entry.
   if (url.pathname === '/api/open-file' && method === 'POST') {
+    const sourceTurn = one('SELECT t.task_id,t.prompt_id,t.session,a.host FROM turns t LEFT JOIN agents a ON a.id=t.pane_id WHERE t.id=?', String(body.turn ?? '').replace(/^turn:/, ''));
+    if (sourceTurn) {
+      const ctx = outlineContext(), task = ctx.byId.get(sourceTurn.task_id), host = sourceTurn.host || (sourceTurn.session?.includes(':') ? sourceTurn.session.split(':')[0] : task ? resolveFields(task, ctx.byId).host.value : '');
+      if (host && host !== 'local') throw new Error('Remote documents cannot be opened by the local OS; open this file on ' + host);
+    }
     let path = tilde(required(body.path, 'Path', 4000));
     if (/^file:\/\//i.test(path)) path = fileURLToPath(path);
     if (!isAbsolute(path)) {
@@ -1204,19 +1259,26 @@ async function api(req, url) {
     return response({ ok: true, path });
   }
   if (url.pathname === '/api/profiles' && method === 'POST') {
-    const key = body.id || id(); const name = required(body.name, 'Name', 120), executable = required(body.executable, 'Executable', 500);
+    const key = body.id || id(); const name = required(body.name, 'Name', 120);
+    let executable = remotePath(body.executable), executable_host = '';
+    if (executable.includes('/') || executable.includes('\\')) {
+      if (!isAbsolute(executable) && !executable.startsWith('~/')) throw new Error('Executable file paths must be absolute or start with ~/');
+      executable_host = await executionHost(body.executable_host);
+      executable = (await selectHostPath({ host: executable_host, path: executable, kind: 'file' })).path;
+    }
+    if (!executable_host && (/\s/.test(executable) || executable.startsWith('~') || ['.', '..'].includes(executable))) throw new Error('Portable executables must be bare PATH command names');
     if (!Array.isArray(body.args) || body.args.some(x => typeof x !== 'string')) throw new Error('Arguments must be a JSON array of strings');
     if (!['', 'codex', 'acp'].includes(body.protocol || '')) throw new Error('Unknown protocol');
     if (!body.env || Array.isArray(body.env) || typeof body.env !== 'object' || Object.entries(body.env).some(([k,v]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || typeof v !== 'string')) throw new Error('Environment must be a JSON object of string values');
-    run('INSERT OR REPLACE INTO profiles VALUES (?,?,?,?,?,?)', key, name, executable, JSON.stringify(body.args), body.protocol || '', JSON.stringify(body.env)); changed(); return response({ id: key });
+    run('INSERT OR REPLACE INTO profiles (id,name,executable,args,protocol,env,executable_host) VALUES (?,?,?,?,?,?,?)', key, name, executable, JSON.stringify(body.args), body.protocol || '', JSON.stringify(body.env), executable_host); changed(); return response({ id: key });
   }
   if (url.pathname === '/api/tasks' && method === 'POST') {
     // A task may start without a directory; its panes then open in the home directory until one is set.
     const appearance = taskStylePatch(body);
-    const key = id(), repo = body.path ?? body.repo, facts = taskFacts(body);
+    const key = id(), facts = taskFacts(body);
     const parent = body.parent_id ? parentFor(body.parent_id).id : null, ctx = outlineContext();
     const host = resolveFields({ id:key,parent_id:parent,host:facts.host },ctx.byId).host.value;
-    const path = repo ? await executionDirectory(repo,host) : '', worktree = body.worktree ? await executionDirectory(body.worktree,host) : '';
+    const { path, worktree, paths_host } = await taskPaths(body, host);
     const inheritedSession = parent ? resolveFields(ctx.byId.get(parent),ctx.byId).session.value : null;
     const home = body.session ? await taskHome(body.session, body.workspace) : { session: `inbox-${key.slice(0, 8)}`, workspace: body.workspace ?? null };
     if (!body.session && body.workspace != null) await taskHome(inheritedSession || home.session, body.workspace);
@@ -1224,7 +1286,7 @@ async function api(req, url) {
     if (body.notes !== undefined && !Array.isArray(body.notes)) throw new Error('Notes must be a list of {body, context} notes');
     const notes = (body.notes || []).map(n => ({ body: noteBody(n?.body), context: noteContext(n?.context ?? false) }));
     db.transaction(() => {
-      run('INSERT INTO tasks (id,title,path,worktree,status,session,created,parent_id,workspace,branch,harness,model,queue_mode,launch_mode,host,style_theme,style_icon,style_color) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', key, title, path, worktree, 'open', home.session, now(), parent, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode, facts.launch_mode, facts.host, appearance.style_theme || '', appearance.style_icon || '', appearance.style_color || '');
+      run('INSERT INTO tasks (id,title,path,worktree,paths_host,status,session,created,parent_id,workspace,branch,harness,model,queue_mode,launch_mode,host,style_theme,style_icon,style_color) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', key, title, path, worktree, paths_host, 'open', home.session, now(), parent, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode, facts.launch_mode, facts.host, appearance.style_theme || '', appearance.style_icon || '', appearance.style_color || '');
       for (const n of notes) run('INSERT INTO task_notes (id,task_id,body,context,created,updated) VALUES (?,?,?,?,?,?)', id(), key, n.body, n.context, now(), now());
     })();
     changed(); return response(taskFor(key), 201);
@@ -1259,10 +1321,10 @@ async function api(req, url) {
     if (parts.length === 3 && method === 'PATCH') {
       if (body.notes !== undefined) throw new Error('Edit notes through /tasks/:id/notes');
       if (!['open', 'active', 'done'].includes(body.status || t.status)) throw new Error('Unknown task status');
-      const appearance = taskStylePatch(body), repo = body.path !== undefined ? body.path : body.repo, facts = taskFacts(body, t);
+      const appearance = taskStylePatch(body), facts = taskFacts(body, t);
       const parent = body.parent_id === undefined ? t.parent_id : body.parent_id ? parentFor(body.parent_id, t.id).id : null, ctx = outlineContext();
       const host = resolveFields({ id:t.id,parent_id:parent,host:facts.host },ctx.byId).host.value;
-      const path = repo === undefined ? t.path : repo ? await executionDirectory(repo,host) : '', worktree = body.worktree === undefined ? t.worktree : body.worktree ? await executionDirectory(body.worktree,host) : '';
+      const { path, worktree, paths_host } = await taskPaths(body, host, t);
       let home = t;
       if (body.session !== undefined || body.workspace !== undefined) {
         const session = body.session === '' || body.session === null ? `inbox-${t.id.slice(0, 8)}` : body.session ?? t.session;
@@ -1272,18 +1334,19 @@ async function api(req, url) {
           home = { session, workspace };
         } else home = await taskHome(session, workspace);
       }
-      run('UPDATE tasks SET title=?,status=?,path=?,worktree=?,parent_id=?,session=?,workspace=?,branch=?,harness=?,model=?,queue_mode=?,launch_mode=?,host=?,style_theme=?,style_icon=?,style_color=? WHERE id=?', required(body.title === undefined ? t.title : body.title, 'Title'), body.status || t.status, path, worktree, parent, home.session, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode, facts.launch_mode, facts.host, appearance.style_theme ?? t.style_theme, appearance.style_icon ?? t.style_icon, appearance.style_color ?? t.style_color, t.id); changed(); return response(taskFor(t.id));
+      run('UPDATE tasks SET title=?,status=?,path=?,worktree=?,paths_host=?,parent_id=?,session=?,workspace=?,branch=?,harness=?,model=?,queue_mode=?,launch_mode=?,host=?,style_theme=?,style_icon=?,style_color=? WHERE id=?', required(body.title === undefined ? t.title : body.title, 'Title'), body.status || t.status, path, worktree, paths_host, parent, home.session, home.workspace, facts.branch, facts.harness, facts.model, facts.queue_mode, facts.launch_mode, facts.host, appearance.style_theme ?? t.style_theme, appearance.style_icon ?? t.style_icon, appearance.style_color ?? t.style_color, t.id); changed(); return response(taskFor(t.id));
     }
     if (parts[3] === 'panes' && method === 'POST') {
       const name = required(body.name || `shell-${id().slice(0, 6)}`, 'Pane name', 120);
       const ctx = outlineContext(), effective = resolveFields(ctx.byId.get(t.id), ctx.byId);
       const owner = ctx.byId.get(effective.session.from) || t;
-      const home = { ...t, session: effective.session.value || t.session, workspace: effective.workspace.value, path: effective.cwd.value || '', worktree: '' };
+      const home = { ...t, session: effective.session.value || t.session, workspace: effective.workspace.value };
       const plan = await launchPlan(home, body.host ?? effective.host.value, body.kind === 'agent' ? 'agent' : 'shell');
-      if (body.kind !== 'agent') return response(await newShell({ ...plan.t, id: t.id, home_id: owner.id }, name, plan.windowHost), 201);
+      const cwd = await launchDirectory(body, plan.t.host, t);
+      if (body.kind !== 'agent') return response(await newShell({ ...plan.t, id: t.id, home_id: owner.id, path: cwd || '', worktree: '' }, name, plan.windowHost), 201);
       launchProfile(plan.t, body.profileId);
       await ensureSession({ ...plan.t, id: owner.id });
-      return response({ threadId: startProfile(plan.t, name, body.profileId, effective.cwd.value || (plan.t.host === 'local' ? homedir() : null), {remoteCwd:plan.t.session.includes(':')?effective.cwd.value:null}) }, 202);
+      return response({ threadId: startProfile(plan.t, name, body.profileId, cwd, { remoteCwd: plan.t.session.includes(':') ? cwd : null }) }, 202);
     }
     if (parts[3] === 'compose' && method === 'POST') {
       const p = await liveAgent(body.paneId); if (p.task_id !== t.id) throw new Error('Agent belongs to another task');
@@ -1382,10 +1445,10 @@ const server = Bun.serve({ hostname: '127.0.0.1', port, idleTimeout: 0, maxReque
     if (url.pathname.startsWith('/api/')) return await api(req, url);
     const files = { '/': 'index.html', '/app.js': 'app.js', '/tuios.js': 'tuios.js', '/tuios.css': 'tuios.css', '/workbench.js': 'workbench.js', '/pages.js': 'pages.js', '/launch-host.js': 'launch-host.js', '/list.js': 'list.js', '/markdown.js': 'markdown.js', '/queues.js': 'queues.js', '/queue-model.js': 'queue-model.js', '/style.css': 'style.css', '/list.css': 'list.css', '/markdown.css': 'markdown.css', '/queues.css': 'queues.css', '/flight.css': 'flight.css', '/flight-barlow-condensed-600.ttf': 'flight-barlow-condensed-600.ttf' };
     files['/history.js'] = 'history.js';
-    for (const name of ['outline.js', 'outline.css', 'outline-model.js', 'task-style.js', 'task-style-dom.js', 'task-style.css', 'task-editor.js', 'list-tools.js']) files['/' + name] = name;
+    for (const name of ['outline.js', 'outline.css', 'outline-model.js', 'task-style.js', 'task-style-dom.js', 'task-style.css', 'task-editor.js', 'list-tools.js', 'path-picker.js', 'path-picker.css']) files['/' + name] = name;
     if (!files[url.pathname]) return new Response('Not found', { status: 404 });
     return new Response(Bun.file(join(root, 'public', files[url.pathname])), { headers: { 'Content-Security-Policy': "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' } });
-  } catch (e) { return response({ error: e.message, ...(e.window_id || e.createdWindowId ? { window_id: e.window_id || e.createdWindowId } : {}) }, 400); }
+  } catch (e) { return response({ error: e.message, ...(e.code ? { code: e.code } : {}), ...(e.window_id || e.createdWindowId ? { window_id: e.window_id || e.createdWindowId } : {}) }, 400); }
 } });
 const hookTimer = setInterval(() => background(drainHooks().then(settlePrompts)), 1500);
 const collectorTimer = setInterval(() => background(pullHistory()), 15000);

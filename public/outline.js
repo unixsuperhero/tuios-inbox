@@ -11,8 +11,9 @@ import { styleAttrs, taskMark, applyTaskStyles } from '/task-style-dom.js';
 import { styleChoices, taskStyle } from '/task-style.js';
 import { hostChoices, hostUnavailable, machineLabel } from '/launch-host.js';
 import { resolve } from '/outline-model.js';
+import { choosePath } from '/path-picker.js';
 const VIEWS = { queue: 'Queue', tasks: 'Tasks', open: 'Tasks', everything: 'Everything', 'needs-me': 'Needs me', running: 'Running', queued: 'Queued', 'no-task': 'No task', archive: 'Archive' };
-const TASK_FIELDS = [['harness', 'Harness', 'harness'], ['model', 'Model', 'text'], ['repo', 'Repository directory', 'dir'], ['worktree', 'Existing worktree directory', 'dir'], ['branch', 'Expected branch', 'text'], ['host', 'Execution machine', 'host'], ['session', 'Global session container', 'session'], ['workspace', 'Native workspace', 'text'], ['launch_mode', 'Launch mode', 'launch'], ['queue_mode', 'Queue mode', 'mode']];
+const TASK_FIELDS = [['host', 'Execution machine', 'host'], ['repo', 'Project directory', 'dir'], ['worktree', 'Existing worktree directory', 'dir'], ['harness', 'Harness', 'harness'], ['model', 'Model', 'text'], ['branch', 'Expected branch', 'text'], ['session', 'Global session container', 'session'], ['workspace', 'Native workspace', 'text'], ['launch_mode', 'Launch mode', 'launch'], ['queue_mode', 'Queue mode', 'mode']];
 const RUN_CAP = 3, DONE_CAP = 3, CHUNK = 50;
 const COLS = '<span></span><span>Queue</span><span>State</span><span>Unread</span><span>Branch</span><span>Pull request</span>', REVIEW_COLS = '<span></span><span>Pane</span><span>State</span><span>Unread</span><span>Waiting</span>';
 const when = value => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
@@ -332,10 +333,41 @@ export function createOutline({ report }) {
     if (current && !rows.some(([value]) => value === current)) rows.push([current, `${current} · unavailable global session`, true]);
     return rows;
   };
-  const taskExecution = task => {
-    const tasks = new Map([...model.tasks].map(([id, t]) => [id, { ...t, own: { ...(t.own || t), ...Object.fromEntries(TASK_FIELDS.filter(([f]) => drafts.has(`task:${id}:${f}`)).map(([f]) => [f, drafts.get(`task:${id}:${f}`)])) } }]));
-    return resolve(tasks.get(task.id) || task, tasks);
+  const taskExecution = task => resolve(task, model.tasks);
+  const pathDraftContexts = new Map();
+  let pickerGeneration = 0, pickerController = null, pickerContext = null;
+  window.addEventListener('hashchange', () => { ++pickerGeneration; pickerController?.abort(); });
+  const taskPathContext = id => {
+    const chain = [], seen = new Set();
+    for (let t = model.tasks.get(id); t && !seen.has(t.id); t = model.tasks.get(t.parent_id)) {
+      seen.add(t.id); const own = t.own || t; chain.push([t.id, t.parent_id || '', own.host || '']);
+    }
+    return JSON.stringify(chain);
   };
+  const pathsPending = id => {
+    const seen = new Set();
+    for (let t = model.tasks.get(id); t && !seen.has(t.id); t = model.tasks.get(t.parent_id)) {
+      seen.add(t.id); const own = t.own || t;
+      if (['host', 'parent_id'].some(f => drafts.has(`task:${t.id}:${f}`) && String(drafts.get(`task:${t.id}:${f}`) || '') !== String((f === 'parent_id' ? t.parent_id : own[f]) || ''))) return true;
+    }
+    return false;
+  };
+  const pathEnabled = id => {
+    const host = taskExecution(model.tasks.get(id) || {}).host?.value;
+    return Boolean(host && (data.hosts || []).some(h => h.host === host && !hostUnavailable(h))) && !pathsPending(id);
+  };
+  const portableExecutable = value => Boolean(value && !value.includes('/') && !value.includes('\\') && !/\s/.test(value) && !value.startsWith('~') && value !== '.' && value !== '..');
+  const profileCompatible = (p, host) => Boolean(host) && (portableExecutable(p.executable) || p.executable_host === host);
+  const mismatchNotice = res => res.paths_mismatch?.value ? `<p class="ol-callout" role="alert">Saved directory <span class="ol-mono">${esc(res.paths_mismatch.path)}</span> belongs to ${esc(machineName(res.paths_mismatch.host))}, not ${esc(machineName(res.host?.value))}. Switch back to the saved path machine, or save ${esc(machineName(res.host?.value))} as the task’s execution machine and choose its project and existing worktree again in task settings. Stored paths are not moved or retagged.</p>` : '';
+  function invalidatePathDrafts() {
+    if (pickerContext && (pickerContext.route !== location.hash || pickerContext.context !== taskPathContext(pickerContext.task) || !pathEnabled(pickerContext.task))) { ++pickerGeneration; pickerController?.abort(); }
+    for (const [key, context] of pathDraftContexts) {
+      if (context !== taskPathContext(key.split(':')[1])) {
+        drafts.delete(key); pathDraftContexts.delete(key); fieldErrors.set(key, 'Execution context changed. Choose this directory again.');
+        const input = root.querySelector(`[data-draft="${CSS.escape(key)}"]`); if (input) input.value = '';
+      }
+    }
+  }
 
   const runRow = r => `<li data-wb-key="rr:${esc(r.id)}" ${styleAttrs(model.tasks.get(runTask(r, model.prompts)))}><button type="button" class="ol-rowlink${r.unread ? ' is-unread' : ''}" data-act="select" data-id="run:${esc(r.id)}">${taskMark(model.tasks.get(runTask(r, model.prompts)))}<span class="ol-mono">${esc(r.harness)}</span> ${state(r.state)} <span>${r.commits?.length ? plural(r.commits.length, 'commit') : ''}</span> ${r.unread ? '<b class="ol-unread">Unread</b>' : ''} <span class="ol-mono ol-dim">${esc(when(r.finished || r.started))}</span></button></li>`;
   const queueRows = (prompts, taskId) => prompts.length ? `<ol class="ol-list">${prompts.map((p, i) => `<li data-wb-key="q:${esc(p.id)}" ${styleAttrs(model.tasks.get(p.task_id))}><button type="button" class="ol-rowlink" data-act="select" data-id="prompt:${esc(p.id)}">${taskMark(model.tasks.get(p.task_id))} <span class="ol-clip">${esc(oneLine(p.body)) || 'empty prompt'}</span> ${state(p.state)}</button>${i ? button('earlier', p.id, 'Earlier', 'subtle', ` data-before="${esc(prompts[i - 1].id)}" data-task="${esc(taskId || '')}"`) : ''}</li>`).join('')}</ol>` : '<p class="ol-dim">No prompts waiting.</p>';
@@ -375,7 +407,7 @@ export function createOutline({ report }) {
   const waitingTarget = p => { const pane = (data?.panes || []).find(x => x.id === p.target); return pane && (!pane.ready || pane.state === 'needs_input'); };
   function promptDetail(n) {
     const p = n.rec, id = p.id, res = p.resolved || {}, pf = p.preflight || {}, task = model.tasks.get(p.task_id), runs = n.children.map(c => c.rec), body = val(`prompt:${id}:body`, p.body);
-    return `<div class="ol-prompt-reader" ${styleAttrs(task)}>${head('Prompt', ` · ${state(p.state)}`)}${nextBar(`prompt:${id}`)}<h2 class="ol-title">${taskMark(task)}${esc(task?.title || 'No task')}</h2><div data-wb-key="body"><label for="olf-body">Prompt text</label><textarea id="olf-body" rows="8" data-draft="prompt:${esc(id)}:body" data-save="prompt:${esc(id)}:body" placeholder="What should the agent do?">${esc(body)}</textarea>${transportWarning(body)}${p.error ? `<p class="ol-error-text" role="alert">Last attempt: ${esc(p.error)}. Adjust settings or choose another target, then retry.</p>` : ''}</div><details class="ol-settings" data-wb-key="prompt-settings"><summary>Execution settings</summary><div class="ol-inline"><label>Task<select data-save="prompt:${esc(id)}:task_id">${options([['', 'No task'], ...taskOptions()], p.task_id || '')}</select></label><label>Target pane<select data-save="prompt:${esc(id)}:target">${options(paneOptions(p.target), p.target)}</select></label><label>Execution machine<select data-draft="prompt:${esc(id)}:host" data-save="prompt:${esc(id)}:host">${options(machineOptions(val(`prompt:${id}:host`, p.host), `Inherit: ${machineName(task?.resolved?.host?.value)} · no local default`), val(`prompt:${id}:host`, p.host))}</select></label><label>Global session container<select data-draft="prompt:${esc(id)}:session" data-save="prompt:${esc(id)}:session">${options(sessionOptions(val(`prompt:${id}:session`, p.session), `Inherit: ${task?.resolved?.session?.value || 'not set'}`), val(`prompt:${id}:session`, p.session))}</select></label><label>Harness<input data-save="prompt:${esc(id)}:harness" data-draft="prompt:${esc(id)}:harness" value="${esc(val(`prompt:${id}:harness`, p.harness))}" placeholder="${esc(res.harness?.value || 'omp')}"></label><label>Model<input data-save="prompt:${esc(id)}:model" data-draft="prompt:${esc(id)}:model" value="${esc(val(`prompt:${id}:model`, p.model))}" placeholder="${esc(res.model?.value || 'harness default')}"></label><label>Launch mode<select data-save="prompt:${esc(id)}:launch_mode">${options([['', `Inherit: ${res.launch_mode?.value || 'new'}`], ['new', 'Fresh background agent'], ['reuse', 'Reuse compatible idle agent']], p.launch_mode)}</select></label></div>${task ? `<a href="${outlineHash(`task:${task.id}`)}">Task directory and inherited settings</a>` : '<p class="ol-dim">No directory set: a fresh agent starts in your home directory.</p>'}</details>${warningList(pf)}<div class="ol-actions" data-wb-key="run">${button('save-queue', id, 'Save prompt')}${button('run', id, busy.has(`run:${id}`) ? 'Starting…' : 'Run', 'primary')}${warningCount(pf) || waitingTarget(p) ? button('run-anyway', id, waitingTarget(p) ? 'Queue anyway' : 'Proceed anyway', 'primary') : ''}${launchContext({ ...res, ...(drafts.has(`prompt:${id}:host`) ? { host: { value: val(`prompt:${id}:host`, p.host) || task?.resolved?.host?.value || null } } : {}), ...(drafts.has(`prompt:${id}:session`) ? { session: { value: val(`prompt:${id}:session`, p.session) || task?.resolved?.session?.value || null } } : {}) }, p.target)}${confirming === `delete:${id}` ? button('delete', id, 'Confirm delete', 'danger') + button('keep', id, 'Keep') : button('ask-delete', id, 'Delete', 'subtle')}</div>${section('runs', `Runs (${runs.length})`, runs.length ? `<ul class="ol-list">${runs.map(runRow).join('')}</ul>` : '<p class="ol-dim">Not run yet.</p>')}</div>`;
+    return `<div class="ol-prompt-reader" ${styleAttrs(task)}>${head('Prompt', ` · ${state(p.state)}`)}${nextBar(`prompt:${id}`)}<h2 class="ol-title">${taskMark(task)}${esc(task?.title || 'No task')}</h2><div data-wb-key="body"><label for="olf-body">Prompt text</label><textarea id="olf-body" rows="8" data-draft="prompt:${esc(id)}:body" data-save="prompt:${esc(id)}:body" placeholder="What should the agent do?">${esc(body)}</textarea>${transportWarning(body)}${p.error ? `<p class="ol-error-text" role="alert">Last attempt: ${esc(p.error)}. Adjust settings or choose another target, then retry.</p>` : ''}</div><details class="ol-settings" data-wb-key="prompt-settings"><summary>Execution settings</summary><div class="ol-inline"><label>Execution machine<select data-draft="prompt:${esc(id)}:host" data-save="prompt:${esc(id)}:host">${options(machineOptions(val(`prompt:${id}:host`, p.host), `Inherit: ${machineName(task?.resolved?.host?.value)} · no local default`), val(`prompt:${id}:host`, p.host))}</select></label><label>Task<select data-save="prompt:${esc(id)}:task_id">${options([['', 'No task'], ...taskOptions()], p.task_id || '')}</select></label><label>Target pane<select data-save="prompt:${esc(id)}:target">${options(paneOptions(p.target), p.target)}</select></label><label>Global session container<select data-draft="prompt:${esc(id)}:session" data-save="prompt:${esc(id)}:session">${options(sessionOptions(val(`prompt:${id}:session`, p.session), `Inherit: ${task?.resolved?.session?.value || 'not set'}`), val(`prompt:${id}:session`, p.session))}</select></label><label>Harness<input data-save="prompt:${esc(id)}:harness" data-draft="prompt:${esc(id)}:harness" value="${esc(val(`prompt:${id}:harness`, p.harness))}" placeholder="${esc(res.harness?.value || 'omp')}" list="olf-prompt-harness-${esc(id)}"></label><label>Model<input data-save="prompt:${esc(id)}:model" data-draft="prompt:${esc(id)}:model" value="${esc(val(`prompt:${id}:model`, p.model))}" placeholder="${esc(res.model?.value || 'harness default')}"></label><label>Launch mode<select data-save="prompt:${esc(id)}:launch_mode">${options([['', `Inherit: ${res.launch_mode?.value || 'new'}`], ['new', 'Fresh background agent'], ['reuse', 'Reuse compatible idle agent']], p.launch_mode)}</select></label></div><datalist id="olf-prompt-harness-${esc(id)}">${(data.profiles || []).filter(profile => profileCompatible(profile, res.host?.value)).map(profile => `<option value="${esc(profile.id)}">${esc(profile.name)}</option>`).join('')}</datalist>${task ? `<a href="${outlineHash(`task:${task.id}`)}">Task directory and inherited settings</a>` : '<p class="ol-dim">No directory set: a fresh agent starts in your home directory.</p>'}</details>${mismatchNotice(res)}${warningList(pf)}<div class="ol-actions" data-wb-key="run">${button('save-queue', id, 'Save prompt')}${button('run', id, busy.has(`run:${id}`) ? 'Starting…' : 'Run', 'primary')}${warningCount(pf) || waitingTarget(p) ? button('run-anyway', id, waitingTarget(p) ? 'Queue anyway' : 'Proceed anyway', 'primary') : ''}${launchContext(res, p.target)}${confirming === `delete:${id}` ? button('delete', id, 'Confirm delete', 'danger') + button('keep', id, 'Keep') : button('ask-delete', id, 'Delete', 'subtle')}</div>${section('runs', `Runs (${runs.length})`, runs.length ? `<ul class="ol-list">${runs.map(runRow).join('')}</ul>` : '<p class="ol-dim">Not run yet.</p>')}</div>`;
   }
   // One line per older run of the same pane; it opens in place, and its text is fetched the first time it is opened.
   function historyRow(x) {
@@ -422,19 +454,22 @@ export function createOutline({ report }) {
   function taskSettings(n) {
     const t = n.rec, id = t.id, own = t.own || {}, res = taskExecution(t), choices = styleChoices();
     const rows = TASK_FIELDS.map(([f, label, type]) => {
-      const key = `task:${id}:${f}`, fid = `olf-${id}-${f}`, r = res[f] || {}, value = val(key, own[f] ?? ''), inherited = resolve({ ...t, own: { ...own, [f]: '' } }, model.tasks)[f]?.value;
+      const key = `task:${id}:${f}`, fid = `olf-${id}-${f}`, r = res[f] || {};
+      const foreign = type === 'dir' && own.paths_host !== res.host?.value;
+      const value = val(key, foreign ? '' : own[f] ?? ''), inherited = resolve({ ...t, own: { ...own, [f]: '' } }, model.tasks)[f]?.value;
+      const disabled = type === 'dir' && !pathEnabled(id);
       const control = type === 'host' || type === 'session' ? `<select id="${esc(fid)}" data-draft="${esc(key)}" data-save="${esc(key)}">${options(type === 'host' ? machineOptions(value, `Inherit: ${machineName(inherited)} · no local default`) : sessionOptions(value, `Inherit: ${inherited || 'not set'}`), value)}</select>`
         : type === 'mode' || type === 'launch' ? `<select id="${esc(fid)}" data-draft="${esc(key)}" data-save="${esc(key)}">${options([['', `Inherit: ${inherited || (type === 'launch' ? 'new' : 'manual')}`], ...(type === 'launch' ? [['new', 'Fresh background agent'], ['reuse', 'Reuse compatible idle agent']] : [['manual', 'Manual'], ['auto', 'Auto']])], value)}</select>`
-        : `<input id="${esc(fid)}" data-draft="${esc(key)}" data-save="${esc(key)}" value="${esc(value)}" placeholder="${esc(inherited ?? (f === 'model' ? 'harness default' : 'not set'))}" autocomplete="off" spellcheck="false"${type === 'harness' ? ` list="olf-harness-choices-${esc(id)}"` : ''}>${type === 'dir' ? button('browse', key, 'Browse…', '', res.host?.value === 'local' ? '' : ' disabled title="Local directory picker requires local execution"') : ''}`;
-      return `<div class="ol-field${type === 'dir' ? ' is-wide' : ''}" data-wb-key="f:${esc(id)}:${f}"><label for="${esc(fid)}">${label}</label><div class="ol-field-edit">${control}${button('clear-field', key, 'Inherit', 'subtle')}</div><span class="ol-src">${esc(sourceNote(r))}</span>${fieldErrors.has(key) ? `<p class="ol-error-text" role="alert">${esc(fieldErrors.get(key))}</p>` : ''}</div>`;
+        : `<input id="${esc(fid)}" data-draft="${esc(key)}" data-save="${esc(key)}" value="${esc(value)}" placeholder="${esc(inherited ?? (f === 'model' ? 'harness default' : type === 'dir' && res.paths_mismatch?.value ? 'Choose again for this machine' : 'not set'))}" autocomplete="off" spellcheck="false"${disabled ? ' disabled' : ''}${type === 'harness' ? ` list="olf-harness-choices-${esc(id)}"` : ''}>${type === 'dir' ? button('browse', key, 'Browse…', '', disabled ? ' disabled' : '') : ''}`;
+      return `<div class="ol-field${type === 'dir' ? ' is-wide' : ''}" data-wb-key="f:${esc(id)}:${f}"><label for="${esc(fid)}">${label}</label><div class="ol-field-edit">${control}${button('clear-field', key, 'Inherit', 'subtle', disabled ? ' disabled' : '')}</div><span class="ol-src">${esc(disabled ? 'Choose and save the machine or parent change first.' : sourceNote(r))}</span>${fieldErrors.has(key) ? `<p class="ol-error-text" role="alert">${esc(fieldErrors.get(key))}</p>` : ''}</div>`;
     }).join('');
     const identity = [['style_theme', 'Theme', choices.themes], ['style_icon', 'Icon', choices.icons]].map(([field, label, items]) => `<label>${label}<select data-save="task:${esc(id)}:${field}">${options([['', 'Automatic'], ...items.map(x => [x.id, x.label])], t[field] || t.style?.[field.slice(6)] || '')}</select></label>`).join('');
     const color = t.style_color || t.style?.color || '', automatic = taskStyle(t.style || { seed: t.style_seed });
     const luminance = hex => { const rgb = hex.match(/[a-f0-9]{2}/gi).map(v => parseInt(v, 16) / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4); return .2126 * rgb[0] + .7152 * rgb[1] + .0722 * rgb[2]; };
     const contrast = color ? (Math.max(luminance(color), luminance('#17212b')) + .05) / (Math.min(luminance(color), luminance('#17212b')) + .05) : Infinity;
-    return `<section class="ol-settings" data-wb-key="settings:${esc(id)}"><h2>Settings</h2><p class="ol-dim">Empty execution fields inherit. A missing machine never defaults to local. Global session owner and execution machine are independent. Existing directories only; no worktrees are created.</p>${rows}<datalist id="olf-harness-choices-${esc(id)}">${(data.profiles || []).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</datalist><h2>Task identity</h2><p class="ol-dim">This task has its own automatic theme and icon. Overrides do not affect subtasks.</p>${contrast < 3 ? '<p class="ol-callout">This custom color has low contrast on the Flight deck background. You can keep it; the task label stays visible. Choose a lighter color for a clearer icon.</p>' : ''}<div class="ol-inline">${identity}<label>Custom color<input type="color" aria-label="Custom task color" data-save="task:${esc(id)}:style_color" value="${esc(color || automatic.color)}"></label>${button('clear-field', `task:${id}:style_color`, 'Reset color', 'subtle')}${button('reset-style', id, 'Reset identity', 'subtle')}</div><div class="ol-inline"><label>Status<select data-save="task:${esc(id)}:status">${options(['open', 'active', 'done'].map(s => [s, s]), t.status)}</select></label><label>Move under<select data-save="task:${esc(id)}:parent_id">${options([['', 'Top level'], ...taskOptions(subtreeIds(n))], t.parent_id || '')}</select></label>${button('archive-task', id, t.archived ? 'Unarchive' : 'Archive', 'subtle', ` data-arg="${t.archived ? '' : '1'}"`)}<a href="#task/${encodeURIComponent(id)}">Advanced task page</a></div></section>`;
+    return `<section class="ol-settings" data-wb-key="settings:${esc(id)}"><h2>Settings</h2><p class="ol-dim">Empty execution fields inherit. A missing machine never defaults to local. Global session owner and execution machine are independent. Existing directories only; no worktrees are created.</p>${mismatchNotice(res)}${rows}<datalist id="olf-harness-choices-${esc(id)}">${(data.profiles || []).filter(p => profileCompatible(p, res.host?.value)).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</datalist><h2>Task identity</h2><p class="ol-dim">This task has its own automatic theme and icon. Overrides do not affect subtasks.</p>${contrast < 3 ? '<p class="ol-callout">This custom color has low contrast on the Flight deck background. You can keep it; the task label stays visible. Choose a lighter color for a clearer icon.</p>' : ''}<div class="ol-inline">${identity}<label>Custom color<input type="color" aria-label="Custom task color" data-save="task:${esc(id)}:style_color" value="${esc(color || automatic.color)}"></label>${button('clear-field', `task:${id}:style_color`, 'Reset color', 'subtle')}${button('reset-style', id, 'Reset identity', 'subtle')}</div><div class="ol-inline"><label>Status<select data-save="task:${esc(id)}:status">${options(['open', 'active', 'done'].map(s => [s, s]), t.status)}</select></label><label>Move under<select data-save="task:${esc(id)}:parent_id">${options([['', 'Top level'], ...taskOptions(subtreeIds(n))], t.parent_id || '')}</select></label>${button('archive-task', id, t.archived ? 'Unarchive' : 'Archive', 'subtle', ` data-arg="${t.archived ? '' : '1'}"`)}<a href="#task/${encodeURIComponent(id)}">Advanced task page</a></div></section>`;
   }
-  const launchContext = (res = {}, target = '') => `<span class="ol-launch-context">${target ? `Continue in ${esc(paneLabel(target))}` : res.launch_mode?.value === 'reuse' ? 'Reuse compatible idle agent, otherwise fresh' : 'Fresh background agent'} · machine ${esc(machineName(target ? (data.panes || []).find(p => p.id === target)?.host : res.host?.value))} · <span class="ol-mono">${esc(res.cwd?.value || res.repo?.value || 'home directory')} · ${esc(res.harness?.value || 'omp')} / ${esc(res.model?.value || 'harness default')}</span>${res.session?.value ? ` · global session ${esc(res.session.value)}` : ' · global session not set'}${res.workspace?.value != null ? ` · workspace ${esc(res.workspace.value)}` : ''}</span>`;
+  const launchContext = (res = {}, target = '') => `<span class="ol-launch-context">${target ? `Continue in ${esc(paneLabel(target))}` : res.launch_mode?.value === 'reuse' ? 'Reuse compatible idle agent, otherwise fresh' : 'Fresh background agent'} · machine ${esc(machineName(target ? (data.panes || []).find(p => p.id === target)?.host : res.host?.value))} · <span class="ol-mono">${esc(res.paths_mismatch?.value ? `Directory unavailable: ${res.paths_mismatch.path} belongs to ${machineName(res.paths_mismatch.host)} — choose again` : res.cwd?.value || res.repo?.value || 'home directory')} · ${esc(res.harness?.value || 'omp')} / ${esc(res.model?.value || 'harness default')}</span>${res.session?.value ? ` · global session ${esc(res.session.value)}` : ' · global session not set'}${res.workspace?.value != null ? ` · workspace ${esc(res.workspace.value)}` : ''}</span>`;
   function inlinePlanning(n, card = false) {
     const t = n.rec, id = t.id, bodyKey = `plan:${id}:body`, childKey = `plan:${id}:child`, body = val(bodyKey, ''), receipt = planReceipts.get(id), warnings = receipt?.preflight;
     const execution = { ...taskExecution(t), launch_mode: { value: 'new' } };
@@ -531,6 +566,7 @@ export function createOutline({ report }) {
     if (!active) return;
     const full = build();
     model = { ...full, lines: [] };
+    invalidatePathDrafts();
     const rq = view === 'needs-me', qv = queueView();
     if (qv) {
       // The open item is kept in the list even once read; when nothing is open, or it has gone, the oldest waiting item opens.
@@ -650,6 +686,17 @@ export function createOutline({ report }) {
     const [kind, id, field] = target.split(':'), draftKey = target;
     if (kind === 'task') {
       if (field === 'title' && !String(value).trim()) { drafts.delete(draftKey); render(); return; }
+      if (field === 'repo' || field === 'worktree') {
+        const host = taskExecution(model.tasks.get(id) || {}).host?.value, context = taskPathContext(id);
+        if (!pathEnabled(id) || pathDraftContexts.has(target) && pathDraftContexts.get(target) !== context) { fieldErrors.set(target, 'Choose and save the execution machine first, then choose this directory again.'); render(); return; }
+        pathDraftContexts.set(target, context); drafts.set(target, value); fieldErrors.delete(target);
+        return write(`save:${target}`, () => {
+          if (!pathEnabled(id) || taskPathContext(id) !== context || taskExecution(model.tasks.get(id) || {}).host?.value !== host) throw new Error('Execution context changed. Choose the directory again.');
+          const own = model.tasks.get(id)?.own || {}, body = { [field]: value, paths_host: host };
+          if (own.paths_host !== host) body[field === 'repo' ? 'worktree' : 'repo'] = '';
+          return api(`/tasks/${encodeURIComponent(id)}`, body, 'PATCH');
+        }, () => { if (drafts.get(target) === value) { drafts.delete(target); pathDraftContexts.delete(target); } }, e => fieldErrors.set(target, e.message));
+      }
       const body = field === 'parent_id' ? { parent_id: value || null } : field === 'workspace' && /^\d+$/.test(value) ? { workspace: Number(value) } : { [field]: value };
       fieldErrors.delete(target);
       return write(`save:${target}`, () => api(`/tasks/${encodeURIComponent(id)}`, body, 'PATCH'), () => { if (drafts.get(draftKey) === value) drafts.delete(draftKey); for (const k of [...drafts.keys()]) if (k.startsWith('fix:') && field === 'repo') drafts.delete(k); if (field === 'parent_id' && value) expanded.add(`task:${value}`); }, e => { fieldErrors.set(target, e.message); if (!TASK_FIELDS.some(([f]) => f === field)) say(e.message, true); });
@@ -715,10 +762,18 @@ export function createOutline({ report }) {
     keep: () => { confirming = null; render(); },
     'clear-field': id => { drafts.delete(id); saveField(id, ''); },
     browse: async id => {
-      if (taskExecution(model.tasks.get(id.split(':')[1]) || {}).host?.value !== 'local') { say('The local directory picker requires local execution.', true); return; }
-      if (busy.has(`browse:${id}`)) return; busy.add(`browse:${id}`); render();
-      try { const { path } = await api('/pick-directory', {}); if (path) saveField(id, path); }
-      catch (e) { say(e.message, true); } finally { busy.delete(`browse:${id}`); render(); }
+      const task = id.split(':')[1], host = taskExecution(model.tasks.get(task) || {}).host?.value;
+      if (!pathEnabled(task)) { say('Choose and save an execution machine before browsing directories.', true); return; }
+      if (busy.has(`browse:${id}`)) return;
+      pickerController?.abort(); const controller = new AbortController(); pickerController = controller;
+      const generation = ++pickerGeneration, context = taskPathContext(task), route = location.hash;
+      pickerContext = { task, context, route };
+      busy.add(`browse:${id}`); render();
+      try {
+        const own = model.tasks.get(task)?.own || {};
+        const result = await choosePath({ host, kind: 'directory', path: own.paths_host === host ? own[id.split(':')[2]] || '' : '', title: 'Choose task directory', signal: controller.signal });
+        if (result?.path && result.host === host && generation === pickerGeneration && !controller.signal.aborted && route === location.hash && context === taskPathContext(task) && pathEnabled(task) && taskExecution(model.tasks.get(task) || {}).host?.value === host) { pathDraftContexts.set(id, context); saveField(id, result.path); }
+      } catch (e) { if (!controller.signal.aborted) say(e.message, true); } finally { busy.delete(`browse:${id}`); if (pickerController === controller) { pickerController = null; pickerContext = null; } render(); }
     },
     mode: (id, b) => write(`mode:${id}`, () => api(`/tasks/${encodeURIComponent(id)}`, { queue_mode: b.dataset.arg }, 'PATCH')),
     'run-next': id => write(`run-next:${id}`, () => api(`/tasks/${encodeURIComponent(id)}/run-next`, {}), r => say(r?.prompt ? `Running: ${oneLine(r.prompt.body)}` : 'Started the next prompt.')),
@@ -758,6 +813,8 @@ export function createOutline({ report }) {
   });
   root.addEventListener('input', e => {
     const key = e.target.dataset?.draft; if (key) drafts.set(key, e.target.value);
+    if (key?.startsWith('task:') && ['repo', 'worktree'].includes(key.split(':')[2])) { pathDraftContexts.set(key, taskPathContext(key.split(':')[1])); ++pickerGeneration; pickerController?.abort(); }
+    if (e.target.dataset?.save && ['host', 'parent_id'].includes(e.target.dataset.save.split(':').at(-1))) { ++pickerGeneration; pickerController?.abort(); render(); }
     if (view === 'task' && e.target.form?.dataset.planTask) taskPlanning = true;
   });
   root.addEventListener('change', e => {

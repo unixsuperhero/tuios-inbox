@@ -214,7 +214,6 @@ func (m *Model) layout(count int) ([]string, []hit) {
 		if !m.tight() {
 			lines = append(lines, text(dim.Render(strings.Repeat("─", width))))
 		}
-		lines = append(lines, text("Name"), editLine(m.Draft, width))
 		if m.Form == formNewWindow {
 			machine := printable(m.Host)
 			if machine == "" {
@@ -222,6 +221,11 @@ func (m *Model) layout(count int) ([]string, []hit) {
 			}
 			lines = append(lines, text("[^o] Machine: "+machine))
 			addHit(hitChooseHost, 0, len(lines)-1, width)
+		}
+		if m.Form != formNewWindow || m.Host != "" {
+			lines = append(lines, text("Name"), editLine(m.Draft, width))
+		} else {
+			lines = append(lines, text("Choose an execution machine before naming this window."))
 		}
 		if m.Form == formNewWindow && !compact {
 			lines = append(lines, text("Create in "+m.home(task)))

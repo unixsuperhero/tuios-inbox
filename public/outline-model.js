@@ -13,6 +13,7 @@ const isPrompt = record => 'body' in record || 'task_id' in record;
 export function resolve(record, tasksById) {
   const out = {};
   for (const field of FIELDS) {
+    if (field === 'repo') continue;
     out[field] = field in DEFAULTS ? { value: DEFAULTS[field], from: 'default' } : { value: null, from: 'none' };
     const seen = new Set();
     for (let cur = record, first = true; cur && !seen.has(cur); first = false) {
@@ -22,13 +23,22 @@ export function resolve(record, tasksById) {
       cur = get(tasksById, first && isPrompt(cur) ? cur.task_id : cur.parent_id);
     }
   }
-  out.cwd = { value: null, from: 'none' };
-  const seen = new Set();
-  for (let cur = isPrompt(record) ? get(tasksById, record.task_id) : record; cur && !seen.has(cur); cur = get(tasksById, cur.parent_id)) {
-    seen.add(cur);
-    const worktree = own(cur, 'worktree'), repo = own(cur, 'repo');
-    const value = set(worktree) ? worktree : repo;
-    if (set(value)) { out.cwd = { value, from: cur === record ? 'self' : cur.id }; break; }
+  out.paths_host = { value: null, from: 'none' };
+  const host = out.host.value;
+  for (const field of ['repo', 'cwd']) {
+    const seen = new Set();
+    out[field] = { value: null, from: 'none' };
+    for (let cur = isPrompt(record) ? get(tasksById, record.task_id) : record; cur && !seen.has(cur); cur = get(tasksById, cur.parent_id)) {
+      seen.add(cur);
+      const value = field === 'cwd' && set(own(cur, 'worktree')) ? own(cur, 'worktree') : own(cur, 'repo');
+      if (!set(value)) continue;
+      const from = cur === record ? 'self' : cur.id, bound = own(cur, 'paths_host');
+      if (set(host) && bound === host) {
+        out[field] = { value, from };
+        out.paths_host = { value: bound, from };
+      } else if (field === 'cwd') out.paths_mismatch = { value: true, from, host: bound || null, path: value };
+      break;
+    }
   }
   return out;
 }
@@ -77,7 +87,10 @@ export function preflight({ prompt, resolved, panes = [], git = null, profiles =
     }
   } else if (!pickPane(prompt, panes, resolved, profiles)) {
     if (!set(resolved.host?.value)) blocks.push({ code: 'no_host', message: 'Choose an execution machine before creating a pane', fix: 'host' });
-    if (!resolved.cwd?.value) warns.push({ code: 'nowhere', message: 'No directory is set; proceeding launches in your home directory', fix: 'repo' });
+    if (resolved.paths_mismatch?.value) blocks.push({ code: 'paths_host_mismatch', message: `Choose the project directory again for ${resolved.host?.value || 'the execution machine'}; saved paths belong to ${resolved.paths_mismatch.host || 'an unknown machine'}`, fix: 'repo' });
+    if (!resolved.cwd?.value && !resolved.paths_mismatch?.value) warns.push({ code: 'nowhere', message: 'No directory is set; proceeding launches in your home directory', fix: 'repo' });
+    const profile = profileFor(resolved.harness?.value, profiles);
+    if (profile?.executable?.includes('/') && (!set(profile.executable_host) || profile.executable_host !== resolved.host?.value)) blocks.push({ code: 'executable_host_mismatch', message: `Profile executable belongs to ${profile.executable_host || 'an unknown machine'}; choose a profile for ${resolved.host?.value || 'the execution machine'}`, fix: 'harness' });
     if (!profileFor(resolved.harness?.value, profiles)) warns.push({ code: 'no_harness', message: `No saved agent profile for ${resolved.harness?.value || DEFAULTS.harness}; proceeding launches that executable without extra profile arguments`, fix: 'harness' });
   }
   if (new TextEncoder().encode(String(prompt.body || '')).length > 16 * 1024) warns.push({ code: 'native_message_limit', message: 'Prompt exceeds the native 16 KiB queue-message limit; attempting it may be refused, and the full text will be preserved', fix: 'body' });

@@ -1,7 +1,7 @@
 // Page schemas and record markup; app.js owns navigation, dialogs and delegated actions.
 import { markdown } from '/markdown.js';
 import { styleAttrs, taskMark } from '/task-style-dom.js';
-import { hostChoices, machineLabel } from '/launch-host.js';
+import { hostChoices, hostUnavailable, machineLabel } from '/launch-host.js';
 import { resolve } from '/outline-model.js';
 export const store = { state: { tasks: [], panes: [], profiles: [], agents: [], items: [] }, drafts: new Map(), edits: new Map(), liveSessions: null, liveHosts: null, bodies: new Map(), questions: new Map() };
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
@@ -193,6 +193,7 @@ const itemList = (storageKey, fields, archived, empty) => ({
 // ---- Tasks ----
 const statuses = ['open', 'active', 'done'].map(s => ({ value: s, label: s }));
 const basename = path => path.split('/').filter(Boolean).pop() || path;
+const portableExecutable = value => Boolean(value && !value.includes('/') && !value.includes('\\') && !/\s/.test(value) && !value.startsWith('~') && value !== '.' && value !== '..');
 // Edit drafts live in store.edits (keyed by task and section) so periodic refreshes never reset what is being typed.
 export const editKey = (taskId, section) => `${taskId}|${section}`;
 const homeText = t => `${t.session || 'No global session set'} · ${t.workspace == null ? 'session default workspace' : 'workspace ' + t.workspace}`;
@@ -207,11 +208,18 @@ function titleSection(t) {
   return `<section class="task-section is-editing" data-wb-key="section:title">${sectionHead(t, 'title', 'Task')}<div class="props"><label class="grow">Title<input ${field(t, 'title', 'title', d.title)}></label><label>Status<select ${field(t, 'title', 'status')}>${optionList(statuses, d.status)}</select></label></div>${sectionButtons(t, 'title')}</section>`;
 }
 function pathsSection(t) {
-  const d = store.edits.get(editKey(t.id, 'paths'));
-  if (!d) return `<section class="task-section" data-wb-key="section:paths">${sectionHead(t, 'paths', 'Directories')}<dl class="metadata-facts">${fact('Project path', t.path ? esc(t.path) : '<span class="hint">Not set · panes open in your home directory</span>')}${fact('Existing worktree', t.worktree ? esc(t.worktree) : '<span class="hint">None · uses the project path</span>')}</dl></section>`;
-  const local = resolve(t, new Map(store.state.tasks.map(task => [task.id, task]))).host?.value === 'local';
-  const box = (name, label, placeholder) => `<label class="grow">${label} <small>Optional</small><span class="browse"><input id="task-${name}-${esc(t.id)}" ${field(t, 'paths', name, d[name])} list="path-options" placeholder="${placeholder}"><button type="button" data-do="browse" data-id="task-${name}-${esc(t.id)}"${local ? '' : ' disabled title="Local directory picker requires local execution"'}>Browse…</button></span></label>`;
-  return `<section class="task-section is-editing" data-wb-key="section:paths">${sectionHead(t, 'paths', 'Directories')}<div class="props">${box('path', 'Project path', 'Not set · panes open in your home directory')}${box('worktree', 'Existing worktree', 'Leave empty to use the project path')}</div>${sectionButtons(t, 'paths')}</section>`;
+  const d = store.edits.get(editKey(t.id, 'paths')), tasks = new Map(store.state.tasks.map(task => [task.id, task]));
+  const resolved = resolve(t, tasks), host = resolved.host?.value, mismatch = resolved.paths_mismatch;
+  const pendingTasks = new Map(store.state.tasks.map(task => {
+    const home = store.edits.get(editKey(task.id, 'home')), parent = store.edits.get(editKey(task.id, 'parent'));
+    return [task.id, { ...task, ...(home ? { host: home.host } : {}), ...(parent ? { parent_id: parent.parent_id || null } : {}) }];
+  }));
+  const pending = resolve(pendingTasks.get(t.id) || t, pendingTasks).host?.value !== host;
+  const stale = d && d.capture_host !== host, unavailable = host && !(store.liveHosts || []).some(h => h.host === host && !hostUnavailable(h)), disabled = !host || pending || stale || unavailable;
+  const notice = mismatch?.value ? hint(`Saved directory ${esc(mismatch.path)} belongs to ${esc(mismatch.host || 'an unknown machine')}, not ${esc(host || 'a selected machine')}. Choose the directories again; saved paths are not moved or retagged.`) : '';
+  if (!d) return `<section class="task-section" data-wb-key="section:paths">${sectionHead(t, 'paths', 'Directories')}<dl class="metadata-facts">${fact('Path machine', esc(t.paths_host || 'Not bound'))}${fact('Project path', resolved.repo?.value ? esc(resolved.repo.value) : '<span class="hint">Not set for this machine</span>')}${fact('Existing worktree', resolved.cwd?.value && resolved.cwd.value !== resolved.repo?.value ? esc(resolved.cwd.value) : '<span class="hint">None · uses the project path</span>')}</dl>${notice}</section>`;
+  const box = (name, label, placeholder) => `<label class="grow">${label} <small>Optional · ${esc(host || 'choose machine first')}</small><span class="browse"><input id="task-${name}-${esc(t.id)}" ${field(t, 'paths', name, d.paths_host === host ? d[name] : '')} placeholder="${placeholder}"${disabled ? ' disabled' : ''}><button type="button" data-do="browse" data-id="task-${name}-${esc(t.id)}"${disabled ? ' disabled' : ''}>Browse…</button></span></label>`;
+  return `<section class="task-section is-editing" data-wb-key="section:paths">${sectionHead(t, 'paths', 'Directories')}${notice}${disabled ? hint(pending ? 'Save the execution machine or parent change before choosing directories.' : stale ? 'Execution machine changed. Cancel this directory edit and reopen it to choose again.' : unavailable ? 'Choose an available execution machine before editing directories.' : 'Choose and save an execution machine first.') : ''}<div class="props">${box('path', 'Project path', 'Not set for this machine')}${box('worktree', 'Existing worktree', 'Leave empty to use the project path')}</div>${sectionButtons(t, 'paths')}</section>`;
 }
 function parentSection(t) {
   const d = store.edits.get(editKey(t.id, 'parent')), parent = store.state.tasks.find(p => p.id === t.parent_id);
@@ -227,7 +235,7 @@ function homeSection(t) {
   const link = t.session ? `<a href="#tuios/${encodeURIComponent(t.session)}${t.workspace == null ? '' : '/' + t.workspace}">${esc(homeText(t))}</a>` : esc(homeText(t));
   if (!d) return `<section class="task-section" data-wb-key="section:home">${sectionHead(t, 'home', 'Launch home')}<dl class="metadata-facts">${fact('Global session container', link)}${fact('Execution machine', esc(machine))}</dl>${hint('Future launches only. Existing panes, assigned work and history are not moved.')}</section>`;
   const live = store.liveSessions, sessions = [{ value: '', label: 'Inherit global session' }, ...(live || []), ...(d.session && !live?.some(s => s.value === d.session) ? [{ value: d.session, label: `${d.session} · unavailable`, disabled: true }] : [])];
-  return `<section class="task-section is-editing" data-wb-key="section:home">${sectionHead(t, 'home', 'Launch home')}<div class="props"><label class="grow">Global session container<select ${field(t, 'home', 'session')}>${optionList(sessions, d.session)}</select></label><label>Execution machine<select ${field(t, 'home', 'host')}>${optionList(hostChoices(store.liveHosts || [], d.host, 'Inherit execution machine · no local default'), d.host)}</select></label><label>Workspace <small>Empty = session default</small><input type="number" min="1" step="1" ${field(t, 'home', 'workspace', d.workspace)}></label></div>${live ? '' : hint('Reading global sessions and execution machines…')}${hint('Execution machine and global session owner are independent. Existing panes, work and history stay unchanged.')}${sectionButtons(t, 'home')}</section>`;
+  return `<section class="task-section is-editing" data-wb-key="section:home">${sectionHead(t, 'home', 'Launch home')}<div class="props"><label>Execution machine<select ${field(t, 'home', 'host')}>${optionList(hostChoices(store.liveHosts || [], d.host, 'Inherit execution machine · no local default'), d.host)}</select></label><label class="grow">Global session container<select ${field(t, 'home', 'session')}>${optionList(sessions, d.session)}</select></label><label>Workspace <small>Empty = session default</small><input type="number" min="1" step="1" ${field(t, 'home', 'workspace', d.workspace)}></label></div>${live ? '' : hint('Reading global sessions and execution machines…')}${hint('Choose and save the execution machine before editing directories. Global session owner is independent; existing panes, work and history stay unchanged.')}${sectionButtons(t, 'home')}</section>`;
 }
 const notesOf = t => Array.isArray(t.notes) ? t.notes : [];
 function noteHtml(t, n) {
@@ -249,7 +257,7 @@ function taskDetail(t) {
   ]).values()];
   return `<section class="entity-metadata" ${styleAttrs(t)} aria-label="Task details">
     <div class="metadata-heading"><a href="#tasks">← Tasks</a><span class="task-label">${taskMark(t)}${esc(t.title)}</span>${archivedTag(t)}</div>
-    ${titleSection(t)}${pathsSection(t)}${parentSection(t)}${homeSection(t)}
+    ${titleSection(t)}${homeSection(t)}${parentSection(t)}${pathsSection(t)}
     <dl class="metadata-facts">${fact('Created', esc(time(t.created)))}${fact('Task ID', esc(t.id))}</dl>
     <div class="actions"><button class="primary" data-do="compose" data-id="${esc(t.id)}">Compose work</button><button data-do="open-pane" data-kind="agent" data-id="${esc(t.id)}">New Agent…</button><button data-do="open-pane" data-kind="pane" data-id="${esc(t.id)}">New Pane…</button><button data-do="open-mail" data-id="${esc(t.id)}">Send mail</button>${archiveButton('task-archive', t)}</div>
     ${notesSection(t)}
@@ -377,13 +385,13 @@ export const pages = {
       summary: p => `<div class="record-summary">
         <span class="record-type" data-label="Type">Profile</span>
         <div class="record-title" data-label="Work"><h3>${esc(p.name)}</h3><span class="record-reference">${esc(p.id)}</span></div>
-        <span class="record-agent" data-label="Program">${esc(p.executable)}</span>
+        <span class="record-agent" data-label="Program">${esc(p.executable)}<small class="host-label">${esc(p.executable_host ? `Machine: ${p.executable_host}` : portableExecutable(p.executable) ? 'Portable PATH command' : 'Machine not bound · choose again')}</small></span>
         <span class="record-task"></span>
         <span class="record-status" data-label="Protocol">${esc(protocols.find(o => o.value === protocol(p)).label)}</span>
         <span class="record-time"></span>
       </div>`,
       detail: p => `<div class="message"><pre>${esc(p.executable)} ${esc(p.args.join(' '))}</pre></div>
-        ${hint('Launches in the task directory. Profiles configure the executable, model and other arguments, protocol, and environment. Credentials are inherited from your local harness. TUIOS permissions: read, write, fan; no delegated approvals.')}
+        ${hint(`Executable scope: ${esc(p.executable_host || (portableExecutable(p.executable) ? 'portable PATH command' : 'unbound filesystem path — choose its machine again'))}. Launches in the selected execution machine’s task directory. Environment and credentials come from that machine’s harness. TUIOS permissions: read, write, fan; no delegated approvals.`)}
         <div class="actions"><button class="primary" data-do="edit-profile" data-id="${esc(p.id)}">Edit profile</button></div>`,
       actions: [{ id: 'delete', label: 'Delete', danger: true, run: async ids => { if (confirm(`Delete ${ids.length === 1 ? 'this profile' : `these ${ids.length} profiles`}?`)) await api('/profiles/delete', { ids }); } }],
       empty: 'No profiles to show.<br>Use “Add profile” to create one.',

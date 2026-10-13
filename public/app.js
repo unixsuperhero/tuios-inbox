@@ -4,7 +4,8 @@ import { createWorkbench, patchHTML, terminalResponse } from '/workbench.js';
 import { createQueues } from '/queues.js';
 import { createTuios } from '/tuios.js';
 import { createHistory } from '/history.js';
-import { setupLaunchHost, hostUnavailable } from '/launch-host.js';
+import { setupLaunchHost, hostUnavailable, machineLabel } from '/launch-host.js';
+import { choosePath } from '/path-picker.js';
 import { createOutline, outlineHash, queueHash } from '/outline.js';
 import { pages, pageForRoute, metadataForRoute, recipients, store, api, apiCached, NOT_MODIFIED, esc, taskTree, editKey } from '/pages.js';
 import { applyTaskStyles } from '/task-style-dom.js';
@@ -20,20 +21,103 @@ function openDialog(dialog) {
 }
 const inboxDraft = { recipientId: '', body: '', revision: 0 };
 const scopedDrafts = new Map(), viewCache = new Map(), composeDrafts = new Map();
-const paneHosts = new Map();
+const paneHosts = new Map(), pathEpochs = new WeakMap(), pathRequests = new WeakMap();
+const tasksMap = () => new Map(store.state.tasks.map(t => [t.id, t]));
+const availableHost = host => Boolean(host && store.liveHosts?.some(h => h.host === host && !hostUnavailable(h)));
+const machineName = host => host ? machineLabel(store.liveHosts?.find(h => h.host === host) || { host }) : 'not selected';
+const portableExecutable = value => Boolean(value && !value.includes('/') && !value.includes('\\') && !/\s/.test(value) && !value.startsWith('~') && value !== '.' && value !== '..');
+const profileFits = (profile, host) => portableExecutable(profile.executable) || profile.executable_host === host;
+function paneProfileFits(profile, form) {
+  const host = formHost(form), session = paneExecution(form).session?.value || '';
+  return profileFits(profile, host) && !(host && host !== 'local' && ((profile.protocol && (!session.includes(':') || session.startsWith('local:'))) || Object.keys(profile.env || {}).length));
+}
+function invalidatePaths(owner) {
+  pathEpochs.set(owner, (pathEpochs.get(owner) || 0) + 1);
+  pathRequests.get(owner)?.abort(); pathRequests.delete(owner);
+}
+function formHost(form) {
+  if (form.getAttribute('id') !== 'task-form') return form.elements.host.value;
+  const parent = store.state.tasks.find(t => t.id === form.elements.parent_id.value);
+  return form.elements.host.value || (parent && resolve(parent, tasksMap()).host?.value) || '';
+}
+function paneExecution(form) {
+  const task = store.state.tasks.find(t => t.id === form.elements.taskId.value) || {};
+  return resolve({ ...task, host: form.elements.host.value, own: { ...(task.own || task), host: form.elements.host.value } }, tasksMap());
+}
 function paneHostScope(form) {
   const key = form.elements.taskId.value || '';
   form.dataset.hostScope = key;
   const task = store.state.tasks.find(t => t.id === key);
-  const value = paneHosts.has(key) ? paneHosts.get(key) : resolve(task || {}, new Map(store.state.tasks.map(t => [t.id, t]))).host?.value || '';
+  const value = form.dataset.hostChosen === 'true' ? form.elements.host.value : paneHosts.get(key) || resolve(task || {}, tasksMap()).host?.value || '';
   const select = form.elements.host;
-  if (value && ![...select.options].some(o => o.value === value)) { const option = new Option(value, value); option.disabled = true; select.add(option); }
+  if (value && ![...select.options].some(o => o.value === value)) { const option = new Option(machineName(value), value); option.disabled = true; select.add(option); }
   select.value = value;
+  paneDirectory(form, true);
+}
+function paneDirectory(form, reset = false) {
+  const host = formHost(form), res = paneExecution(form);
+  if (reset) { form.dataset.cwdInherited = 'true'; invalidatePaths(form); form.elements.cwd.value = res.paths_host?.value === host ? res.cwd?.value || '' : ''; form.elements.paths_host.value = form.elements.cwd.value ? host : ''; }
+  form.elements.cwd.disabled = !availableHost(host);
+  form.querySelector('[data-id=cwd]').disabled = !availableHost(host);
+  $('#pane-path-note').textContent = res.paths_mismatch?.value ? 'Task directory “' + res.paths_mismatch.path + '” belongs to ' + machineName(res.paths_mismatch.host) + ', not ' + machineName(host) + '. Choose a directory on this machine or switch back before launching.' : host ? 'Directory on ' + machineName(host) + '. Matching task directories are inherited; changes here affect this launch only.' : 'Choose an execution machine before choosing a directory or profile.';
+  paneKind();
 }
 function taskDirectoryPicker() {
-  const form = $('#task-form'), parent = store.state.tasks.find(t => t.id === form.elements.parent_id.value);
-  const host = parent && resolve(parent, new Map(store.state.tasks.map(t => [t.id, t]))).host?.value;
-  for (const button of form.querySelectorAll('[data-do=browse]')) { button.disabled = Boolean(host && host !== 'local'); button.title = button.disabled ? 'Enter a directory on the remote execution machine manually' : ''; }
+  const form = $('#task-form'), host = formHost(form), old = form.dataset.pathHost || '';
+  if (old !== host) { invalidatePaths(form); form.elements.path.value = ''; form.elements.worktree.value = ''; form.elements.paths_host.value = ''; }
+  form.dataset.pathHost = host;
+  for (const field of [form.elements.path, form.elements.worktree]) field.disabled = !availableHost(host);
+  for (const button of form.querySelectorAll('[data-do=browse]')) button.disabled = !availableHost(host);
+  const parent = store.state.tasks.find(t => t.id === form.elements.parent_id.value);
+  const res = resolve({ parent_id: parent?.id, host }, tasksMap());
+  form.elements.host.options[0].textContent = parent ? 'Inherit parent machine: ' + machineName(resolve(parent, tasksMap()).host?.value) : 'Choose an execution machine';
+  $('#task-host-note').textContent = res.paths_mismatch?.value ? 'Parent directory belongs to ' + machineName(res.paths_mismatch.host) + '. Choose a project or existing worktree on ' + machineName(host) + '; it cannot be inherited across machines.' : host ? 'Execution on ' + machineName(host) + (form.elements.host.value ? '' : ' · inherited from parent') + '. Directories below belong to this machine.' : 'Choose a machine, or a parent with an execution machine, before entering paths.';
+  suggestPaths(form);
+}
+function profileMachine(form, reset = false) {
+  const host = form.elements.host.value, portable = form.elements.portable.checked;
+  if (reset) {
+    invalidatePaths(form);
+    if (form.elements.executable.value && !portableExecutable(form.elements.executable.value) && form.elements.executable_host.value !== host) { form.elements.executable.value = ''; form.elements.executable_host.value = ''; }
+    if (portable && !portableExecutable(form.elements.executable.value)) form.elements.executable.value = '';
+  }
+  form.elements.host.disabled = portable;
+  form.elements.executable.disabled = !(portable || availableHost(host));
+  form.querySelector('[data-do=browse]').disabled = portable || !availableHost(host);
+  $('#profile-host-note').textContent = portable ? 'Portable command names use PATH on each selected execution machine. Slashes and filesystem paths are not portable.' : host ? 'Executable files belong to ' + machineName(host) + '. Changing machines never moves or retags a saved executable.' : 'Choose a machine before entering or browsing an executable file, or choose a portable command.';
+}
+function retainedHost(key) {
+  const id = key.split('|')[0], tasks = tasksMap(), task = tasks.get(id), host = resolve(task || {}, tasks).host?.value || '';
+  const pending = new Map([...tasks].map(([tid, t]) => [tid, { ...t, ...Object.fromEntries(['home', 'parent'].flatMap(section => { const d = store.edits.get(editKey(tid, section)); return d ? Object.entries(d).filter(([k]) => ['host','parent_id'].includes(k)) : []; })) }]));
+  return resolve(pending.get(id) || {}, pending).host?.value === host ? host : '';
+}
+function pathContext(field) {
+  if (field.form) return { owner: field.form, host: formHost(field.form), active: field.form.closest('dialog')?.open };
+  const key = field.dataset.edit, draft = store.edits.get(key);
+  return { owner: draft, host: draft && retainedHost(key), active: Boolean(draft && field.isConnected && draft.capture_host === retainedHost(key)) };
+}
+async function browsePath(button) {
+  const field = button.form ? button.form.elements[button.dataset.id] : document.getElementById(button.dataset.id);
+  if (!field || field.disabled) return;
+  const { owner, host, active } = pathContext(field);
+  if (!owner || !active || !availableHost(host)) throw new Error('Choose and save an available execution machine before choosing a path.');
+  invalidatePaths(owner);
+  const epoch = pathEpochs.get(owner), controller = new AbortController(), prior = field.value, key = field.dataset.edit, signature = button.form ? formPathSignature(button.form) : taskPathSignature(key.split('|')[0]);
+  pathRequests.set(owner, controller); button.disabled = true;
+  try {
+    const kind = button.dataset.picker === 'file' ? 'file' : 'directory';
+    const result = await choosePath({ host, kind, path: kind === 'file' ? prior.includes('/') ? prior.slice(0, prior.lastIndexOf('/')) || '/' : '' : prior, title: kind === 'file' ? 'Choose executable on ' + machineName(host) : 'Choose directory on ' + machineName(host), signal: controller.signal });
+    const current = button.form ? button.form.elements[button.dataset.id] : document.getElementById(button.dataset.id);
+    if (!availableHost(host) || !result || result.host !== host || controller.signal.aborted || pathEpochs.get(owner) !== epoch || !current || current.value !== prior || (key && store.edits.get(key) !== owner) || pathContext(current).host !== host || !pathContext(current).active || signature !== (button.form ? formPathSignature(button.form) : taskPathSignature(key.split('|')[0]))) return;
+    current.value = result.path; current.dispatchEvent(new Event('input', { bubbles: true })); current.dispatchEvent(new Event('change', { bubbles: true }));
+  } finally { if (pathRequests.get(owner) === controller) pathRequests.delete(owner); if (button.isConnected) button.disabled = !availableHost(pathContext(field).host) || field.disabled; }
+}
+function bindFormPath(target) {
+  const form = target.form;
+  if (!form) return;
+  if (form.getAttribute('id') === 'task-form' && ['path','worktree'].includes(target.name)) form.elements.paths_host.value = target.value || form.elements.path.value || form.elements.worktree.value ? formHost(form) : '';
+  if (form.getAttribute('id') === 'pane-form' && target.name === 'cwd') { form.dataset.cwdInherited = 'false'; form.elements.paths_host.value = target.value ? formHost(form) : ''; }
+  if (form.getAttribute('id') === 'profile-form' && target.name === 'executable') form.elements.executable_host.value = portableExecutable(target.value) ? '' : formHost(form);
 }
 function composerDraft() {
   if (!route || route.kind === 'index') return inboxDraft;
@@ -120,7 +204,7 @@ async function act(fn, report = error) { $('#error').hidden = true; try { return
 const newChoices = kinds => kinds.map(kind => ({ value: `__new_${kind}`, label: `New ${kind[0].toUpperCase() + kind.slice(1)}…`, createKind: kind }));
 function setChoices(select, choices, value = select.value, placeholder = 'Choose…') {
   let html = `<option value="">${esc(placeholder)}</option>`;
-  html += choices.map(c => `<option value="${esc(c.value)}"${c.createKind ? ` data-create-kind="${c.createKind}"` : ''}>${esc(c.label)}</option>`).join('');
+  html += choices.map(c => `<option value="${esc(c.value)}"${c.disabled ? ' disabled' : ''}${c.createKind ? ` data-create-kind="${c.createKind}"` : ''}>${esc(c.label)}</option>`).join('');
   if (value && !choices.some(c => c.value === value) && !value.startsWith('__new_')) html += `<option value="${esc(value)}" disabled>Unavailable · ${esc(value)}</option>`;
   if (select.innerHTML !== html) select.innerHTML = html;
   select.value = value;
@@ -132,7 +216,7 @@ function updateMenus() {
   if (!composer.dataset.submitting) composer.querySelector('button.primary').disabled = !composerRecipients().some(r => r.value === composerDraft().recipientId);
   const pane = $('#pane-form');
   if (document.activeElement !== $('#pane-task')) setChoices($('#pane-task'), [...store.state.tasks.map(t => ({ value: t.id, label: t.title })), ...newChoices(['task'])]);
-  if (document.activeElement !== $('#profile-options')) setChoices($('#profile-options'), store.state.profiles.map(p => ({ value: p.id, label: p.name })), pane.elements.profileId.value, 'Choose an agent profile');
+  if (document.activeElement !== $('#profile-options')) setChoices($('#profile-options'), store.state.profiles.map(p => ({ value: p.id, label: p.name + (paneProfileFits(p, pane) ? '' : ' · incompatible with this machine/session'), disabled: !paneProfileFits(p, pane) || !availableHost(pane.elements.host.value) })), pane.elements.profileId.value, 'Choose an agent profile');
   const composeTask = $('#compose-form').dataset.taskId;
   if (composeTask && document.activeElement !== $('#compose-panes')) setChoices($('#compose-panes'), [...recipients({ taskId: composeTask }), ...newChoices(['agent', 'pane'])]);
   const mailTask = $('#mail-form').dataset.taskId;
@@ -143,7 +227,29 @@ function updateMenus() {
     if (document.activeElement !== $('#mail-to')) setChoices($('#mail-to'), [{ value: 'human', label: 'Your TUIOS inbox' }, ...recipients({ taskId: mailTask, mail: true, session: session || '__unselected__' })]);
   }
 }
+function taskPathSignature(id) {
+  const tasks = tasksMap(), rows = [], seen = new Set();
+  while (id && !seen.has(id)) { seen.add(id); const task = tasks.get(id); if (!task) { rows.push(id); break; } rows.push([id,task.host,task.parent_id,task.paths_host,task.path,task.worktree]); id = task.parent_id; }
+  return JSON.stringify(rows);
+}
+function formPathSignature(form) { return taskPathSignature(form.getAttribute('id') === 'task-form' ? form.elements.parent_id.value : form.getAttribute('id') === 'pane-form' ? form.elements.taskId.value : ''); }
+const pathSignatures = new WeakMap();
+function syncPathForms() {
+  const sync = (owner, signature) => { if (pathSignatures.has(owner) && pathSignatures.get(owner) !== signature) invalidatePaths(owner); pathSignatures.set(owner, signature); };
+  for (const id of ['task-form','pane-form','profile-form']) { const form = $('#' + id); sync(form, formPathSignature(form)); }
+  for (const [key, draft] of store.edits) if (key.endsWith('|paths')) sync(draft, taskPathSignature(key.split('|')[0]));
+  if ($('#task-dialog').open) taskDirectoryPicker();
+  const form = $('#pane-form');
+  if ($('#pane-dialog').open) {
+    const task = store.state.tasks.find(t => t.id === form.elements.taskId.value);
+    const seeded = paneHosts.get(form.elements.taskId.value) || resolve(task || {}, tasksMap()).host?.value || '';
+    if (form.dataset.hostChosen !== 'true' && form.elements.host.value !== seeded) paneHostScope(form);
+    const res = paneExecution(form), inherited = res.paths_host?.value === formHost(form) ? res.cwd?.value || '' : '';
+    paneDirectory(form, form.dataset.cwdInherited === 'true' && form.elements.cwd.value !== inherited);
+  }
+}
 function render() {
+  syncPathForms();
   const unread = store.state.items.filter(i => i.unread && !i.archived), commands = unread.filter(i => i.type === 'command').length;
   $('#unread-count').textContent = unread.length - commands;
   fillPathOptions();
@@ -291,31 +397,32 @@ function paneKind() {
   const form = $('#pane-form'), shell = form.elements.kind.value === 'shell';
   $('#pane-dialog-title').textContent = shell ? 'New pane' : 'New agent';
   $('#pane-profile-label').hidden = shell;
-  form.elements.profileId.disabled = shell;
+  form.elements.profileId.disabled = shell || !availableHost(form.elements.host.value);
+  updateMenus();
+  form.elements.profileId.setCustomValidity(!shell && form.elements.profileId.value && form.elements.profileId.selectedOptions[0]?.disabled ? 'Select a profile compatible with this execution machine.' : '');
   form.querySelector('button.primary').textContent = shell ? 'Create pane' : 'Create agent';
 }
 // The paths this machine's tasks already use, most used first, plus their parent folders: a native
 // datalist for typing and quick picks for the top few. Browse… remains the picker for anything else.
-function knownPaths() {
+function knownPaths(host) {
   const counts = new Map();
-  for (const t of store.state.tasks) for (const p of [t.path, t.worktree]) if (p) counts.set(p, (counts.get(p) || 0) + 1);
+  for (const t of store.state.tasks.filter(t => host && t.paths_host === host)) for (const p of [t.path, t.worktree]) if (p) counts.set(p, (counts.get(p) || 0) + 1);
   const parents = new Map();
   for (const p of counts.keys()) { const parent = p.replace(/\/[^/]+\/?$/, ''); if (parent && parent !== p) parents.set(parent, (parents.get(parent) || 0) + 1); }
   const rank = m => [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([p]) => p);
   return { used: rank(counts), parents: rank(parents).filter(p => !counts.has(p)) };
 }
-const homePrefix = () => (store.state.dataDir || '').replace(/\/\.local\/share\/tuios-inbox$/, '');
-const shortPath = p => homePrefix() && p.startsWith(homePrefix() + '/') ? '~' + p.slice(homePrefix().length) : p;
 function fillPathOptions() {
-  const { used, parents } = knownPaths();
-  $('#path-options').replaceChildren(...[...used, ...parents].map(p => Object.assign(document.createElement('option'), { value: p })));
+  const { used, parents } = knownPaths(formHost($('#task-form')));
+  $('#path-options').replaceChildren();
+  $('#task-path-options').replaceChildren(...[...used, ...parents].map(p => Object.assign(document.createElement('option'), { value: p })));
 }
 function suggestPaths(form) {
   fillPathOptions();
-  const { used } = knownPaths(), worktrees = store.state.tasks.map(t => t.worktree).filter(Boolean);
+  const host = formHost(form), { used } = knownPaths(host), worktrees = store.state.tasks.filter(t => host && t.paths_host === host).map(t => t.worktree).filter(Boolean);
   for (const box of form.querySelectorAll('[data-picks]')) {
     const picks = [...(box.dataset.picks === 'worktree' ? worktrees : []), ...used].filter((p, i, a) => a.indexOf(p) === i).slice(0, 4);
-    box.replaceChildren(...picks.map(p => { const b = document.createElement('button'); b.type = 'button'; b.textContent = shortPath(p); b.title = p; b.dataset.do = 'fill'; b.dataset.id = box.dataset.picks; b.dataset.value = p; return b; }));
+    box.replaceChildren(...picks.map(p => { const b = document.createElement('button'); b.type = 'button'; b.textContent = p; b.dataset.host = host; b.title = p; b.dataset.do = 'fill'; b.dataset.id = box.dataset.picks; b.dataset.value = p; return b; }));
     box.hidden = !picks.length;
   }
 }
@@ -330,9 +437,10 @@ store.createEntity = ({ kind, taskId, owner, parentId } = {}) => {
   const returnFocus = document.activeElement;
   const notice = dialog.querySelector('.form-error'); if (notice) notice.remove();
   // A task page's "+ New task" or "New subtask…" proposes that task as the parent; it can be cleared.
-  if (kind === 'task') { suggestPaths($('#task-form')); suggestParent($('#task-parent'), parentId ?? (route?.kind === 'task' ? route.id : '')); taskDirectoryPicker(); }
+  if (kind === 'task') { const form = $('#task-form'); invalidatePaths(form); suggestParent($('#task-parent'), parentId ?? (route?.kind === 'task' ? route.id : '')); if (parent?.id === 'pane-dialog' && !form.elements.host.value) { const host = $('#pane-form').elements.host.value; if (host && ![...form.elements.host.options].some(o => o.value === host)) form.elements.host.add(new Option(machineName(host), host)); form.elements.host.value = host; } taskDirectoryPicker(); setupLaunchHost(form, api, store).catch(e => error(e, dialog)); }
   if (kind !== 'task') {
     const form = $('#pane-form');
+    form.dataset.hostChosen = 'false';
     form.elements.kind.value = kind === 'pane' ? 'shell' : 'agent';
     form.elements.kind.disabled = true;
     form.elements.taskId.disabled = Boolean(taskId);
@@ -346,7 +454,7 @@ store.createEntity = ({ kind, taskId, owner, parentId } = {}) => {
   return new Promise(resolve => {
     // "+ New task" is a batch entry: the dialog stays open after each task. A "New Task…" choice inside a select creates one and returns to it.
   const context = { kind, taskId, owner, parent, returnFocus, dialog, resolve, routeKey: routeKey(route), accepted: false, multi: kind === 'task' && !owner && !parent, created: null };
-    creations.set(dialog, context); openDialog(dialog);
+    creations.set(dialog, context); openDialog(dialog); dialog.querySelector('[data-host-label] select').focus();
   });
 };
 async function checkStartup(context) {
@@ -415,9 +523,14 @@ async function chooseCreated(select, kind) {
   target.dispatchEvent(new Event('change', { bubbles: true }));
 }
 function openProfile(profile) {
-  const form = $('#profile-form'); form.reset(); form.elements.id.value = '';
+  const form = $('#profile-form'); invalidatePaths(form); form.reset(); form.elements.id.value = '';
   for (const [k, v] of Object.entries(profile || { args: [], env: {} })) if (form.elements[k]) form.elements[k].value = ['args', 'env'].includes(k) ? JSON.stringify(v, null, 2) : v;
-  openDialog($('#profile-dialog'));
+  form.elements.portable.checked = Boolean(profile && portableExecutable(profile.executable));
+  const host = profile?.executable_host || '';
+  if (host && ![...form.elements.host.options].some(o => o.value === host)) form.elements.host.add(new Option(machineName(host), host));
+  form.elements.host.value = host;
+  profileMachine(form); setupLaunchHost(form, api, store).catch(error);
+  openDialog($('#profile-dialog')); form.elements.host.focus();
 }
 async function inspect(key) {
   terminalPane = store.state.panes.find(p => p.id === key);
@@ -455,18 +568,22 @@ document.addEventListener('click', e => {
       case 'edit-section': {
         const t = store.state.tasks.find(t => t.id === d.id); if (!t) break;
         const key = editKey(d.id, d.section); if (store.edits.has(key)) break;
-        store.edits.set(key, { title: { title: t.title, status: t.status }, paths: { path: t.path, worktree: t.worktree }, parent: { parent_id: t.parent_id || '' }, home: { session: t.session || '', workspace: t.workspace ?? '', host: t.host || '' } }[d.section]);
+        store.edits.set(key, { title: { title: t.title, status: t.status }, paths: { path: t.path || '', worktree: t.worktree || '', paths_host: t.paths_host || '', edit_host: resolve(t, tasksMap()).host?.value || '', capture_host: resolve(t, tasksMap()).host?.value || '' }, parent: { parent_id: t.parent_id || '' }, home: { session: t.session || '', workspace: t.workspace ?? '', host: t.host || '' } }[d.section]);
         render();
-        if (d.section === 'home') { try { const inventory = await api('/tuios'); store.liveHosts = inventory.hosts || []; store.liveSessions = (inventory.sessions || []).filter(s => s.global === true).map(s => ({ value: s.target, label: `${s.display_name || s.label || s.name || s.target} · owner ${s.host || 'local'}`, disabled: Boolean(s.saved) || Boolean(inventory.hosts?.find(h => h.host === s.host) && hostUnavailable(inventory.hosts.find(h => h.host === s.host))) })); } catch (e) { store.liveSessions = []; store.liveHosts = []; error(e); } render(); }
+        if (d.section === 'home' || d.section === 'paths') { try { const inventory = await api('/tuios'); store.liveHosts = inventory.hosts || []; store.liveSessions = (inventory.sessions || []).filter(s => s.global === true).map(s => ({ value: s.target, label: `${s.display_name || s.label || s.name || s.target} · owner ${s.host || 'local'}`, disabled: Boolean(s.saved) || Boolean(inventory.hosts?.find(h => h.host === s.host) && hostUnavailable(inventory.hosts.find(h => h.host === s.host))) })); } catch (e) { store.liveSessions = []; store.liveHosts = []; error(e); } render(); }
         break;
       }
-      case 'cancel-section': store.edits.delete(editKey(d.id, d.section)); render(); break;
+      case 'cancel-section': { const draft = store.edits.get(editKey(d.id, d.section)); if (draft) invalidatePaths(draft); store.edits.delete(editKey(d.id, d.section)); render(); break; }
       case 'save-section': {
         const key = editKey(d.id, d.section), draft = store.edits.get(key); if (!draft || draft.saving) break;
         const revision = draft.revision || 0; draft.saving = true; render();
         try {
         if (d.section === 'title') await api(`/tasks/${d.id}`, { title: draft.title, status: draft.status }, 'PATCH');
-        else if (d.section === 'paths') await api(`/tasks/${d.id}`, { path: draft.path.trim(), worktree: draft.worktree.trim() }, 'PATCH');
+        else if (d.section === 'paths') {
+          const host = retainedHost(key);
+          if (!host || draft.capture_host !== host || (draft.path.trim() || draft.worktree.trim()) && draft.paths_host !== host) throw new Error('Directories belong to a different or changed machine. Save the machine first, reopen Directories and choose paths again.');
+          await api(`/tasks/${d.id}`, { path: draft.path.trim(), worktree: draft.worktree.trim(), paths_host: draft.path.trim() || draft.worktree.trim() ? draft.paths_host : '' }, 'PATCH');
+        }
         else if (d.section === 'parent') await api(`/tasks/${d.id}`, { parent_id: draft.parent_id }, 'PATCH');
         else if (d.section === 'home') await api(`/tasks/${d.id}`, { host: draft.host, session: draft.session, workspace: draft.workspace === '' ? '' : Number(draft.workspace) }, 'PATCH');
         } catch (e) { draft.saving = false; render(); throw e; }
@@ -495,8 +612,8 @@ document.addEventListener('click', e => {
       }
       case 'note-delete': if (confirm('Delete this note?')) { await api(`/tasks/${d.id}/notes/${encodeURIComponent(d.note)}`, {}, 'DELETE'); store.edits.delete(editKey(d.id, `note:${d.note}`)); await saved(); } break;
       case 'edit-profile': openProfile(store.state.profiles.find(p => p.id === d.id)); break;
-      case 'browse': { button.disabled = true; try { const { path } = await api(d.picker === 'file' ? '/pick-file' : '/pick-directory', {}); const field = button.form ? button.form.elements[d.id] : $(`#${d.id}`); if (path && field) { field.value = path; if (!button.form) field.dispatchEvent(new Event('change', { bubbles: true })); } } finally { button.disabled = false; } break; }
-      case 'fill': { const field = button.form.elements[d.id]; field.value = d.value; field.focus(); break; }
+      case 'browse': await browsePath(button); break;
+      case 'fill': { const field = button.form.elements[d.id]; if (d.host !== formHost(button.form) || field.disabled) break; field.value = d.value; field.dispatchEvent(new Event('input', { bubbles: true })); field.focus(); break; }
       case 'new-task': { const choice = await store.createEntity({ kind: 'task' }); if (choice) navigate({ kind: 'task', id: choice.value }); break; }
       case 'new-subtask': { const choice = await store.createEntity({ kind: 'task', parentId: d.id }); if (choice) navigate({ kind: 'task', id: choice.value }); break; }
       case 'add-profile': openProfile(); break;
@@ -518,14 +635,30 @@ document.addEventListener('input', e => {
 // Section and note drafts are kept in store.edits as they are typed, so a refresh re-renders the same values.
 function rememberEdit(target) {
   const draft = target.dataset?.edit && store.edits.get(target.dataset.edit); if (!draft) return false;
-  draft[target.dataset.field] = target.type === 'checkbox' ? target.checked : target.value; draft.revision = (draft.revision || 0) + 1; return true;
+  invalidatePaths(draft);
+  const field = target.dataset.field;
+  if (['host','parent_id'].includes(field)) { for (const [key, paths] of store.edits) if (key.endsWith('|paths')) invalidatePaths(paths); }
+  if (['path','worktree'].includes(field)) {
+    const host = retainedHost(target.dataset.edit);
+    if (!host || !availableHost(host) || draft.capture_host !== host) { error(new Error('Execution machine changed. Save the machine, then reopen Directories and choose paths again.')); return true; }
+    if (draft.paths_host !== host) { const sibling = field === 'path' ? 'worktree' : 'path'; draft[sibling] = ''; const input = target.closest('.task-section')?.querySelector('[data-field=' + sibling + ']'); if (input) input.value = ''; draft.paths_host = host; }
+  }
+  draft[target.dataset.field] = target.type === 'checkbox' ? target.checked : target.value; draft.revision = (draft.revision || 0) + 1; if (['host','parent_id'].includes(field)) render(); return true;
 }
-document.addEventListener('input', e => { rememberEdit(e.target); });
+document.addEventListener('input', e => { if (e.target.form && ['task-form','pane-form','profile-form'].includes(e.target.form.getAttribute('id'))) { invalidatePaths(e.target.form); bindFormPath(e.target); } rememberEdit(e.target); });
+for (const id of ['task-form','pane-form','profile-form']) {
+  const form = $('#' + id);
+  form.addEventListener('hosts-ready', () => id === 'task-form' ? taskDirectoryPicker() : id === 'pane-form' ? paneDirectory(form) : profileMachine(form));
+  form.closest('dialog').addEventListener('close', () => invalidatePaths(form));
+}
 document.addEventListener('change', e => {
   const target = e.target;
-  if (target.form?.id === 'pane-form' && target.name === 'host') paneHosts.set(target.form.dataset.hostScope || '', target.value);
+  if (target.form && ['task-form','pane-form','profile-form'].includes(target.form.getAttribute('id'))) { invalidatePaths(target.form); bindFormPath(target); }
+  if (target.form?.getAttribute('id') === 'pane-form' && target.name === 'host') { target.form.dataset.hostChosen = 'true'; paneHosts.set(target.form.dataset.hostScope || '', target.value); paneDirectory(target.form, true); }
+  if (target.form?.getAttribute('id') === 'pane-form' && target.name === 'profileId') paneKind();
+  if (target.form?.getAttribute('id') === 'profile-form' && ['host','portable'].includes(target.name)) profileMachine(target.form, true);
   if (target.id === 'pane-task' && !target.value.startsWith('__new_')) { paneHostScope(target.form); setupLaunchHost(target.form, api, store).catch(error); }
-  if (target.id === 'task-parent') taskDirectoryPicker();
+  if (target.id === 'task-parent' || target.form?.getAttribute('id') === 'task-form' && target.name === 'host') taskDirectoryPicker();
   if (target.dataset.do === 'note-context') { const { id, note } = target.dataset; act(async () => { await api(`/tasks/${id}/notes/${encodeURIComponent(note)}`, { context: target.checked }, 'PATCH'); await saved(); }); return; }
   if (rememberEdit(target)) return;
   if (target.matches('select')) {
@@ -583,6 +716,8 @@ document.addEventListener('submit', e => {
       }
       case 'task-form': {
         if (!context) return;
+        if (!availableHost(formHost(form))) throw new Error('Choose an available machine or inherit one from the parent task.');
+        if ((data.path || data.worktree) && data.paths_host !== formHost(form)) throw new Error('Choose the directories again on this execution machine.');
         data.notes = data.notes?.trim() ? [{ body: data.notes, context: false }] : [];
         const task = await api('/tasks', data);
         if (!store.state.tasks.some(t => t.id === task.id)) store.state.tasks.unshift(task);
@@ -602,7 +737,10 @@ document.addEventListener('submit', e => {
       case 'pane-form': {
         if (!context) return;
         if (!data.host || !store.liveHosts?.some(h => h.host === data.host && !hostUnavailable(h))) throw new Error('Choose an available execution machine. No default machine is used.');
-        const result = await api(`/tasks/${encodeURIComponent(context.taskId || data.taskId)}/panes`, { name: data.name, kind: context.kind === 'pane' ? 'shell' : 'agent', profileId: data.profileId, host: data.host });
+        if (context.kind !== 'pane' && !store.state.profiles.some(p => p.id === data.profileId && paneProfileFits(p, form))) throw new Error('Select a compatible profile for this machine.');
+        if (data.cwd?.trim() && data.paths_host !== data.host) throw new Error('Choose the launch directory again on this machine.');
+        if (!data.cwd?.trim() && paneExecution(form).paths_mismatch?.value) throw new Error('The task directory belongs to another machine. Choose a launch directory here or switch back.');
+        const result = await api(`/tasks/${encodeURIComponent(context.taskId || data.taskId)}/panes`, { name: data.name, kind: context.kind === 'pane' ? 'shell' : 'agent', profileId: data.profileId, host: data.host, ...(data.cwd?.trim() ? { cwd: data.cwd.trim(), paths_host: data.paths_host } : {}) });
         context.accepted = true;
         if (creations.get(context.dialog) !== context) { await refresh(); return; }
         context.threadId = result.threadId; context.paneId = result.id;
@@ -617,7 +755,22 @@ document.addEventListener('submit', e => {
         composeDrafts.delete(taskId);
         await refresh(); navigate({ kind: 'item', id: `thread:${result.threadId}` }); toast('Task work accepted'); break;
       }
-      case 'profile-form': data.args = JSON.parse(data.args); data.env = JSON.parse(data.env); await api('/profiles', data); $('#profile-dialog').close(); await refresh(); navigate({ kind: 'index', page: 'profiles' }); break;
+      case 'profile-form': {
+        const epoch = pathEpochs.get(form), profileId = form.elements.id.value;
+        if (!data.executable?.trim()) throw new Error('Choose an executable file or portable command name.');
+        data.executable = data.executable.trim();
+        if (form.elements.portable.checked && !portableExecutable(data.executable)) throw new Error('Portable executables must be bare command names without paths.');
+        if (!portableExecutable(data.executable)) {
+          if (!availableHost(data.host) || data.executable_host !== data.host) throw new Error('Choose the executable again on its machine.');
+          if (!data.executable.startsWith('/') && !data.executable.startsWith('~/')) throw new Error('Use an absolute executable path, or Browse to choose a file.');
+          const selected = await api('/filesystem/select', { host: data.host, path: data.executable, kind: 'file' });
+          if (!form.closest('dialog').open || pathEpochs.get(form) !== epoch || form.elements.id.value !== profileId) return;
+          if (selected.host !== data.host) throw new Error('Executable selection returned a different machine.');
+          data.executable = selected.path;
+        } else data.executable_host = '';
+        delete data.host; delete data.portable;
+        data.args = JSON.parse(data.args); data.env = JSON.parse(data.env); await api('/profiles', data); if (pathEpochs.get(form) === epoch && form.elements.id.value === profileId) $('#profile-dialog').close(); await refresh(); navigate({ kind: 'index', page: 'profiles' }); break;
+      }
       case 'mail-form': {
         const from = recipients({ taskId: form.dataset.taskId, mail: true }).find(p => p.value === data.from);
         if (!from?.session || data.to !== 'human' && !recipients({ taskId: form.dataset.taskId, mail: true, session: from.session }).some(p => p.value === data.to)) throw new Error('Mail recipients must belong to the same native session. Choose a pane in the sender’s session.');

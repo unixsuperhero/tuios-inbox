@@ -1,6 +1,7 @@
 import { store, api, esc } from '/pages.js';
 import { patchHTML } from '/workbench.js';
 import { hostChoices, hostUnavailable, machineLabel } from '/launch-host.js';
+import { choosePath } from '/path-picker.js';
 
 const href = (session, workspace, window) => `#tuios${session ? '/' + encodeURIComponent(session) : ''}${workspace != null ? '/' + workspace : ''}${window ? '/' + encodeURIComponent(window) : ''}`;
 const windowId = w => w.window_id || w.id;
@@ -20,7 +21,19 @@ const direct = new Set(['select-workspace', 'focus-window', 'minimize-window', '
 
 export function createTuios({ root, refresh }) {
   let route, inventory, dialogContext, notice = '', readAt = '', mutation = false;
-  const sessions = new Map(), windows = new Map(), errors = new Map(), reading = new Map(), filters = new Map(), drafts = new Map(), launches = new Map(), expanded = new Map();
+  const sessions = new Map(), windows = new Map(), errors = new Map(), reading = new Map(), filters = new Map(), drafts = new Map(), hostDrafts = new Map(), launches = new Map(), expanded = new Map();
+  let picker;
+  const hostDraftKey = (key, host) => JSON.stringify([key, host]);
+  function profileProblem(profile, host) {
+    if (!host) return 'choose an execution machine first';
+    if (profile.executable_host ? profile.executable_host !== host : /[\\/]/.test(profile.executable || '')) return 'executable belongs to ' + (profile.executable_host || 'an unknown machine');
+    const session = dialogContext?.session || '';
+    if (host !== 'local' && (!session.includes(':') || session.startsWith('local:')) && profile.protocol) return 'protocol profiles are unsupported for hosted remote agents';
+    if (host !== 'local' && Object.keys(profile.env || {}).length) return 'environment overrides do not cross machines';
+    return '';
+  }
+  const profileCompatible = (profile, host) => !profileProblem(profile, host);
+  function cancelPicker() { picker?.abort(); picker = null; }
   let treeScroll = 0, dragging = null, deferredRead = false, workspaceSelections = new Map();
   try { workspaceSelections = new Map(JSON.parse(sessionStorage.getItem('native-overview.workspaces') || '[]')); } catch {}
   const supports = r => r?.kind === 'tuios' || r?.kind === 'index' && r.page === 'tuios';
@@ -53,7 +66,9 @@ export function createTuios({ root, refresh }) {
     const form = dialog.querySelector('form');
     if (!form || !dialogContext) return;
     const data = Object.fromEntries([...form.elements].filter(field => field.name && field.name !== 'confirmed').map(field => [field.name, field.value]));
-    drafts.set(dialogContext.key, data);
+    const { cwd, profileId, ...shared } = data;
+    drafts.set(dialogContext.key, shared);
+    if (dialogContext.host && data.host === dialogContext.host) hostDrafts.set(hostDraftKey(dialogContext.key, dialogContext.host), { cwd: cwd || '', profileId: profileId || '' });
   };
   function captureFocus() {
     const element = document.activeElement, pane = element.closest?.('[data-native-pane]');
@@ -65,20 +80,42 @@ export function createTuios({ root, refresh }) {
     const control = focus.action ? [...root.querySelectorAll('[data-native-action]')].find(b => b.dataset.session === focus.session && b.dataset.window === focus.window && b.dataset.nativeAction === focus.action) : tile && [...tile.querySelectorAll('a')].find(a => focus.paneTitle ? a.classList.contains('native-overview-pane-title') : a.textContent === focus.title);
     (control || (focus.element.isConnected ? focus.element : null))?.focus({ preventScroll: true });
   }
-  function closeDialog() { saveDraft(); dialog.close(); restoreFocus(dialogContext?.returnFocus); }
+  function closeDialog() { saveDraft(); cancelPicker(); dialog.close(); restoreFocus(dialogContext?.returnFocus); }
   function syncDirectory() {
-    const field = dialog.querySelector('[name=cwd]');
-    if (!field) return;
-    const host = dialog.querySelector('[name=host]')?.value;
-    const unavailable = host !== 'local';
-    field.disabled = !host;
-    dialog.querySelector('[data-native-browse]').disabled = unavailable;
-    field.placeholder = !host ? 'Choose an execution machine first' : unavailable ? 'Directory on the remote machine (optional)' : 'Local directory (optional)';
+    const field = dialog.querySelector('[name=cwd]'), host = dialog.querySelector('[name=host]')?.value;
+    const machine = inventory?.hosts.find(h => h.host === host), available = Boolean(machine && !hostUnavailable(machine));
+    if (field) {
+      field.disabled = !available;
+      dialog.querySelector('[data-native-browse]').disabled = !available || Boolean(picker);
+      field.placeholder = !available ? 'Choose an execution machine first' : 'Directory on this machine (optional)';
+      const paths = store.state.tasks.filter(t => t.paths_host === host).flatMap(t => [t.path, t.worktree]).filter(Boolean);
+      dialog.querySelector('#native-path-options').innerHTML = [...new Set(paths)].map(path => `<option value="${esc(path)}"></option>`).join('');
+    }
+    const profile = dialog.querySelector('[name=profileId]');
+    if (profile) {
+      profile.disabled = !available;
+      for (const option of profile.options) if (option.value) {
+        const saved = store.state.profiles.find(p => p.id === option.value), problem = profileProblem(saved || {}, host);
+        option.disabled = Boolean(problem); option.textContent = (saved?.name || option.value) + (problem ? ' · ' + problem : '');
+      }
+      if (profile.selectedOptions[0]?.disabled) profile.value = '';
+    }
   }
   dialog.addEventListener('cancel', e => { e.preventDefault(); closeDialog(); });
-  dialog.addEventListener('input', saveDraft);
-  dialog.addEventListener('change', saveDraft);
-  dialog.addEventListener('change', e => { if (e.target.name === 'host') syncDirectory(); });
+  dialog.addEventListener('input', e => { if (e.target.name === 'cwd') { cancelPicker(); syncDirectory(); } saveDraft(); });
+  dialog.addEventListener('change', e => {
+    if (e.target.name === 'host') {
+      cancelPicker();
+      const oldHost = dialogContext.host, cwd = dialog.querySelector('[name=cwd]'), profile = dialog.querySelector('[name=profileId]');
+      if (oldHost) hostDrafts.set(hostDraftKey(dialogContext.key, oldHost), { cwd: cwd?.value || '', profileId: profile?.value || '' });
+      dialogContext.host = e.target.value;
+      const draft = hostDrafts.get(hostDraftKey(dialogContext.key, e.target.value)) || {};
+      if (cwd) cwd.value = draft.cwd || '';
+      if (profile) profile.value = draft.profileId || '';
+      syncDirectory();
+    }
+    saveDraft();
+  });
 
   function tree() {
     return `<aside id="native-tree" class="native-tree" aria-label="Native session and workspace hierarchy"><a class="native-tree-root" href="#tuios"${!route.session ? ' aria-current="page"' : ''}>All sessions</a>${(inventory?.sessions || []).map(s => {
@@ -244,10 +281,15 @@ export function createTuios({ root, refresh }) {
     const data = sessions.get(context.session), w = data?.windows.find(w => windowId(w) === context.window) || windows.get(`${context.session}/${context.window}`)?.window;
     const session = data?.session || inventory?.sessions.find(s => s.target === context.session);
     const key = [action, context.session, context.workspace ?? '', context.window || ''].join('|');
-    const draft = drafts.get(key) || {}, workspace = draft.workspace ?? context.workspace ?? data?.info?.current_workspace ?? 1;
+    cancelPicker();
+    const shared = drafts.get(key) || {}, draft = { ...shared, ...hostDrafts.get(hostDraftKey(key, shared.host || '')) }, workspace = draft.workspace ?? context.workspace ?? data?.info?.current_workspace ?? 1;
     const task = store.state.agents.find(a => a.id === context.window)?.task_id;
-    dialogContext = { action, ...context, key, returnFocus: { ...captureFocus(), session: context.session, window: context.window, action } };
+    dialogContext = { action, ...context, key, host: draft.host || '', returnFocus: { ...captureFocus(), session: context.session, window: context.window, action } };
     let fields = '', hint = '', submitLabel = names[action];
+    if (['create-window', 'create-agent', 'split-window'].includes(action)) {
+      fields += choice('host', 'Execution machine', hostChoices(inventory?.hosts || [], draft.host || ''), draft.host || '');
+      fields += `<p class="hint">Global session container ${esc(context.session)} · owner ${esc(machineName(session?.host))}. Choosing an execution machine does not change this container.</p>`;
+    }
     if (['create-session', 'label-session', 'rename-session', 'name-workspace', 'create-window', 'rename-window', 'split-window', 'create-agent'].includes(action)) {
       const value = draft.name ?? (action === 'label-session' ? session?.display_name || session?.label || '' : action === 'rename-session' ? session?.name || context.session : action === 'name-workspace' ? data?.workspaces.find(w => workspaceId(w) === context.workspace)?.name || '' : action === 'rename-window' ? paneName(w || {}) : '');
       fields += field('name', action === 'label-session' ? 'Display label (empty clears; address stays unchanged)' : 'Name', value, (['label-session', 'name-workspace', 'rename-window'].includes(action) ? '' : 'required ') + 'maxlength="120"');
@@ -256,18 +298,14 @@ export function createTuios({ root, refresh }) {
       fields += '<input type="hidden" name="host" value="local">';
       hint = `Creates an empty native global session owned by ${machineName('local')}. Each new pane chooses its own execution machine.`;
     }
-    if (['create-window', 'create-agent', 'split-window'].includes(action)) {
-      fields += choice('host', 'Execution machine', hostChoices(inventory?.hosts || [], draft.host || ''), draft.host || '');
-      fields += `<p class="hint">Global session container ${esc(context.session)} · owner ${esc(machineName(session?.host))}. Choosing an execution machine does not change this container.</p>`;
-    }
     if (action === 'move-window') fields += choice('workspace', 'Destination numbered workspace · same session', knownWorkspaces(context.session).map(w => ({ value: workspaceId(w), label: workspaceLabel(w) })), workspace);
     if (['create-window', 'create-agent', 'name-workspace', 'select-workspace', 'close-workspace'].includes(action)) {
       fields += field('workspace', 'Numbered workspace', workspace, 'type="number" min="1" step="1" required list="native-workspace-options"');
       fields += `<datalist id="native-workspace-options">${knownWorkspaces(context.session).map(w => `<option value="${workspaceId(w)}">${esc(workspaceLabel(w))}</option>`).join('')}</datalist>`;
     }
     if (['create-window', 'create-agent'].includes(action)) {
-      fields += `<label>Working directory <small>Optional · launch directory only</small><span class="browse"><input name="cwd" value="${esc(draft.cwd || '')}" list="path-options" autocomplete="off"><button type="button" data-native-browse>Browse…</button></span></label>`;
-      hint = 'Directory changes apply only to this new pane. Native grants remain enforced. Enter remote paths manually; the local OS directory picker is only available for local execution.';
+      fields += `<label>Project or existing worktree directory <small>Optional · launch directory only</small><span class="browse"><input name="cwd" value="${esc(draft.cwd || '')}" list="native-path-options" autocomplete="off"><button type="button" data-native-browse>Browse…</button></span></label><datalist id="native-path-options"></datalist>`;
+      hint = 'Directory changes apply only to this new pane, on its selected execution machine. Native grants remain enforced.';
     }
     if (action === 'create-agent') {
       fields += choice('profileId', 'Agent profile', [{ value: '', label: 'Choose a profile' }, ...store.state.profiles.map(p => ({ value: p.id, label: p.name }))], draft.profileId || '');
@@ -307,15 +345,21 @@ export function createTuios({ root, refresh }) {
     if (['create-session', 'create-window', 'create-agent', 'split-window'].includes(action)) dialog.querySelector('[name=host]').required = true;
     syncDirectory();
     dialog.showModal();
-    dialog.querySelector('input:not([type=checkbox]),textarea,select')?.focus();
+    const hostField = dialog.querySelector('[name=host]:not([type=hidden])');
+    (hostField && !hostField.value ? hostField : dialog.querySelector('input:not([type=checkbox]):not([type=hidden]),textarea,select'))?.focus();
   }
   async function mutate(action, context, values = {}) {
     const payload = { action, session: context.session, ...values };
-    if (['create-session', 'create-window', 'create-agent', 'split-window'].includes(action)) {
+    if (['create-window', 'create-agent', 'split-window'].includes(action)) {
       const host = inventory?.hosts.find(h => h.host === payload.host);
       if (!host || hostUnavailable(host)) throw new Error('Choose an available execution machine. No default machine is used.');
-      if (action === 'create-session' && payload.host !== 'local') throw new Error('Global sessions can only be created on the local owner machine.');
     }
+    if (action === 'create-session' && payload.host !== 'local') throw new Error('Global sessions can only be created on the local owner machine.');
+    if (action === 'create-agent') {
+      const profile = store.state.profiles.find(p => p.id === payload.profileId);
+      if (!profile || !profileCompatible(profile, payload.host)) throw new Error('Choose an agent profile compatible with this execution machine.');
+    }
+    if (payload.cwd?.trim()) payload.paths_host = payload.host;
     if (context.window) payload.window = context.window;
     if (context.workspace != null && payload.workspace == null && action !== 'set-layout') payload.workspace = context.workspace;
     for (const name of ['workspace', 'masters']) if (payload[name] !== undefined) {
@@ -444,25 +488,28 @@ export function createTuios({ root, refresh }) {
     const button = e.target.closest('button'); if (!button) return;
     if (button.hasAttribute('data-native-cancel')) return closeDialog();
     if (!button.hasAttribute('data-native-browse')) return;
-    const context = dialogContext, field = dialog.querySelector('[name=cwd]');
-    if (dialog.querySelector('[name=host]')?.value !== 'local') return;
-    button.disabled = true;
+    const context = dialogContext, field = dialog.querySelector('[name=cwd]'), host = dialog.querySelector('[name=host]')?.value;
+    if (!host || field.disabled) return;
+    cancelPicker();
+    const request = new AbortController(); picker = request;
+    syncDirectory();
     try {
-      const { path } = await api('/pick-directory', {});
-      if (path && dialogContext === context && dialog.querySelector('[name=host]')?.value === 'local') { field.value = path; field.dispatchEvent(new Event('input', { bubbles: true })); }
-      else if (path && dialogContext !== context && drafts.get(context.key)?.host === 'local') drafts.set(context.key, { ...drafts.get(context.key), cwd: path });
+      const selected = await choosePath({ host, kind: 'directory', path: field.value, title: 'Project or existing worktree directory', signal: request.signal });
+      if (selected && !request.signal.aborted && picker === request && dialog.open && dialogContext === context && dialog.querySelector('[name=host]')?.value === host && selected.host === host) {
+        field.value = selected.path; field.dispatchEvent(new Event('input', { bubbles: true }));
+      }
     } catch (err) {
-      if (dialogContext === context) { const error = dialog.querySelector('#native-form-error'); error.textContent = err.message; error.hidden = false; }
-    } finally { if (dialogContext === context) syncDirectory(); }
+      if (!request.signal.aborted && dialogContext === context && dialog.open) { const error = dialog.querySelector('#native-form-error'); error.textContent = err.message; error.hidden = false; }
+    } finally { if (picker === request) picker = null; if (dialogContext === context && dialog.open) syncDirectory(); }
   });
   dialog.addEventListener('submit', async e => {
     e.preventDefault();
     if (mutation) return;
     const context = dialogContext, form = e.target, values = Object.fromEntries(new FormData(form)), error = form.querySelector('#native-form-error');
-    saveDraft(); mutation = true; form.dataset.submitting = '';
+    saveDraft(); cancelPicker(); mutation = true; form.dataset.submitting = '';
     const controls = [...form.querySelectorAll('button, input, select, textarea')].map(control => ({ control, disabled: control.disabled }));
     controls.forEach(({ control }) => control.disabled = true); error.hidden = true;
-    try { await mutate(context.action, context, values); drafts.delete(context.key); if (dialogContext === context) { dialog.close(); restoreFocus(context.returnFocus); } }
+    try { await mutate(context.action, context, values); drafts.delete(context.key); for (const key of hostDrafts.keys()) if (JSON.parse(key)[0] === context.key) hostDrafts.delete(key); if (dialogContext === context) { dialog.close(); restoreFocus(context.returnFocus); } }
     catch (err) { error.textContent = err.message; error.hidden = false; }
     finally { mutation = false; delete form.dataset.submitting; controls.forEach(({ control, disabled }) => control.disabled = disabled); render(); }
   });
