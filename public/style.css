@@ -54,6 +54,10 @@ label { display: grid; gap: 5px; min-width: 0; font-size: 13px; font-weight: 600
 label :is(input, select, textarea) { font-weight: 400; }
 small, .hint { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }
 p.hint { margin: 10px 0; }
+[data-host-readiness] { color: var(--muted); font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+[data-host-readiness] summary { cursor: pointer; }
+[data-readiness-status] { white-space: pre-line; line-height: 1.6; margin: 8px 0; }
+[data-launch-summary], [data-recipient-summary] { overflow-wrap: anywhere; }
 .primary { color: var(--paper); background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .primary:hover { color: var(--paper); background: #d1e7a3; border-color: #d1e7a3; }
 .danger { color: var(--danger); }

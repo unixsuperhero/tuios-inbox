@@ -883,3 +883,78 @@ test('empty startup sightings cannot claim dispatched prompts or hide their late
   db.close();
 });
 
+test('readiness API reports native catalogs and unsupported Browse does not prevent a hosted pane launch', async () => {
+  const dir = await mkdtemp('/tmp/inbox-readiness-'), fake = join(dir, 'tuios'), runtime = join(dir, 'runtime');
+  await (await import('node:fs/promises')).mkdir(join(runtime, 'tuios'), { recursive: true, mode: 0o700 });
+  let remoteCatalog = { type: 'verb_list', daemon_version: 'remote-test', verbs: [{ verb: 'open-pane' }] };
+  let remoteError = null;
+  const localCatalog = { type: 'verb_list', daemon_version: 'local-test', verbs: [{ verb: 'new-window' }, { verb: 'start-agent' }] };
+  const catalogPath = join(dir, 'catalog.json');
+  await Bun.write(catalogPath, JSON.stringify(localCatalog));
+  await Bun.write(fake, `#!${process.execPath}
+const args = process.argv.slice(2);
+let result = {};
+if (args[0] === 'ls') result = args.includes('--all-hosts') ? {hosts:[{host:'local',status:'up',sessions:[{name:'s'}]},{host:'build',status:'up'},{host:'offline',status:'down'}]} : {sessions:[{name:'s'}]};
+if (args[0] === 'list-verbs') result = await Bun.file(${JSON.stringify(catalogPath)}).json();
+if (args[0] === 'list-workspaces') result = {workspaces:[{workspace:1}]};
+if (args[0] === 'new-window') result = {window_id:'hosted-readiness-pane',host:'build'};
+console.log(JSON.stringify(result));
+`);
+  await chmod(fake, 0o755);
+  const sockets = new Set(), relay = createServer(socket => {
+    sockets.add(socket); socket.on('close', () => sockets.delete(socket)); socket.setEncoding('utf8');
+    let buffered = '', owner = '';
+    socket.on('data', chunk => {
+      buffered += chunk;
+      let end;
+      while ((end = buffered.indexOf('\n')) !== -1) {
+        const request = JSON.parse(buffered.slice(0, end)); buffered = buffered.slice(end + 1);
+        let reply;
+        if (request.verb === 'open-host-connection') {
+          owner = request.params.host;
+          reply = owner === 'offline' ? { error: { code: 'host_unreachable', message: 'link is down' } } : { result: {} };
+        } else if (request.verb === 'hello') reply = { result: { daemon_version: 'ignored-handshake-version' } };
+        else if (request.verb === 'list-verbs') reply = remoteError ? { error: remoteError } : { result: remoteCatalog };
+        else if (request.verb === 'file-list' && remoteError) reply = { error: remoteError };
+        else reply = { error: { code: 'unknown_verb', message: 'unexpected fixture operation' } };
+        socket.write(JSON.stringify({ id: request.id, ...reply }) + '\n');
+      }
+    });
+  });
+  await new Promise(resolve => relay.listen(join(runtime, 'tuios/tuios.sock'), resolve));
+  const port = await freePort();
+  let proc;
+  const request = (path, body) => fetch(`http://127.0.0.1:${port}/api${path}`, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Inbox-Request': '1' }, body: JSON.stringify(body) });
+  try {
+    proc = await launch(dir, port, { TUIOS_BIN: fake, XDG_RUNTIME_DIR: runtime, TUIOS_SOCKET: '', TUIOS_INBOX_GH: '/nonexistent/gh', TUIOS_INBOX_COLLECTORS: join(dir, 'none.json'), PI_CODING_AGENT_DIR: join(dir, 'omp') });
+    const local = await (await request('/hosts/readiness?host=local')).json();
+    expect(Object.keys(local).sort()).toEqual(['checked_at', 'connection', 'host', 'operations', 'version']);
+    expect(local).toMatchObject({ host: 'local', version: 'local-test', connection: { state: 'connected' }, operations: { pane: { state: 'supported' }, agent: { state: 'supported' }, browse: { state: 'supported' } } });
+    const remote = await (await request('/hosts/readiness?host=build')).json();
+    expect(remote).toMatchObject({ host: 'build', version: 'remote-test', operations: { pane: { state: 'supported' }, agent: { state: 'supported' }, browse: { state: 'unsupported' } } });
+    const launched = await request('/tuios/action', { action: 'create-window', session: 's', workspace: 1, host: 'build', name: 'Ready despite no Browse' });
+    expect(launched.status).toBe(200);
+    expect(await launched.json()).toEqual({ window_id: 'hosted-readiness-pane', host: 'build' });
+    remoteError = { code: 'unknown_verb', message: 'list-verbs not available' };
+    expect(await (await request('/hosts/readiness?host=build')).json()).toMatchObject({ version: null, connection: { state: 'connected' }, operations: { agent: { state: 'unknown' } } });
+    remoteError = { code: 'forbidden', message: 'catalog denied', hint: { command: 'tuios pane-grants' } };
+    const denied = await (await request('/hosts/readiness?host=build')).json();
+    expect(denied.operations.pane).toMatchObject({ state: 'unknown' });
+    expect(denied.operations.pane.reason).toContain('[forbidden] catalog denied');
+    expect(denied.operations.pane.reason).toContain('tuios pane-grants');
+    expect(await (await request('/hosts/readiness?host=offline')).json()).toMatchObject({ host: 'offline', version: null, connection: { state: 'unavailable' }, operations: { browse: { state: 'unavailable' } } });
+    remoteError = { code: 'host_refused', message: 'maximum relays reached' };
+    const files = await request('/filesystem?host=build');
+    const filesystemError = await files.json();
+    expect(filesystemError).toMatchObject({ code: 'host_refused' });
+    expect(filesystemError.error).toContain('relay capacity');
+    expect(filesystemError.error).not.toContain('permissions');
+    for (const host of ['build:session', 'absent']) expect((await request('/hosts/readiness?host=' + encodeURIComponent(host))).status).toBe(400);
+  } finally {
+    if (proc) { proc.kill(); await proc.exited; }
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => relay.close(resolve));
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15000);
+

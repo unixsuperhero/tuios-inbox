@@ -9,6 +9,7 @@ import { pullCollectors } from './scripts/pull-collectors.mjs';
 import { splitOnHost } from './scripts/native-split.mjs';
 import { nativeOwner } from './scripts/native-owner.mjs';
 import { listHostDirectory, selectHostPath } from './scripts/host-filesystem.mjs';
+import { hostReadiness } from './scripts/host-readiness.mjs';
 import { DEFAULTS, resolve as resolveFields, preflight, nextInQueue, queueHeld, pickPane, profileFor, ompTodos, docsIn } from './public/outline-model.js';
 import { parseStyleOverrides } from './public/task-style.js';
 
@@ -194,9 +195,10 @@ async function cli(args, timeout = 15000, json = true, cwd = undefined) {
   let value;
   if (json) { try { value = JSON.parse(stdout); } catch {} }
   if (code && !value) throw new Error(stderr.trim() || stdout.trim() || `TUIOS exited ${code}`);
-  if (value?.success === false) { const error = new Error(value.error || value.message || stderr.trim() || 'Native operation refused'); if (value.window_id || value.id) error.window_id = value.window_id || value.id; throw error; }
+  if (value?.success === false) { const error = Object.assign(new Error(typeof value.error === 'string' ? value.error : value.error?.message || value.message || stderr.trim() || 'Native operation refused'), typeof value.error === 'object' ? value.error : { code: value.code, hint: value.hint }); if (value.window_id || value.id) error.window_id = value.window_id || value.id; throw error; }
   if (args[0] === 'ls' && code === 3 && Array.isArray(value)) value = value.map(s => ({ ...s, saved: true }));
-  if (value?.error) throw new Error(typeof value.error === 'string' ? value.error : JSON.stringify(value.error));
+  if (value?.error) throw Object.assign(new Error(typeof value.error === 'string' ? value.error : value.error.message || JSON.stringify(value.error)), typeof value.error === 'object' ? value.error : { code: value.code, hint: value.hint });
+  if (code && args[0] === 'list-verbs') throw new Error(stderr.trim() || stdout.trim() || `TUIOS exited ${code}`);
   return json ? (value ?? { output: stdout, exit_code: code }) : stdout;
 }
 function required(value, label, max = Infinity) { if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${label} is required${Number.isFinite(max) ? ` (maximum ${max} characters)` : ''}`); return value.trim(); }
@@ -1089,6 +1091,7 @@ async function api(req, url) {
     return response({ session, info, workspaces: rows(workspaces, 'workspaces'), windows: rows(windows, 'windows'), agents: rows(agents, 'agents') });
   }
   if (url.pathname === '/api/hosts' && method === 'GET') return response({ hosts: (await nativeSessions()).hosts });
+  if (url.pathname === '/api/hosts/readiness' && method === 'GET') return response(await hostReadiness(url.searchParams.get('host'), { hosts: (await nativeSessions()).hosts, localCatalog: () => cli(['list-verbs']) }));
   if (url.pathname === '/api/tuios/window' && method === 'GET') {
     const target = url.searchParams.get('session'), key = url.searchParams.get('window');
     await nativeSession(target); await nativeWindow(target, key);

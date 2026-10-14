@@ -30,8 +30,10 @@ async function remote(host, verb, params) {
   } catch (error) {
     if (error.code === 'unknown_verb') {
       error.message = `The native daemon on ${host} does not support ${verb}. Ask its administrator to update TUIOS. ${error.message}`;
-    } else if (['forbidden', 'no_permission', 'host_refused'].includes(error.code)) {
+    } else if (['forbidden', 'no_permission'].includes(error.code)) {
       error.message = `The native permissions on ${host} refused this path request; choose an allowed path or ask its administrator. ${error.message}`;
+    } else if (error.code === 'host_refused') {
+      error.message = `The native connection to ${host} was refused because its relay capacity is unavailable. Retry when capacity is available. ${error.message}`;
     } else if (['host_unreachable', 'unavailable', 'protocol_mismatch'].includes(error.code)) {
       error.message = `The native filesystem on ${host} is unavailable. Check its connection in Machines and retry. ${error.message}`;
     }

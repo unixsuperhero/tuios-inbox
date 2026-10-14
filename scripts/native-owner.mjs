@@ -106,7 +106,7 @@ export async function nativeOwner({ owner, verb, params = {} }) {
             if (reply.id !== requests[step].id) continue;
             if (reply.error) {
               const error = new Error(reply.error.message || `Native owner ${owner} rejected ${requests[step].verb}`);
-              Object.assign(error, reply.error);
+              Object.assign(error, reply.error, { native_verb: requests[step].verb });
               if (reply.result) Object.assign(error, { result: reply.result, window_id: reply.result.window_id || reply.result.id });
               fail(error);
               return;
