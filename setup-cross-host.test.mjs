@@ -242,12 +242,12 @@ describe('install behavior against an isolated home', () => {
     expect((await run('install', ['--collector-only'])).code).toBe(0);
     const after = await readFile(rc, 'utf8');
     expect(after.startsWith(personal)).toBe(true);
-    for (const env of [{ TUIOS_ENV: '1' }, { TUIOS_PANE_HOSTED: '1' }, { TUIOS_ENV: '0', TUIOS_PANE_HOSTED: '1' }]) {
+    for (const env of [{ TUIOS_ENV: '1' }, { MTM_ENV: '1' }, { MTM_PANE_HOSTED: '1' }, { TUIOS_PANE_HOSTED: '1' }, { TUIOS_ENV: '0', TUIOS_PANE_HOSTED: '1' }]) {
       const output = await shellOutput('bash', env);
       expectCommandMarks(output);
       expect(output.out).toContain('PERSONAL_HOOK');
     }
-    for (const env of [{}, { TUIOS_ENV: '0', TUIOS_PANE_HOSTED: '0' }, { TUIOS_PANE_HOSTED: '2' }]) {
+    for (const env of [{}, { TUIOS_ENV: '0', TUIOS_PANE_HOSTED: '0' }, { TUIOS_PANE_HOSTED: '2' }, { MTM_ENV: '0', TUIOS_ENV: '1' }]) {
       expect((await shellOutput('bash', env)).marks).not.toContain('\x1b]133;');
     }
     expect((await run('install', ['--collector-only'])).code).toBe(0);
@@ -281,7 +281,7 @@ describe('install behavior against an isolated home', () => {
     shellProbe = 'SHELL_PATH=/usr/bin/zsh\nSHELL_BASH_VERSION=\n';
     panes = [{ session: 's', window_id: 'w', marks_commands: false }];
     expect((await run('install', ['--collector-only'])).code).toBe(0);
-    for (const env of [{ TUIOS_ENV: '1' }, { TUIOS_PANE_HOSTED: '1' }, { TUIOS_ENV: '0', TUIOS_PANE_HOSTED: '1' }]) {
+    for (const env of [{ TUIOS_ENV: '1' }, { MTM_ENV: '1' }, { MTM_PANE_HOSTED: '1' }, { TUIOS_PANE_HOSTED: '1' }, { TUIOS_ENV: '0', TUIOS_PANE_HOSTED: '1' }]) {
       expectCommandMarks(await shellOutput('zsh', env));
     }
     expect((await shellOutput('zsh')).marks).not.toContain('\x1b]133;');

@@ -173,12 +173,12 @@ Task status and paths are editable. A task holds any number of Markdown notes, e
 Send mail from the task's session controls, or let agents use the installed `tuios-inbox` skill:
 
 ```sh
-tuios list-agents -s "$TUIOS_SESSION"
-tuios send-agent-message -s "$TUIOS_SESSION" -w reviewer \
-  --from "$TUIOS_PANE_ID" --subject 'Review request' 'Please inspect the result.'
-tuios read-agent-messages -s "$TUIOS_SESSION" -w "$TUIOS_PANE_ID" --unread
-tuios send-agent-message -s "$TUIOS_SESSION" -w sender \
-  --from "$TUIOS_PANE_ID" --reply-to 12 'Here are my findings.'
+tuios list-agents -s "${MTM_SESSION:-$TUIOS_SESSION}"
+tuios send-agent-message -s "${MTM_SESSION:-$TUIOS_SESSION}" -w reviewer \
+  --from "${MTM_PANE_ID:-$TUIOS_PANE_ID}" --subject 'Review request' 'Please inspect the result.'
+tuios read-agent-messages -s "${MTM_SESSION:-$TUIOS_SESSION}" -w "${MTM_PANE_ID:-$TUIOS_PANE_ID}" --unread
+tuios send-agent-message -s "${MTM_SESSION:-$TUIOS_SESSION}" -w sender \
+  --from "${MTM_PANE_ID:-$TUIOS_PANE_ID}" --reply-to 12 'Here are my findings.'
 ```
 
 Sending mail does not type into the recipient's prompt. **Check mail** queues a bounded inbox-check instruction for an agent's next rest, without answering an approval or interrupting an active turn. Alternatively, agents can wait with `tuios wait-for agent-message`. There is no automatic agent-to-agent reply loop. The receiver must read and acknowledge a message. Read status alone does not establish acknowledgement.

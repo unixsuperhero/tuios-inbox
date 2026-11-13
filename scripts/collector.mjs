@@ -11,6 +11,7 @@ const NATIVE_TYPES = 'agent-state,agent-message,agent-activity,window-created,wi
 const short = value => createHash('sha1').update(value).digest('hex').slice(0, 12);
 const now = () => new Date().toISOString();
 
+import { mtmEnv } from './mtm-env.mjs';
 export const defaultDataDir = (env = process.env) => env.TUIOS_INBOX_COLLECTOR_DATA || join(homedir(), '.local/share/tuios-inbox/collector');
 export const defaultTuiosBin = (env = process.env) => env.TUIOS_BIN || Bun.which('tuios') || '/opt/homebrew/bin/tuios';
 
@@ -230,16 +231,17 @@ export function openCollector(options = {}) {
     scan: () => (scanning = scanning.catch(() => {}).then(scanOnce)),
     appendHook(event) {
       const v = Object.fromEntries(Object.entries(event.values || {}).filter(([k]) => !SECRET.test(k)));
-      const command = v.TUIOS_EVENT === 'after-command-finished';
+      const e = name => mtmEnv(v, name);
+      const command = e('EVENT') === 'after-command-finished';
       const { content, ...captureMeta } = event.captureMeta || {};
       const seq = event.captureMeta?.command_seq;
       // Same id as the native command-finished capture so hook and native paths dedupe each other.
-      const id = command && event.bootId && v.TUIOS_WINDOW_ID && seq != null ? `command:${event.bootId}:${v.TUIOS_WINDOW_ID}:${seq}` : `hook:${event.id}`;
+      const id = command && event.bootId && e('WINDOW_ID') && seq != null ? `command:${event.bootId}:${e('WINDOW_ID')}:${seq}` : `hook:${event.id}`;
       const record = envelope({
-        id, boot_id: event.bootId || '', session: v.TUIOS_SESSION_ID || '', pane_id: v.TUIOS_WINDOW_ID || '',
-        conversation_id: event.agent?.agent_session_id || '', harness: event.agent?.harness_id || v.TUIOS_AGENT_HARNESS || '',
+        id, boot_id: event.bootId || '', session: e('SESSION_ID') || '', pane_id: e('WINDOW_ID') || '',
+        conversation_id: event.agent?.agent_session_id || '', harness: event.agent?.harness_id || e('AGENT_HARNESS') || '',
         kind: command ? 'command' : 'activity', source: 'pane', created: event.time || now(),
-        body: [command && v.TUIOS_COMMAND, event.capture, v.TUIOS_AGENT_MESSAGE].filter(Boolean).join('\n') || JSON.stringify({ values: v }),
+        body: [command && e('COMMAND'), event.capture, e('AGENT_MESSAGE')].filter(Boolean).join('\n') || JSON.stringify({ values: v }),
         meta: { hook_event: v, capture_meta: captureMeta, agent: event.agent, capture_error: event.captureError },
       });
       journal([record]);

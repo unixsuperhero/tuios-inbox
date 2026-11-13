@@ -132,6 +132,15 @@ test('hook events journal immediately, filter secrets and dedupe', () => {
   expect(record.meta.capture_meta).toEqual({ command_seq: 3 });
 });
 
+test('hook events read MTM_ names first and fall back to TUIOS_ names', () => {
+  const c = open();
+  const base = { id: 'm1', time: '2026-01-01T00:00:00Z', capture: 'out', captureMeta: { command_seq: 1 }, bootId: 'b' };
+  c.appendHook({ ...base, values: { MTM_EVENT: 'after-command-finished', MTM_SESSION_ID: 'ms', MTM_WINDOW_ID: 'mw', TUIOS_SESSION_ID: 'ts', TUIOS_WINDOW_ID: 'tw' } });
+  c.appendHook({ ...base, id: 'm2', values: { TUIOS_EVENT: 'after-command-finished', TUIOS_SESSION_ID: 'ts', TUIOS_WINDOW_ID: 'tw' }, captureMeta: { command_seq: 2 } });
+  const rows = c.exportBatch().records;
+  expect(rows.map(r => [r.session, r.pane_id])).toEqual([['ms', 'mw'], ['ts', 'tw']]);
+});
+
 // A scripted stand-in for the tuios binary: agents.json feeds list-agents, capture.json feeds capture-pane.
 function fakeTuios(handlers = {}) {
   const bin = join(dir, 'tuios');

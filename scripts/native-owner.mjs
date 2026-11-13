@@ -42,7 +42,7 @@ async function ownerSocket() {
   if (!await privateDir(directory, uid)) throw new Error(`Native TUIOS socket directory ${directory} must be an existing uid-owned directory with mode 0700`);
   const primary = join(directory, 'tuios.sock');
   const other = systemRuntime && normalize(directory) === join(systemRuntime, 'tuios') && await privateDir(legacy, uid) ? join(legacy, 'tuios.sock') : '';
-  const reported = process.env.TUIOS_SOCKET;
+  const reported = process.env.MTM_SOCKET || process.env.TUIOS_SOCKET;
   let socket, selected = primary;
   if (other && reported && normalize(reported) === normalize(other)) {
     socket = await dial(other, 1000).catch(() => null);

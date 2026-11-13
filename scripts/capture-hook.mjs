@@ -2,13 +2,14 @@ import { mkdir, rename, chmod } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { captureTurn } from './turn.mjs';
+import { mtmEnv } from './mtm-env.mjs';
 import { openCollector, defaultTuiosBin } from './collector.mjs';
 const dir = process.env.TUIOS_INBOX_SPOOL || join(homedir(), '.local/share/tuios-inbox/events');
 await mkdir(dir, { recursive: true, mode: 0o700 });
 const event = { id: crypto.randomUUID(), time: new Date().toISOString(), values: {} };
 const bin = defaultTuiosBin();
 for (const [key, value] of Object.entries(process.env)) {
-  if (key.startsWith('TUIOS_') && !/TOKEN|SOCKET|INBOX/.test(key)) event.values[key] = value;
+  if (/^(TUIOS|MTM)_/.test(key) && !/TOKEN|SOCKET|INBOX/.test(key)) event.values[key] = value;
 }
 async function capture(args) {
   const proc = Bun.spawn([bin, ...args, '--json'], { stdout: 'pipe', stderr: 'pipe' });
@@ -18,10 +19,11 @@ async function capture(args) {
   if (code) throw new Error(error || `Capture exited ${code}`);
   return JSON.parse(text);
 }
-const session = process.env.TUIOS_SESSION_ID, pane = process.env.TUIOS_WINDOW_ID;
+const hookEnv = name => mtmEnv(process.env, name);
+const session = hookEnv('SESSION_ID'), pane = hookEnv('WINDOW_ID');
 if (session && pane) {
   try {
-    const command = process.env.TUIOS_EVENT === 'after-command-finished';
+    const command = hookEnv('EVENT') === 'after-command-finished';
     const [output, attention, agent] = await Promise.all([
       capture(['capture-pane', '-s', session, '-w', pane, '--lines', command ? '0' : '2000', command ? '--last-command' : '--scrollback']),
       capture(['list-attention']),
@@ -37,9 +39,9 @@ if (session && pane) {
     const collector = openCollector({ tuiosBin: process.env.TUIOS_BIN });
     try { event.collectorId = collector.appendHook(event); } finally { collector.close(); }
   } catch (error) { event.collectorError = error.message; }
-  if (process.env.TUIOS_EVENT === 'after-agent-state') {
+  if (hookEnv('EVENT') === 'after-agent-state') {
     event.turn = await captureTurn({ bin, session, pane, time: event.time, seed: {
-      name: process.env.TUIOS_WINDOW_NAME, harness: process.env.TUIOS_AGENT_HARNESS, state: process.env.TUIOS_AGENT_STATE, summary: process.env.TUIOS_AGENT_MESSAGE,
+      name: hookEnv('WINDOW_NAME'), harness: hookEnv('AGENT_HARNESS'), state: hookEnv('AGENT_STATE'), summary: hookEnv('AGENT_MESSAGE'),
     } });
   }
 }
